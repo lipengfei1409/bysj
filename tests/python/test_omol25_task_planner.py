@@ -43,6 +43,19 @@ class ChargeSpinEmbeddingTests(unittest.TestCase):
                             spin_table[conditions[:, 1].long()]), dim=-1)
         torch.testing.assert_close(module(conditions)['y'], F.silu(joined @ matrix + bias))
 
+    def test_rejects_nonintegral_and_out_of_range_conditions(self):
+        module = ChargeSpinEmbedding(
+            torch.zeros(200, 4), torch.zeros(100, 4), torch.zeros(8, 4), torch.zeros(4)
+        )
+        for conditions, error in (
+            (torch.tensor([[0.5, 1.0]]), 'integers'),
+            (torch.tensor([[100.0, 1.0]]), r'\[-100,99\]'),
+            (torch.tensor([[0.0, 100.0]]), r'\[0,99\]'),
+            (torch.tensor([[float('nan'), 1.0]]), 'finite'),
+        ):
+            with self.subTest(conditions=conditions), self.assertRaisesRegex(ValueError, error):
+                module(conditions)
+
 
 class DPA4TaskPlannerTests(unittest.TestCase):
     def _config(self):

@@ -112,8 +112,24 @@ class ChargeSpinEmbedding(nn.Module):
     def forward(self, charge_spin):
         if charge_spin.ndim != 2 or charge_spin.shape[1] != 2:
             raise ValueError('charge_spin must have shape [F,2]')
-        charge = charge_spin[:, 0].to(dtype=torch.int64) + 100
-        spin = charge_spin[:, 1].to(dtype=torch.int64)
+        if charge_spin.dtype == torch.bool or not (
+            charge_spin.is_floating_point()
+            or charge_spin.dtype in (torch.int32, torch.int64)
+        ):
+            raise TypeError('charge_spin must have a real numeric dtype')
+        if charge_spin.is_floating_point():
+            if not bool(torch.isfinite(charge_spin).all()):
+                raise ValueError('charge_spin values must be finite')
+            if bool((charge_spin != charge_spin.round()).any()):
+                raise ValueError('charge_spin values must be integers')
+        charge_values = charge_spin[:, 0]
+        spin_values = charge_spin[:, 1]
+        if bool(((charge_values < -100) | (charge_values > 99)).any()):
+            raise ValueError('charge values must be in [-100,99]')
+        if bool(((spin_values < 0) | (spin_values > 99)).any()):
+            raise ValueError('spin values must be in [0,99]')
+        charge = charge_values.to(dtype=torch.int64) + 100
+        spin = spin_values.to(dtype=torch.int64)
         charge_embedding = self.charge_embedding(charge)['y']
         spin_embedding = self.spin_embedding(spin)['y']
         mixed = self.mix_layer(torch.cat((charge_embedding, spin_embedding), dim=-1))
