@@ -58,6 +58,7 @@ flowchart TD
 | `inner_distance_clamp` | `distance[E,1], inner radius, sharpness` | `safe_distance[E,1]` | checkpoint-configured smooth inner-distance clamp；enabled inner-distance clamp |
 | `neighbor_graph` | `r[N,3], cell[F,3,3], frame[N], rcut` | `src/dst[2,E], S[E,3], edge_frame[E], mask[E]` | periodic cell-list search; keep distances within rcut；always |
 | `edge_geometry` | `r[N,3], src/dst[2,E], S[E,3], cell[F,3,3]` | `d[E,3], distance[E,1], unit[E,3]` | d=r_src+S@cell-r_dst; r=norm(d)；always |
+| `edge_features` | `positions, graph, cells, mask, frequencies[1,R], cutoff/exponents/eps` | `vec[E,3], distance[E,1], unit[E,3], rbf[E,R], env[E,1]` | Fused edge geometry + Bessel/C3 features; first-order VJP; HIP implementation written but not yet compiled/validated；optional HIP path |
 | `radial_basis` | `distance[E,1], frequencies[1,R], rcut, p` | `rbf[E,R], env[E,1]` | w*sinc(w*r/pi) times C3 envelope; edge envelope uses independent exponent；always |
 | `type_embedding` | `atype[N], table[T+1,C]` | `type_feat[N,C]` | gather element embedding；always |
 | `pair_embedding` | `type_feat[N,C], src/dst[2,E]` | `pair_feat[E,C]` | type_feat[src]+type_feat[dst]；always |
@@ -111,7 +112,7 @@ flowchart TD
 
 几何：`gd=gv+gr*u+(gu-u*dot(u,gu))/r`（r>0），位置为 src += gd、dst -= gd；cell 梯度为 `shift⊗gd`。径向：频率与距离同时求导。线性：dx=gWᵀ、dW=xᵀg。scatter：backward gather；gather：backward scatter。rotation：旋转系数和输入都求导；注意力：logits、env、source gate、value、head gate 的梯度全部保留。SO2/grid/等变 norm 与 FFN 要保存或重算反向所需状态。
 
-首批 native geometry/radial/RMSNorm 已写一阶 backward；linear backward 暂用 Torch GEMM、segment backward 用 gather。force/virial native 只支持推理组装，不支持 force-loss backward/二阶导。完整模型仍需实现其余 VJP 后才能用于 MD 力推理。
+首批 native geometry/radial/RMSNorm 和 fused edge-features 已写一阶 backward；linear backward 暂用 Torch GEMM、segment backward 用 gather。force/virial native 只支持推理组装，不支持 force-loss backward/二阶导。SO(2)/Wigner/grid/attention 等 reference 组合路径的梯度链已接线，但完整 checkpoint 的 E/F/V 数值对照与 DCU 验证仍未完成。
 
 ## 当前实现状态与验证顺序
 
@@ -119,7 +120,7 @@ flowchart TD
 
 - 已有 HIP primitives：geometry、Bessel+C3 radial、普通 RMSNorm、linear、segment sum、force/virial；它们仍是首批 FP32 operator，不等于全模型 native。
 - 新增的独立 reference path 已接入 charge/spin、environment seed/FiLM、Wigner/GIE、SO(2) 投影/径向混合/attention 等若干 stage；代码尚未在 PyTorch checkpoint loader、完整数值 oracle 或 DCU 上执行验证。
-- `DPA4Model.from_checkpoint` 仍必须报告 `complete_model=False`；当前 OMol25 活跃的 message-node SO(3) grid、SO(3)-grid FFN、readout/fitting 和完整一阶 VJP 尚未完成。已注册 task DAG 是静态规划，不是 persistent HIP executor。
+- `DPA4Model.from_checkpoint` 仍必须报告 `complete_model=False`；当前 OMol25 活跃的 message-node SO(3) grid、SO(3)-grid FFN、readout/fitting 代码及权重映射已接线，但未经目标 checkpoint 完整加载或逐层数值验证。完整一阶 VJP 也未做 E/F/V oracle 验证。已注册 task DAG 是静态规划，不是 persistent HIP executor。
 - 几何约定仍为 `src + shift@cell - dst`；force/virial 的符号、维度和跨帧归属应以本文件合同为准。native force/virial assembly 不可代替 `dE/dd` 的全图 VJP。
 
 后续顺序：先在有 PyTorch/DeePMD 环境加载这份 checkpoint 并核对全部参数；完成缺失 reference stages 和 E/F/V VJP；对照同 checkpoint 的 DeePMD oracle；再把已验证热点移植到 HIP/DTK；最后验证融合、epoch 同步和 persistent scheduler。任何 DCU 精度或性能结论都需实机证据。

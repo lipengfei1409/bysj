@@ -27,6 +27,8 @@ class NumericalBackend(nn.Module):
             raise ValueError('primitive backend must be reference or hip')
         if dtype not in (torch.float32, torch.float64):
             raise TypeError('modeling dtype must be float32 or float64')
+        if primitive_backend == 'hip' and dtype != torch.float32:
+            raise TypeError('HIP primitive backend currently requires float32 modeling dtype')
         if not math.isfinite(version) or version < 1:
             raise ValueError('unsupported descriptor version')
         self.config, self.primitive_backend, self.version = config, primitive_backend, float(version)

@@ -64,6 +64,10 @@ class NumericalModelingTests(unittest.TestCase):
             torch.zeros(4, 3, dtype=torch.int64), torch.tensor([0, 0, 1, 0]), torch.tensor([True, True, True, False]))
         return batch, graph
 
+    def test_hip_backend_rejects_unsupported_float64_modeling(self):
+        with self.assertRaisesRegex(TypeError, 'HIP primitive backend.*float32'):
+            self.backend(primitive_backend='hip', dtype=torch.float64)
+
     def test_registry_stage_override_and_output_contract(self):
         b = self.backend()
         b.register('focus_mix', ScaleOp(2))

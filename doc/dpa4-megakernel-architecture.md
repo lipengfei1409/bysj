@@ -66,13 +66,13 @@ AtomicBatch + EdgeGraph
 - checkpoint 参数映射及 loaded/deferred 报告：`python/model/modeling/loading.py`
 - 常见算子 dispatch、reference primitive 和一阶力路径：`python/model/modeling/numerical.py`
 
-这些实现目前主要是 PyTorch reference/组合算子；已有 geometry、radial、RMSNorm、linear、reduce 和 force/virial primitive 可按 backend 选择。上述新增 model-stage 代码尚未在目标 checkpoint 上完整加载或数值运行。
+这些实现目前主要是 PyTorch reference/组合算子；已有 geometry、radial、fused edge-features、RMSNorm、linear、reduce 和 force/virial primitive 可按 backend 选择。融合边特征 kernel 位于 `csrc/parallel/edge_features.cu`，Python HIP 路径也将 scalar feature VJP 接回 edge vector；它尚未 HIP 编译或在 DCU 上验证。上述新增 model-stage 代码尚未在目标 checkpoint 上完整加载或数值运行。
 
 ### 明确未完成的计算
 
 当前代码已包含 OMol25 活跃分支的 PyTorch reference 模块和 checkpoint 参数映射：message-node SO(3) grid、block FFN SO(3) grid、scalar output FFN 与 fitting head。它们尚未在可用 PyTorch 环境中加载这份 `.pt` 并执行，因此 `checkpoint_report['complete_model']` 仍保持 `False`，也不能据源码接线认定完整 E/F/V 正确。完整一阶 VJP 的数值对照仍待验证。
 
-另一个独立缺口是实际 DCU MegaKernel 执行：目前只有静态 task DAG planner，没有 HIP persistent controller/worker 或 fusion kernel；也没有 DCU 编译、执行或速度数据。
+另一个独立缺口是实际 DCU MegaKernel 执行：目前只有静态 task DAG planner，没有 HIP persistent controller/worker；edge-feature fusion 是唯一已写入的融合候选，但尚未编译、上机或测量。也没有完整模型的 DCU 执行或速度数据。
 
 ## 4. MegaKernel 任务图与同步边界
 
@@ -84,7 +84,7 @@ AtomicBatch + EdgeGraph
 
 规划将边特征、node/attention reductions、message passing、frame reduction 和反向/force 拆成显式 epoch。`DPA4Model.plan_execution()` 暴露该 DAG，`to_json()` 可导出审计用任务/依赖表。
 
-首个融合候选是 tile-local `geometry + radial basis/cutoff`，但当前 DAG 仍将 geometry 与 radial 记作独立 task，尚无相应融合 HIP kernel。跨 tile destination scatter、attention 分段归一化、frame reduction 和 force scatter 不能靠 device fence 或“全 grid 同步”替代真实依赖；这些操作要么使用有界 task/event 协议，要么保留独立 launch/epoch。
+首个 tile-local `geometry + radial basis/cutoff` 融合已写入 `csrc/parallel/edge_features.cu`，由 `dcu_dpa4.ops.edge_features` 暴露，包含 vec/distance/unit/rbf/env 的一阶 VJP；HIP 模型路径可调用它。planner 的 `fuse_edge_features=True` 会用一个 `edge_features` task 替代 `edge_geometry` 与 `radial_basis`。该 kernel 尚未编译或上机，梯度回归测试也尚未运行。跨 tile destination scatter、attention 分段归一化、frame reduction 和 force scatter 不能靠 device fence 或“全 grid 同步”替代真实依赖；这些操作要么使用有界 task/event 协议，要么保留独立 launch/epoch。
 
 参考来源及迁移边界：
 
@@ -97,7 +97,7 @@ AtomicBatch + EdgeGraph
 1. 在可用 PyTorch/DeePMD 环境加载 OMol25 权重，核对 state-dict shape、model params、head 和所有活跃分支；当前工作站 Python 缺 PyTorch，尚不能执行 `.pt` tensor-level mapping。
 2. 完成 `message_node_so3`、SO(3)-grid FFN、scalar readout、fitting 和所有活跃权重映射；继续保持未支持分支 fail-closed。
 3. 补齐完整一阶 VJP，尤其是所有局部 message/grid 运算到 edge vector 的梯度，再验证 force/virial 组装。
-4. 在完整 Torch reference oracle 后，针对真实活跃路径实现 HIP/DTK native operators 和首个可验证融合 island；大 GEMM 首期继续走 host-launched 框架/库路径。
+4. 在完整 Torch reference oracle 后，针对真实活跃路径补齐 HIP/DTK native operators，并验证已写的 edge-feature fusion island；大 GEMM 首期继续走 host-launched 框架/库路径。
 5. 最后再实现 HIP device controller/worker、版本化 task descriptor、有界队列与 generation/event 同步；用实际占用边界避免 producer 尚未调度而所有 CTA 自旋的死锁。
 6. LAMMPS/Kokkos 和 DeePMD eager adapter 是后续独立集成目标，不属于当前 standalone runtime。
 

@@ -123,4 +123,4 @@ print(prediction.energy.shape, prediction.force.shape, prediction.virial.shape)
 
 ## 完成边界
 
-native 已写 geometry/radial/RMSNorm/linear/segment sum/force-virial；独立 Python 前端已接入基础接口及可选 rocBLAS linear。HIP 数值及性能结论必须由 DCU 实机测试给出。SO2/Wigner/等变 norm/attention/grid/FFN/fitting 和完整 VJP 仍待实现。先对齐 water pretrained，再适配 Neo checkpoint；最后才做 device 调度与角色化融合。
+native 已写 geometry/radial/RMSNorm/linear/segment sum/force-virial，以及 fused edge-features（geometry + Bessel/C3 + 一阶 VJP）；独立 Python reference 路径已接入 OMol25 活跃分支的 SO(2)、attention、SO(3) grid、readout/fitting 组合与 checkpoint 映射。它们尚未在目标 checkpoint 完整加载或数值验证；SO(2)/Wigner/grid 等主体仍非 HIP native，静态 DAG 也尚无 persistent device scheduler。HIP 正确性和性能结论必须由真实 DCU 验证。
