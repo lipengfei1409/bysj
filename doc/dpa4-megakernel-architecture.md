@@ -84,7 +84,7 @@ AtomicBatch + EdgeGraph
 
 规划将边特征、node/attention reductions、message passing、frame reduction 和反向/force 拆成显式 epoch。`DPA4Model.plan_execution()` 暴露该 DAG，`to_json()` 可导出审计用任务/依赖表。
 
-首个 tile-local `geometry + radial basis/cutoff` 融合已写入 `csrc/parallel/edge_features.cu`，由 `dcu_dpa4.ops.edge_features` 暴露，包含 vec/distance/unit/rbf/env 的一阶 VJP；HIP 模型路径可调用它。planner 的 `fuse_edge_features=True` 会用一个 `edge_features` task 替代 `edge_geometry` 与 `radial_basis`。该 kernel 尚未编译或上机，梯度回归测试也尚未运行。跨 tile destination scatter、attention 分段归一化、frame reduction 和 force scatter 不能靠 device fence 或“全 grid 同步”替代真实依赖；这些操作要么使用有界 task/event 协议，要么保留独立 launch/epoch。
+首个 tile-local `geometry + radial basis/cutoff` 融合已写入 `csrc/parallel/edge_features.cu`，由 `dcu_dpa4.ops.edge_features` 暴露，包含 vec/distance/unit/rbf/env 的一阶 VJP；HIP 模型路径可调用它。planner 的 `fuse_edge_features=True` 会用一个 `edge_features` task 替代 `edge_geometry` 与 `radial_basis`。`DPA4Model.forward(..., fuse_edge_features=False)` 可在 HIP 上选择未融合的 geometry/radial 基线路径，便于后续正确性与性能对比；默认 HIP 路径启用融合。该 kernel 尚未编译或上机，梯度回归测试也尚未运行。跨 tile destination scatter、attention 分段归一化、frame reduction 和 force scatter 不能靠 device fence 或“全 grid 同步”替代真实依赖；这些操作要么使用有界 task/event 协议，要么保留独立 launch/epoch。
 
 参考来源及迁移边界：
 

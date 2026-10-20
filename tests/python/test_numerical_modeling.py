@@ -112,6 +112,9 @@ class NumericalModelingTests(unittest.TestCase):
         torch.testing.assert_close(cache.degree, expected_degree)
         torch.testing.assert_close(cache.inv_sqrt, torch.rsqrt(expected_degree + 1e-7).reshape(4, 1, 1))
         torch.testing.assert_close(cache.radial_fused, cache.radial + cache.pair[:, None])
+        fused_cache = model.prepare_edges(batch, graph, fuse_edge_features=True)
+        for name in ('vec', 'distance', 'unit', 'rbf', 'env', 'radial', 'radial_fused'):
+            torch.testing.assert_close(getattr(fused_cache, name), getattr(cache, name))
         self.assertTrue(torch.isfinite(torch.autograd.grad(cache.radial.sum(), batch.positions)[0]).all())
         keys = list(model.state_dict())
         self.assertTrue(any('matrix' in k for k in keys))

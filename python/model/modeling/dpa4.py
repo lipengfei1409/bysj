@@ -156,7 +156,7 @@ class DPA4Model(nn.Module):
              "frame_index": TensorSpec((edge_capacity,), torch.int64), "mask": TensorSpec((edge_capacity,), torch.bool)}, stage="neighbor_graph")
         return EdgeGraph(**tensors)
 
-    def prepare_edges(self, batch: AtomicBatch, graph: EdgeGraph) -> EdgeFeatures:
+    def prepare_edges(self, batch: AtomicBatch, graph: EdgeGraph, *, fuse_edge_features=None) -> EdgeFeatures:
         """Run the learned numerical frontend, independently of unfinished blocks."""
         batch.validate()
         graph.validate()
@@ -172,11 +172,18 @@ class DPA4Model(nn.Module):
             return self.backend.run(name, inputs, {key: TensorSpec(shape, dtype) for key, shape in outputs.items()}, stage=name)
 
         cells = batch.cells if batch.cells is not None else batch.positions.new_zeros(f, 3, 3)
-        if isinstance(self.backend, NumericalBackend) and self.backend.primitive_backend == 'hip':
+        if fuse_edge_features is None:
+            fuse_edge_features = (
+                isinstance(self.backend, NumericalBackend)
+                and self.backend.primitive_backend == 'hip'
+            )
+        if fuse_edge_features and not isinstance(self.backend, NumericalBackend):
+            raise ValueError('fused edge features require a NumericalBackend')
+        if fuse_edge_features:
             radial_module = (self.backend.operator_modules['radial_basis']
                              if 'radial_basis' in self.backend.operator_modules else None)
             if radial_module is None:
-                raise RuntimeError('fused HIP edge features require a registered radial basis')
+                raise RuntimeError('fused edge features require a registered radial basis')
             fused = op(
                 "edge_features",
                 {
@@ -234,21 +241,25 @@ class DPA4Model(nn.Module):
         return EdgeFeatures(**geom, **radial_cache, type_feat=type_feat, pair=pair, **degree,
                             radial=radial, radial_fused=radial_fused)
 
-    def forward(self, batch: AtomicBatch, graph: EdgeGraph | None = None, *, edge_capacity: int | None = None, compute_forces=True):
+    def forward(self, batch: AtomicBatch, graph: EdgeGraph | None = None, *, edge_capacity: int | None = None,
+                compute_forces=True, fuse_edge_features=None):
         numerical_forces = isinstance(self.backend, NumericalBackend) and compute_forces
         context = torch.enable_grad() if numerical_forces else nullcontext()
         with context:
             # Do not mutate the caller's requires_grad flag, even under no_grad.
             if numerical_forces and not batch.positions.requires_grad:
                 batch = replace(batch, positions=batch.positions.detach().requires_grad_(True))
-            return self._forward(batch, graph, edge_capacity=edge_capacity, compute_forces=compute_forces)
+            return self._forward(
+                batch, graph, edge_capacity=edge_capacity,
+                compute_forces=compute_forces, fuse_edge_features=fuse_edge_features,
+            )
 
-    def _forward(self, batch, graph, *, edge_capacity, compute_forces):
+    def _forward(self, batch, graph, *, edge_capacity, compute_forces, fuse_edge_features):
         if graph is None:
             if edge_capacity is None:
                 raise ValueError("provide an EdgeGraph or edge_capacity for graph construction")
             graph = self.build_graph(batch, edge_capacity)
-        front = self.prepare_edges(batch, graph)
+        front = self.prepare_edges(batch, graph, fuse_edge_features=fuse_edge_features)
         c = self.config
         n, e, f = batch.positions.shape[0], graph.mask.shape[0], batch.n_frames
         d0 = (c.initial_l + 1) ** 2
