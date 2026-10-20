@@ -124,7 +124,7 @@ class DPA4Model(nn.Module):
 
     @classmethod
     def from_checkpoint(cls, path, *, head=None, primitive_backend='reference', linear_backend='reference'):
-        """Load supported frontend weights only; see ``checkpoint_report``."""
+        """Load supported checkpoint weights; inspect the completeness report."""
         from .loading import load_frontend_checkpoint
         return load_frontend_checkpoint(path, head=head, primitive_backend=primitive_backend, linear_backend=linear_backend)
 
