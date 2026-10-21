@@ -106,7 +106,7 @@ global A/B → group::load（尾块补零）→ LDS tile
 - loader：组织 tile 地址、mask 与 LDS buffering。
 - consumer：在完整 wave 内调用 DUMMA，不假设 native fragment 元素分布。
 - storer：组织输出地址、尾块 staging、后处理及写回。
-- controller：决定 tile/task 和 buffer 生命周期；当前没有实现任务队列或 device scheduler。
+- controller/worker：`csrc/megakernel/runtime.cu` 中已有 opt-in edge-feature 队列执行器；selected runtime plan 可提交 `edge_features` 及有限依赖 closure，仍不支持完整 DPA4 task graph。
 
 **当前 `group::load/store` 是全 block 合作接口，不是只给 loader/storer role 调用的接口。** 所有 block 线程必须执行 `block_sync()`；不能在 consumer 分支里独自执行全 block barrier。role specialization 需要另外实现带 participant 范围的 copy/barrier 和明确的 LDS buffer 所有权。也不要把 `device_fence()` 当作跨 block 的 grid barrier，或把它当作队列原子的 acquire/release 协议。
 

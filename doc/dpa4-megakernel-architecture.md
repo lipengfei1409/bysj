@@ -72,19 +72,19 @@ AtomicBatch + EdgeGraph
 
 当前代码已包含 OMol25 活跃分支的 PyTorch reference 模块和 checkpoint 参数映射：message-node SO(3) grid、block FFN SO(3) grid、scalar output FFN 与 fitting head。它们尚未在可用 PyTorch 环境中加载这份 `.pt` 并执行，因此 `checkpoint_report['complete_model']` 仍保持 `False`，也不能据源码接线认定完整 E/F/V 正确。完整一阶 VJP 的数值对照仍待验证。
 
-另一个独立缺口是实际 DCU MegaKernel 执行：目前只有静态 task DAG planner，没有 HIP persistent controller/worker；edge-feature fusion 是唯一已写入的融合候选，但尚未编译、上机或测量。也没有完整模型的 DCU 执行或速度数据。
+另一个独立缺口是完整 DCU MegaKernel 执行：新增了 opt-in HIP persistent worker 和 selected-task runtime plan，但 dispatcher 当前只支持 `edge_features` opcode；完整 DPA4 DAG 仍不能交给 worker 执行。runtime/kernel 尚未编译、上机或测量，也没有完整模型 DCU 执行或速度数据。
 
 ## 4. MegaKernel 任务图与同步边界
 
-`python/dcu_dpa4/megakernel/planner.py::build_dpa4_task_graph` 目前生成的是**静态任务模板 DAG**，不是执行器。每个任务记录：
+`python/dcu_dpa4/megakernel/planner.py::build_dpa4_task_graph` 仍生成**静态任务模板 DAG**；`PersistentTaskPlan` 可把显式选中的 `edge_features` 及其依赖 closure 降为 runtime ABI。当前 worker 不会执行其他 DPA4 operator。每个静态任务记录：
 
 - operator、edge/node/frame work domain、shape bucket 工作量和 tile size
 - dependency names / IDs、epoch、variant 和下游 completion fanout
 - `edge_capacity` 是存储上限，动态有效边数仍需由设备输入/mask 控制
 
-规划将边特征、node/attention reductions、message passing、frame reduction 和反向/force 拆成显式 epoch。`DPA4Model.plan_execution()` 暴露该 DAG，`to_json()` 可导出审计用任务/依赖表。
+规划将边特征、node/attention reductions、message passing、frame reduction 和反向/force 拆成显式 epoch。`DPA4Model.plan_execution()` 暴露静态 DAG，`to_json()` 可导出审计用任务/依赖表；`PersistentTaskPlan.from_task_graph()` 为显式选中的任务及其依赖 closure 做 v1 lowering，不改变 planner v1 JSON。当前 native executor 将只接受 edge-feature payload、单任务或线性同算子依赖链；未支持 operator 在 launch 前拒绝。
 
-首个 tile-local `geometry + radial basis/cutoff` 融合已写入 `csrc/parallel/edge_features.cu`，由 `dcu_dpa4.ops.edge_features` 暴露，包含 vec/distance/unit/rbf/env 的一阶 VJP；HIP 模型路径可调用它。planner 的 `fuse_edge_features=True` 会用一个 `edge_features` task 替代 `edge_geometry` 与 `radial_basis`。`DPA4Model.forward(..., fuse_edge_features=False)` 可在 HIP 上选择未融合的 geometry/radial 基线路径，便于后续正确性与性能对比；默认 HIP 路径启用融合。该 kernel 尚未编译或上机，梯度回归测试也尚未运行。跨 tile destination scatter、attention 分段归一化、frame reduction 和 force scatter 不能靠 device fence 或“全 grid 同步”替代真实依赖；这些操作要么使用有界 task/event 协议，要么保留独立 launch/epoch。
+首个 tile-local `geometry + radial basis/cutoff` 融合已写入 `csrc/parallel/edge_features.cu`，由 `dcu_dpa4.ops.edge_features` 暴露，包含 vec/distance/unit/rbf/env 的一阶 VJP；HIP 模型路径可调用它。planner 的 `fuse_edge_features=True` 会用一个 `edge_features` task 替代 `edge_geometry` 与 `radial_basis`。`execute_persistent_edge_features(task_graph, target_tasks=...)` 是独立 opt-in task API，只执行选中的 edge-feature 依赖 closure 并返回输出与异步 status；`check_runtime_status()` 会同步读取该状态并对错误抛异常。`DPA4Model.forward()` 仍走直接 HIP kernel，不会把完整模型误报成 persistent execution。`fuse_edge_features=False` 可选择未融合 geometry/radial 基线。融合 kernel 和 persistent worker 均尚未编译或上机，梯度回归测试也尚未运行。跨 tile destination scatter、attention 分段归一化、frame reduction 和 force scatter 不能靠 device fence 或“全 grid 同步”替代真实依赖；这些操作要么使用有界 task/event 协议，要么保留独立 launch/epoch。
 
 参考来源及迁移边界：
 
@@ -98,7 +98,7 @@ AtomicBatch + EdgeGraph
 2. 完成 `message_node_so3`、SO(3)-grid FFN、scalar readout、fitting 和所有活跃权重映射；继续保持未支持分支 fail-closed。
 3. 补齐完整一阶 VJP，尤其是所有局部 message/grid 运算到 edge vector 的梯度，再验证 force/virial 组装。
 4. 在完整 Torch reference oracle 后，针对真实活跃路径补齐 HIP/DTK native operators，并验证已写的 edge-feature fusion island；大 GEMM 首期继续走 host-launched 框架/库路径。
-5. 最后再实现 HIP device controller/worker、版本化 task descriptor、有界队列与 generation/event 同步；用实际占用边界避免 producer 尚未调度而所有 CTA 自旋的死锁。
+5. 将 worker 的 typed dispatch 从 `edge_features` 扩展到其他已具 device-callable 实现的 task；持续保留版本化 descriptor、有界队列与 generation/error 协议，并用实际占用边界避免 producer 尚未调度而所有 CTA 自旋的死锁。
 6. LAMMPS/Kokkos 和 DeePMD eager adapter 是后续独立集成目标，不属于当前 standalone runtime。
 
 ## 6. 后续验证（当前未执行）

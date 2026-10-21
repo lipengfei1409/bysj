@@ -4,104 +4,15 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <hip/hip_runtime.h>
 #include "../include/checks.h"
+#include "../include/megakernel/edge_features.cuh"
 
 #include <cmath>
 
 namespace {
 
-__device__ void c3_envelope_pair(float r, float cutoff, int exponent,
-                                 float& value, float& derivative) {
-  if (exponent == 0) {
-    value = 1.f;
-    derivative = 0.f;
-    return;
-  }
-  if (r >= cutoff) {
-    value = derivative = 0.f;
-    return;
-  }
-  const float x = fmaxf(0.f, r / cutoff);
-  const float u = 1.f - x;
-  float sum = 0.f;
-  float dsum = 0.f;
-  float power = 1.f;
-  float previous = 1.f;
-  for (int k = 0; k < exponent; ++k) {
-    const float coefficient = float((k + 1) * (k + 2) * (k + 3)) / 6.f;
-    sum += coefficient * power;
-    if (k > 0) dsum += float(k) * coefficient * previous;
-    previous = power;
-    power *= x;
-  }
-  const float u2 = u * u;
-  const float u3 = u2 * u;
-  const float u4 = u2 * u2;
-  value = u4 * sum;
-  derivative = (r < 0.f) ? 0.f : (-4.f * u3 * sum + u4 * dsum) / cutoff;
-}
-
-__device__ void sinc_pair(float z, float& value, float& derivative) {
-  if (fabsf(z) < 1.e-3f) {
-    const float z2 = z * z;
-    value = 1.f - z2 / 6.f + z2 * z2 / 120.f;
-    derivative = -z / 3.f + z * z2 / 30.f;
-  } else {
-    value = sinf(z) / z;
-    derivative = (z * cosf(z) - sinf(z)) / (z * z);
-  }
-}
-
-__global__ void edge_features_forward_kernel(
-    const float* positions, const int64_t* edge_index, const int64_t* shifts,
-    const float* cells, const int64_t* edge_frame, const bool* mask,
-    const float* frequencies, int64_t n_edges, int64_t n_radial,
-    float cutoff, int basis_exponent, int edge_exponent, float eps,
-    float* edge_vec, float* distance, float* unit, float* rbf, float* env) {
+__global__ void edge_features_forward_kernel(dcu::megakernel::EdgeFeaturesArgs args) {
   const int64_t edge = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (edge >= n_edges) return;
-  const int64_t src = edge_index[edge];
-  const int64_t dst = edge_index[n_edges + edge];
-  const int64_t frame = edge_frame[edge];
-  float displacement[3];
-  float norm2 = 0.f;
-  for (int axis = 0; axis < 3; ++axis) {
-    float value = positions[3 * src + axis] - positions[3 * dst + axis];
-    for (int lattice = 0; lattice < 3; ++lattice) {
-      value += float(shifts[3 * edge + lattice]) * cells[9 * frame + 3 * lattice + axis];
-    }
-    displacement[axis] = value;
-    norm2 += value * value;
-  }
-  if (!mask[edge]) {
-    displacement[0] = 0.f;
-    displacement[1] = 0.f;
-    displacement[2] = 1.f;
-    norm2 = 1.f;
-  }
-  const float r = sqrtf(norm2 + eps * eps);
-  const float inv_r = 1.f / r;
-  edge_vec[3 * edge] = displacement[0];
-  edge_vec[3 * edge + 1] = displacement[1];
-  edge_vec[3 * edge + 2] = displacement[2];
-  distance[edge] = r;
-  unit[3 * edge] = displacement[0] * inv_r;
-  unit[3 * edge + 1] = displacement[1] * inv_r;
-  unit[3 * edge + 2] = displacement[2] * inv_r;
-
-  if (!mask[edge]) {
-    env[edge] = 0.f;
-    for (int64_t n = 0; n < n_radial; ++n) rbf[edge * n_radial + n] = 0.f;
-    return;
-  }
-  float basis_env, basis_derivative, edge_env, edge_derivative;
-  c3_envelope_pair(r, cutoff, basis_exponent, basis_env, basis_derivative);
-  c3_envelope_pair(r, cutoff, edge_exponent, edge_env, edge_derivative);
-  env[edge] = edge_env;
-  for (int64_t n = 0; n < n_radial; ++n) {
-    float sinc, sinc_derivative;
-    sinc_pair(r * frequencies[n], sinc, sinc_derivative);
-    rbf[edge * n_radial + n] = frequencies[n] * sinc * basis_env;
-  }
+  if (edge < args.n_edges) dcu::megakernel::edge_features_one(args, edge);
 }
 
 __global__ void edge_features_backward_kernel(
@@ -123,13 +34,13 @@ __global__ void edge_features_backward_kernel(
   for (int axis = 0; axis < 3; ++axis) dot += grad_unit[3 * edge + axis] * unit[3 * edge + axis];
   float grad_r = grad_distance[edge];
   float basis_env, basis_derivative, edge_env, edge_derivative;
-  c3_envelope_pair(r, cutoff, basis_exponent, basis_env, basis_derivative);
-  c3_envelope_pair(r, cutoff, edge_exponent, edge_env, edge_derivative);
+  dcu::megakernel::c3_envelope_pair(r, cutoff, basis_exponent, basis_env, basis_derivative);
+  dcu::megakernel::c3_envelope_pair(r, cutoff, edge_exponent, edge_env, edge_derivative);
   grad_r += grad_env[edge] * edge_derivative;
   for (int64_t n = 0; n < n_radial; ++n) {
     const float w = frequencies[n];
     float sinc, sinc_derivative;
-    sinc_pair(r * w, sinc, sinc_derivative);
+    dcu::megakernel::sinc_pair(r * w, sinc, sinc_derivative);
     const float grad = grad_rbf[edge * n_radial + n];
     grad_r += grad * (w * w * sinc_derivative * basis_env + w * sinc * basis_derivative);
     atomicAdd(grad_frequencies + n,
@@ -188,12 +99,14 @@ std::vector<Tensor> edge_features_hip(Tensor positions, Tensor edge_index,
   auto rbf = torch::empty({n_edges, n_radial}, positions.options());
   auto env = torch::empty({n_edges, 1}, positions.options());
   if (n_edges) {
+    dcu::megakernel::EdgeFeaturesArgs args{
+        positions.data_ptr<float>(), edge_index.data_ptr<int64_t>(), shifts.data_ptr<int64_t>(),
+        cells.data_ptr<float>(), edge_frame.data_ptr<int64_t>(), mask.data_ptr<bool>(),
+        frequencies.data_ptr<float>(), n_edges, n_radial, float(cutoff),
+        int(basis_exponent), int(edge_exponent), float(eps), vec.data_ptr<float>(),
+        distance.data_ptr<float>(), unit.data_ptr<float>(), rbf.data_ptr<float>(), env.data_ptr<float>()};
     hipLaunchKernelGGL(edge_features_forward_kernel, dim3(blocks(n_edges)), dim3(256), 0,
-        at::cuda::getCurrentCUDAStream(), positions.data_ptr<float>(), edge_index.data_ptr<int64_t>(),
-        shifts.data_ptr<int64_t>(), cells.data_ptr<float>(), edge_frame.data_ptr<int64_t>(),
-        mask.data_ptr<bool>(), frequencies.data_ptr<float>(), n_edges, n_radial,
-        float(cutoff), int(basis_exponent), int(edge_exponent), float(eps), vec.data_ptr<float>(),
-        distance.data_ptr<float>(), unit.data_ptr<float>(), rbf.data_ptr<float>(), env.data_ptr<float>());
+        at::cuda::getCurrentCUDAStream(), args);
     launch_check();
   }
   return {vec, distance, unit, rbf, env};

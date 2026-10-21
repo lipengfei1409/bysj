@@ -1,4 +1,5 @@
 #include "include/ops.h"
+#include <pybind11/stl.h>
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("edge_geometry", &edge_geometry_hip);
@@ -7,6 +8,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("radial_backward", &radial_backward_hip);
   m.def("edge_features", &edge_features_hip);
   m.def("edge_features_backward", &edge_features_backward_hip);
+  m.def("edge_features_persistent", &edge_features_persistent_hip);
   m.def("segment_sum", &segment_sum_hip);
   m.def("force_virial", &force_virial_hip);
   m.def("rmsnorm", &rmsnorm_hip);

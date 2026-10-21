@@ -3,7 +3,10 @@ import unittest
 import torch
 import torch.nn.functional as F
 
-from dcu_dpa4.megakernel import DPA4TaskGraph, TaskTemplate, build_dpa4_task_graph
+from dcu_dpa4.megakernel import (
+    DPA4TaskGraph, PersistentTaskPlan, TaskTemplate,
+    build_dpa4_task_graph, execute_persistent_edge_features,
+)
 from model.modeling.components import ChargeSpinEmbedding
 from model.modeling.config import DPA4Config
 
@@ -95,6 +98,92 @@ class DPA4TaskPlannerTests(unittest.TestCase):
         self.assertNotIn('edge_geometry', names)
         self.assertNotIn('radial_basis', names)
         self.assertIn('radial_mlp', names)
+
+    def test_lowers_selected_runtime_dependency_closure(self):
+        graph = DPA4TaskGraph((
+            TaskTemplate('edge_features', 'edge_features', 'edge', 0, 769, 256),
+            TaskTemplate('edge_features_followup', 'edge_features', 'edge', 0, 769, 128,
+                         ('edge_features',)),
+            TaskTemplate('unselected', 'radial_basis', 'edge', 0, 769, 256),
+        ))
+        plan = PersistentTaskPlan.from_task_graph(
+            graph, target_tasks='edge_features_followup', generation=41,
+        )
+        self.assertEqual([task.name for task in plan.tasks],
+                         ['edge_features', 'edge_features_followup'])
+        self.assertEqual([task.tile_count for task in plan.tasks], [4, 7])
+        self.assertEqual(plan.tasks[1].depends_on, (0,))
+        self.assertEqual(plan.queue_capacity, 11)
+        native = plan.to_native()
+        self.assertEqual(native['dependency_offsets'], [0, 0, 1])
+        self.assertEqual(native['dependency_ids'], [0])
+        self.assertEqual(native['generation'], 41)
+
+    def test_runtime_plan_rejects_unsupported_dependency_and_queue_overflow(self):
+        graph = DPA4TaskGraph((
+            TaskTemplate('geometry', 'radial_basis', 'edge', 0, 5, 2),
+            TaskTemplate('edge_features', 'edge_features', 'edge', 0, 5, 2,
+                         ('geometry',)),
+        ))
+        with self.assertRaisesRegex(NotImplementedError, 'radial_basis'):
+            PersistentTaskPlan.from_task_graph(graph, target_tasks='edge_features')
+        supported = DPA4TaskGraph((
+            TaskTemplate('edge_features', 'edge_features', 'edge', 0, 5, 2),
+        ))
+        with self.assertRaisesRegex(OverflowError, 'tile tickets'):
+            PersistentTaskPlan.from_task_graph(
+                supported, target_tasks='edge_features', max_queue_tiles=2,
+            )
+
+    def test_runtime_plan_rejects_parallel_writes_to_shared_payload(self):
+        graph = DPA4TaskGraph((
+            TaskTemplate('edge_a', 'edge_features', 'edge', 0, 5, 2),
+            TaskTemplate('edge_b', 'edge_features', 'edge', 0, 5, 2),
+        ))
+        with self.assertRaisesRegex(NotImplementedError, 'linear task chain'):
+            PersistentTaskPlan.from_task_graph(
+                graph, target_tasks=('edge_a', 'edge_b'), generation=10,
+            )
+
+    def test_runtime_status_checker_reports_device_errors(self):
+        from dcu_dpa4.megakernel import check_runtime_status
+
+        with self.assertRaisesRegex(RuntimeError, 'stalled'):
+            check_runtime_status(torch.tensor(5, dtype=torch.int32))
+
+    def test_runtime_submitter_passes_only_selected_task_plan(self):
+        from unittest.mock import patch
+
+        graph = DPA4TaskGraph((
+            TaskTemplate('edge_features', 'edge_features', 'edge', 0, 5, 2),
+            TaskTemplate('unselected', 'radial_basis', 'edge', 0, 5, 2),
+        ))
+        tensors = {
+            'positions': torch.zeros(3, 3),
+            'edge_index': torch.zeros(2, 5, dtype=torch.int64),
+            'shifts': torch.zeros(5, 3, dtype=torch.int64),
+            'cells': torch.zeros(1, 3, 3),
+            'edge_frame': torch.zeros(5, dtype=torch.int64),
+            'mask': torch.ones(5, dtype=torch.bool),
+            'frequencies': torch.ones(1, 4),
+        }
+        expected = object()
+        with patch('dcu_dpa4.ops.edge_features_persistent', return_value=expected) as dispatch:
+            actual = execute_persistent_edge_features(
+                graph, target_tasks='edge_features', **tensors, cutoff=6.0,
+            )
+        self.assertIs(actual, expected)
+        plan = dispatch.call_args.kwargs['runtime_plan']
+        self.assertEqual([task.name for task in plan.tasks], ['edge_features'])
+        self.assertEqual(plan.queue_capacity, 3)
+
+    def test_runtime_plan_zero_work_has_no_queue_tickets(self):
+        graph = DPA4TaskGraph((
+            TaskTemplate('edge_features', 'edge_features', 'edge', 0, 0, 128),
+        ))
+        plan = PersistentTaskPlan.from_task_graph(graph, target_tasks='edge_features', generation=9)
+        self.assertEqual(plan.queue_capacity, 0)
+        self.assertEqual(plan.tasks[0].tile_count, 0)
 
     def test_rejects_cycles(self):
         tasks = (

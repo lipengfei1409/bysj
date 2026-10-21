@@ -88,6 +88,59 @@ def edge_features(positions, edge_index, shifts, cells, edge_frame, mask,
     )
 
 
+class _PersistentEdgeFeatures(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, positions, edge_index, shifts, cells, edge_frame, mask,
+                frequencies, cutoff, basis_exponent, edge_exponent, eps, plan):
+        outputs = _extension().edge_features_persistent(
+            positions, edge_index, shifts, cells, edge_frame, mask, frequencies,
+            cutoff, basis_exponent, edge_exponent, eps,
+            plan['opcodes'], plan['epochs'], plan['work_items'], plan['tile_sizes'],
+            plan['dependency_offsets'], plan['dependency_ids'], plan['version'], plan['generation'],
+            plan['queue_capacity'], plan['max_queue_tiles'],
+        )
+        vec, distance, unit, rbf, env, status = outputs
+        ctx.save_for_backward(vec, distance, unit, edge_index, shifts, cells,
+                              edge_frame, mask, frequencies)
+        ctx.n_atoms = positions.shape[0]
+        ctx.options = float(cutoff), int(basis_exponent), int(edge_exponent), float(eps)
+        ctx.mark_non_differentiable(status)
+        return vec, distance, unit, rbf, env, status
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_vec, grad_distance, grad_unit, grad_rbf, grad_env, grad_status):
+        vec, distance, unit, edge_index, shifts, cells, edge_frame, mask, frequencies = ctx.saved_tensors
+        grad_vec = torch.zeros_like(vec) if grad_vec is None else grad_vec.contiguous()
+        grad_distance = torch.zeros_like(distance) if grad_distance is None else grad_distance.contiguous()
+        grad_unit = torch.zeros_like(unit) if grad_unit is None else grad_unit.contiguous()
+        grad_rbf = (torch.zeros(vec.shape[0], frequencies.shape[1], dtype=vec.dtype, device=vec.device)
+                    if grad_rbf is None else grad_rbf.contiguous())
+        grad_env = torch.zeros_like(distance) if grad_env is None else grad_env.contiguous()
+        grad_positions, grad_cells, grad_frequencies = _extension().edge_features_backward(
+            grad_vec, grad_distance, grad_unit, grad_rbf, grad_env,
+            vec, distance, unit, edge_index, shifts, cells, edge_frame, mask,
+            frequencies, ctx.n_atoms, *ctx.options,
+        )
+        return (grad_positions, None, None, grad_cells, None, None, grad_frequencies,
+                None, None, None, None, None)
+
+
+def edge_features_persistent(positions, edge_index, shifts, cells, edge_frame, mask,
+                             frequencies, cutoff, basis_exponent=7, edge_exponent=5,
+                             eps=1e-7, *, runtime_plan):
+    if hasattr(runtime_plan, 'to_native'):
+        runtime_plan = runtime_plan.to_native()
+    if not isinstance(runtime_plan, dict):
+        raise TypeError('runtime_plan must be a PersistentTaskPlan or native-plan dictionary')
+    return _PersistentEdgeFeatures.apply(
+        positions.contiguous(), edge_index.contiguous(), shifts.contiguous(),
+        cells.contiguous(), edge_frame.contiguous(), mask.contiguous(),
+        frequencies.contiguous(), float(cutoff), int(basis_exponent), int(edge_exponent),
+        float(eps), runtime_plan,
+    )
+
+
 class _Radial(torch.autograd.Function):
     @staticmethod
     def forward(ctx, r, w, cutoff, basis_exponent, edge_exponent):

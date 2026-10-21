@@ -184,21 +184,22 @@ class DPA4Model(nn.Module):
                              if 'radial_basis' in self.backend.operator_modules else None)
             if radial_module is None:
                 raise RuntimeError('fused edge features require a registered radial basis')
+            edge_feature_inputs = {
+                "positions": batch.positions,
+                "edge_index": graph.edge_index,
+                "shifts": graph.shifts,
+                "cells": cells,
+                "edge_frame": graph.frame_index,
+                "mask": graph.mask,
+                "frequencies": radial_module.adam_freqs,
+                "rcut": c.rcut,
+                "basis_exponent": c.env_exp[0],
+                "edge_exponent": c.env_exp[1],
+                "eps": float(c.optional.get('eps', 1e-7)),
+            }
             fused = op(
                 "edge_features",
-                {
-                    "positions": batch.positions,
-                    "edge_index": graph.edge_index,
-                    "shifts": graph.shifts,
-                    "cells": cells,
-                    "edge_frame": graph.frame_index,
-                    "mask": graph.mask,
-                    "frequencies": radial_module.adam_freqs,
-                    "rcut": c.rcut,
-                    "basis_exponent": c.env_exp[0],
-                    "edge_exponent": c.env_exp[1],
-                    "eps": float(c.optional.get('eps', 1e-7)),
-                },
+                edge_feature_inputs,
                 {
                     "vec": (e, 3),
                     "distance": (e, 1),

@@ -16,7 +16,8 @@ if os.environ.get("DPA4_BUILD_HIP") == "1":
         raise RuntimeError("native build requires a ROCm/DTK PyTorch installation")
     sources = [
         "csrc/bindings.cpp", "csrc/parallel/geometry.cu", "csrc/parallel/radial.cu",
-        "csrc/parallel/edge_features.cu", "csrc/parallel/reduce.cu", "csrc/parallel/norm.cu", "csrc/gemm/linear.cu",
+        "csrc/parallel/edge_features.cu", "csrc/megakernel/runtime.cu",
+        "csrc/parallel/reduce.cu", "csrc/parallel/norm.cu", "csrc/gemm/linear.cu",
     ]
     if build_blas:
         sources.append("csrc/gemm/blas.cu")

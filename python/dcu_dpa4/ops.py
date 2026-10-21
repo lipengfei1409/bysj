@@ -140,6 +140,24 @@ def edge_features(positions, edge_index, shifts, cells, edge_frame, mask,
     return vec, distance, unit, rbf, env
 
 
+def edge_features_persistent(positions, edge_index, shifts, cells, edge_frame, mask,
+                             frequencies, rcut, basis_exponent=7, edge_exponent=5,
+                             eps=1e-7, *, runtime_plan):
+    """Execute a selected edge-feature task plan with persistent HIP workers."""
+    if eps <= 0:
+        raise ValueError("geometry epsilon must be positive")
+    from . import native
+    vec, distance, unit, rbf, env, status = native.edge_features_persistent(
+        positions, edge_index, shifts, cells, edge_frame, mask, frequencies,
+        rcut, basis_exponent, edge_exponent, eps, runtime_plan=runtime_plan,
+    )
+    distance, unit, rbf, env = _FusedEdgeScalarFeatures.apply(
+        vec, distance, unit, rbf, env, frequencies, mask,
+        rcut, basis_exponent, edge_exponent, eps,
+    )
+    return vec, distance, unit, rbf, env, status
+
+
 def radial(r, frequencies, rcut, basis_exponent=7, edge_exponent=5, *, backend="reference"):
     native = _native(backend)
     if native:
