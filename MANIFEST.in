@@ -2,5 +2,6 @@ recursive-include include *.cuh *.hpp
 recursive-include csrc *.h *.hpp *.cuh *.cpp *.cu
 recursive-include tests/csrc *.cpp *.py
 recursive-include tests/python *.py
+recursive-include tests/model *.py
 include tests/__init__.py
 recursive-include doc *.md

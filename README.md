@@ -121,6 +121,10 @@ print(prediction.energy.shape, prediction.force.shape, prediction.virial.shape)
 
 使用前确认数据目录存在（water 数据布局以当前 checkout 为准）。如果 DCU 的 vesin 报缺 `libcuda.so`，可以用 `neighbor_backend="cpu-bridge"` 作诊断：邻居搜索在 CPU、描述符在 DCU，**不是全 DCU 方案，也不应作为加速基线**。
 
+## Full-model tests
+
+Neo model-level accuracy and latency test setup is documented in [doc/model-tests.md](doc/model-tests.md). The accuracy suite is an opt-in DeePMD oracle parity test; the latency benchmark is a separate DCU-only full-model measurement, not a primitive benchmark or a claim that the persistent edge scheduler runs the full model.
+
 ## 完成边界
 
 native 已写 geometry/radial/RMSNorm/linear/segment sum/force-virial，以及 fused edge-features（geometry + Bessel/C3 + 一阶 VJP）；独立 Python reference 路径已接入 OMol25 活跃分支的 SO(2)、attention、SO(3) grid、readout/fitting 组合与 checkpoint 映射。它们尚未在目标 checkpoint 完整加载或数值验证；SO(2)/Wigner/grid 等主体仍非 HIP native，另已加入 opt-in persistent HIP task worker，但当前只执行融合 `edge_features` task 或 `edge_geometry → radial_basis` 两阶段子图；完整 DPA4 DAG 尚不能交给 worker 执行。该 runtime 尚未编译或实机验证，HIP 正确性和性能结论必须由真实 DCU 验证。
