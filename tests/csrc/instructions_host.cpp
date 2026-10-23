@@ -9,6 +9,12 @@ static void require(bool ok, const char* message) {
 
 int main() {
     using namespace dcu;
+    static_assert(tile_layout<16, 4>::rows == 16);
+    static_assert(tile_layout<16, 4>::cols == 4);
+    static_assert(tile_layout<16, 4>::offset(3, 2) == 14);
+    static_assert(gemm_tile_shape<16, 16, 4>::a_layout::elements == 64);
+    static_assert(gemm_tile_shape<16, 16, 4>::b_layout::elements == 64);
+    static_assert(gemm_tile_shape<16, 16, 4>::c_layout::elements == 256);
     static_assert(dumma_supported<architecture::gfx926, float, 4>);
     static_assert(!dumma_supported<architecture::gfx926, float, 8>);
     static_assert(dumma_supported<architecture::gfx938, float, 8>);

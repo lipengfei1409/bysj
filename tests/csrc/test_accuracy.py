@@ -137,6 +137,29 @@ class HIPAccuracyTests(unittest.TestCase):
         for ref, actual in zip(*results):
             torch.testing.assert_close(actual,ref,rtol=2e-4,atol=2e-4)
 
+    def test_linear_tiled_shape_tails_and_bias(self):
+        # Non-multiple M/K/N exercises the masked LDS tile path when DUMMA
+        # linear is enabled at build time; the default kernel keeps this contract.
+        x0 = torch.randn(19, 19, device="cuda")
+        w0 = torch.randn(19, 23, device="cuda")
+        b0 = torch.randn(23, device="cuda")
+        results = []
+        for backend in ("reference", "hip"):
+            x = x0.clone().requires_grad_()
+            w = w0.clone().requires_grad_()
+            bias = b0.clone().requires_grad_()
+            y = ops.linear(x, w, bias, backend=backend)
+            gradients = torch.autograd.grad(y.square().sum(), (x, w, bias))
+            results.append((y, *gradients))
+        for expected, actual in zip(*results):
+            torch.testing.assert_close(actual, expected, rtol=5e-4, atol=5e-4)
+
+        empty_x = torch.empty(2, 0, device="cuda")
+        empty_w = torch.empty(0, 23, device="cuda")
+        torch.testing.assert_close(
+            ops.linear(empty_x, empty_w, b0, backend="hip"), b0.expand(2, -1)
+        )
+
     def test_force_virial_mask_and_multiple_frames(self):
         e,n=257,41
         g=torch.randn(e,3,device="cuda");v=torch.randn_like(g)
