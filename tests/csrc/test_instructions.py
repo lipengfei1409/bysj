@@ -12,6 +12,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class InstructionHeaderTests(unittest.TestCase):
+    def test_dumma_build_flag_requires_hip(self):
+        env = dict(os.environ, DPA4_BUILD_HIP="0", DPA4_ENABLE_DUMMA="1",
+                   PYTHONDONTWRITEBYTECODE="1")
+        result = subprocess.run([sys.executable, str(ROOT / "setup.py"), "--name"],
+                                cwd=ROOT, env=env, capture_output=True, text=True,
+                                timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DPA4_ENABLE_DUMMA=1 requires DPA4_BUILD_HIP=1", result.stderr)
+
     def test_direct_dumma_header_rejects_host_enable(self):
         compiler = shutil.which(os.environ.get("CXX", "c++"))
         self.assertIsNotNone(compiler)

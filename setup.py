@@ -7,9 +7,13 @@ from setuptools import find_packages, setup
 ext_modules = []
 cmdclass = {}
 build_blas = os.environ.get("DPA4_BUILD_ROCBLAS") == "1"
-if build_blas and os.environ.get("DPA4_BUILD_HIP") != "1":
+build_dumma = os.environ.get("DPA4_ENABLE_DUMMA") == "1"
+build_hip = os.environ.get("DPA4_BUILD_HIP") == "1"
+if build_blas and not build_hip:
     raise RuntimeError("DPA4_BUILD_ROCBLAS=1 requires DPA4_BUILD_HIP=1")
-if os.environ.get("DPA4_BUILD_HIP") == "1":
+if build_dumma and not build_hip:
+    raise RuntimeError("DPA4_ENABLE_DUMMA=1 requires DPA4_BUILD_HIP=1")
+if build_hip:
     import torch
     from torch.utils.cpp_extension import BuildExtension, CUDAExtension
     if not torch.version.hip:
@@ -21,9 +25,14 @@ if os.environ.get("DPA4_BUILD_HIP") == "1":
     ]
     if build_blas:
         sources.append("csrc/gemm/blas.cu")
+    macros = []
+    if build_blas:
+        macros.append(("DPA4_ENABLE_ROCBLAS", "1"))
+    if build_dumma:
+        macros.append(("DPA4_ENABLE_DUMMA", "1"))
     ext_modules = [CUDAExtension("dcu_dpa4._C", sources=sources,
        libraries=["rocblas"] if build_blas else [],
-       define_macros=[("DPA4_ENABLE_ROCBLAS", "1")] if build_blas else [],
+       define_macros=macros,
        include_dirs=[str(Path(__file__).resolve().parent / "include")],
        extra_compile_args={"cxx": ["-O3", "-std=c++17"], "nvcc": ["-O3", "-std=c++17"]})]
     cmdclass = {"build_ext": BuildExtension}
