@@ -18,6 +18,8 @@ namespace {
 constexpr int64_t kMetaWidth = 8;
 constexpr int64_t kTicketWidth = 4;
 constexpr int kEdgeFeaturesOpcode = 1;
+constexpr int kEdgeGeometryOpcode = 2;
+constexpr int kRadialBasisOpcode = 3;
 // Each tile is enqueued once; capacity is the total tile count, so slots are
 // sequence-tagged append-only for the lifetime of one invocation.
 enum RuntimeError : int {
@@ -162,7 +164,8 @@ __global__ void persistent_edge_features_worker_kernel(
     const int64_t remaining_in_task = work_items - begin;
     const int64_t tile_work = tile_size < remaining_in_task ? tile_size : remaining_in_task;
     const int64_t end = begin + tile_work;
-    if (opcode != kEdgeFeaturesOpcode) {
+    if (opcode != kEdgeFeaturesOpcode && opcode != kEdgeGeometryOpcode
+        && opcode != kRadialBasisOpcode) {
       if (threadIdx.x == 0) {
         set_error(status, kUnsupportedOpcode);
         atomicAdd(reinterpret_cast<unsigned long long*>(control + 3), ~0ULL);
@@ -171,7 +174,13 @@ __global__ void persistent_edge_features_worker_kernel(
       break;
     }
     for (int64_t edge = begin + threadIdx.x; edge < end; edge += blockDim.x) {
-      dcu::megakernel::edge_features_one(args, edge);
+      if (opcode == kEdgeFeaturesOpcode) {
+        dcu::megakernel::edge_features_one(args, edge);
+      } else if (opcode == kEdgeGeometryOpcode) {
+        dcu::megakernel::edge_geometry_one(args, edge);
+      } else {
+        dcu::megakernel::radial_features_one(args, edge);
+      }
     }
     __threadfence();
     __syncthreads();
@@ -234,7 +243,8 @@ void validate_runtime_plan(
   std::vector<std::vector<int64_t>> children(n);
   int64_t expected_tiles = 0;
   for (size_t i = 0; i < n; ++i) {
-    TORCH_CHECK(opcodes[i] == kEdgeFeaturesOpcode,
+    TORCH_CHECK(opcodes[i] == kEdgeFeaturesOpcode || opcodes[i] == kEdgeGeometryOpcode
+                || opcodes[i] == kRadialBasisOpcode,
                 "unsupported persistent HIP opcode ", opcodes[i], " at task ", i);
     TORCH_CHECK(epochs[i] >= 0 && work_items[i] == edge_count && tile_sizes[i] > 0,
                 "runtime edge-feature task dimensions disagree with the payload");
@@ -270,14 +280,16 @@ void validate_runtime_plan(
     for (const int64_t child : children[task]) if (--indegree[child] == 0) ready.push_back(child);
   }
   TORCH_CHECK(visited == n, "runtime task graph contains a dependency cycle");
-  if (n > 1) {
-    TORCH_CHECK(dependency_offsets[1] == 0,
-                "the shared edge-feature payload requires one root task");
-    for (size_t i = 1; i < n; ++i) {
-      TORCH_CHECK(dependency_offsets[i + 1] - dependency_offsets[i] == 1
-                  && dependency_ids[dependency_offsets[i]] == static_cast<int64_t>(i - 1),
-                  "one edge-feature payload permits only a single task or a linear dependency chain");
-    }
+  if (n == 1) {
+    TORCH_CHECK(opcodes[0] == kEdgeFeaturesOpcode && dependency_offsets[1] == 0,
+                "a single-task edge-feature plan must use the fused edge_features opcode");
+  } else {
+    TORCH_CHECK(n == 2 && opcodes[0] == kEdgeGeometryOpcode
+                && opcodes[1] == kRadialBasisOpcode
+                && dependency_offsets[1] == 0
+                && dependency_offsets[2] - dependency_offsets[1] == 1
+                && dependency_ids[dependency_offsets[1]] == 0,
+                "runtime supports only fused edge_features or edge_geometry -> radial_basis");
   }
 }
 

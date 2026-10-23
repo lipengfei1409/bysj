@@ -35,10 +35,10 @@ class PersistentEdgeFeatureRuntimeTests(unittest.TestCase):
     def _plan(self, edge_count, tile_size, *, chained=False, generation=71):
         if chained:
             graph = DPA4TaskGraph((
-                TaskTemplate("edge_features_a", "edge_features", "edge", 0,
+                TaskTemplate("edge_geometry", "edge_geometry", "edge", 0,
                              edge_count, tile_size),
-                TaskTemplate("edge_features_b", "edge_features", "edge", 0,
-                             edge_count, tile_size, ("edge_features_a",)),
+                TaskTemplate("radial_basis", "radial_basis", "edge", 0,
+                             edge_count, tile_size, ("edge_geometry",)),
             ))
         else:
             graph = build_dpa4_task_graph(
@@ -47,7 +47,7 @@ class PersistentEdgeFeatureRuntimeTests(unittest.TestCase):
                 n_atoms=23, edge_capacity=edge_count, n_frames=2,
                 edge_tile=tile_size, fuse_edge_features=True,
             )
-        target = "edge_features_b" if chained else "edge_features"
+        target = "radial_basis" if chained else "edge_features"
         return PersistentTaskPlan.from_task_graph(
             graph, target_tasks=target, generation=generation,
         )

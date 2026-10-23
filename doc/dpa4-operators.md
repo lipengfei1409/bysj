@@ -120,7 +120,7 @@ flowchart TD
 
 - 已有 HIP primitives：geometry、Bessel+C3 radial、普通 RMSNorm、linear、segment sum、force/virial；它们仍是首批 FP32 operator，不等于全模型 native。
 - 新增的独立 reference path 已接入 charge/spin、environment seed/FiLM、Wigner/GIE、SO(2) 投影/径向混合/attention 等若干 stage；代码尚未在 PyTorch checkpoint loader、完整数值 oracle 或 DCU 上执行验证。
-- `DPA4Model.from_checkpoint` 仍必须报告 `complete_model=False`；当前 OMol25 活跃的 message-node SO(3) grid、SO(3)-grid FFN、readout/fitting 代码及权重映射已接线，但未经目标 checkpoint 完整加载或逐层数值验证。完整一阶 VJP 也未做 E/F/V oracle 验证。静态 task DAG 仍不是完整 persistent HIP executor；新增 opt-in worker 当前只支持被选择的 `edge_features` task（或同 payload 的线性依赖链），其他 op 会在 launch 前 fail closed。runtime status 需显式检查；该路径尚未编译/实机验证。
+- `DPA4Model.from_checkpoint` 仍必须报告 `complete_model=False`；当前 OMol25 活跃的 message-node SO(3) grid、SO(3)-grid FFN、readout/fitting 代码及权重映射已接线，但未经目标 checkpoint 完整加载或逐层数值验证。完整一阶 VJP 也未做 E/F/V oracle 验证。静态 task DAG 仍不是完整 persistent HIP executor；新增 opt-in worker 当前只支持 `edge_features` 单任务或 `edge_geometry -> radial_basis` 两阶段子图，其他 op 会在 launch 前 fail closed。runtime status 需显式检查；该路径尚未编译/实机验证。
 - 几何约定仍为 `src + shift@cell - dst`；force/virial 的符号、维度和跨帧归属应以本文件合同为准。native force/virial assembly 不可代替 `dE/dd` 的全图 VJP。
 
 后续顺序：先在有 PyTorch/DeePMD 环境加载这份 checkpoint 并核对全部参数；完成缺失 reference stages 和 E/F/V VJP；对照同 checkpoint 的 DeePMD oracle；再把已验证热点移植到 HIP/DTK；最后验证融合、epoch 同步和 persistent scheduler。任何 DCU 精度或性能结论都需实机证据。

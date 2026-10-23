@@ -6,7 +6,7 @@ import secrets
 
 
 RUNTIME_PLAN_VERSION = 1
-OPERATOR_IDS = {"edge_features": 1}
+OPERATOR_IDS = {"edge_features": 1, "edge_geometry": 2, "radial_basis": 3}
 
 
 @dataclass(frozen=True)
@@ -65,14 +65,18 @@ class PersistentTaskPlan:
                 raise ValueError(f"runtime task {task.name!r} repeats a dependency")
             if any(dep not in ids or dep >= task.task_id for dep in task.depends_on):
                 raise ValueError(f"runtime task {task.name!r} has an invalid dependency id")
-        if len(self.tasks) > 1:
-            if self.tasks[0].depends_on:
-                raise ValueError("edge-feature runtime plans require one root task")
-            for index, task in enumerate(self.tasks[1:], start=1):
-                if task.depends_on != (index - 1,):
-                    raise NotImplementedError(
-                        "the shared edge-feature payload supports only a linear task chain"
-                    )
+        operators = tuple(task.operator for task in self.tasks)
+        if len(self.tasks) == 1:
+            if operators != ("edge_features",) or self.tasks[0].depends_on:
+                raise NotImplementedError("single-task runtime plans must select fused edge_features")
+        elif len(self.tasks) == 2:
+            if (operators != ("edge_geometry", "radial_basis")
+                    or self.tasks[0].depends_on or self.tasks[1].depends_on != (0,)):
+                raise NotImplementedError(
+                    "runtime supports only edge_geometry -> radial_basis as a two-stage plan"
+                )
+        else:
+            raise NotImplementedError("runtime supports one fused task or the edge geometry/radial pair")
 
     @classmethod
     def from_task_graph(
@@ -85,7 +89,8 @@ class PersistentTaskPlan:
     ) -> "PersistentTaskPlan":
         """Lower selected tasks and their transitive prerequisites.
 
-        The initial device dispatcher supports only ``edge_features``. Unsupported
+        The initial device dispatcher supports fused ``edge_features`` and the
+        ``edge_geometry -> radial_basis`` pair. Unsupported
         operators are rejected before any tensor is submitted to the HIP runtime.
         """
         if max_queue_tiles <= 0:
@@ -215,8 +220,9 @@ def execute_persistent_edge_features(
 ):
     """Run a selected edge-feature dependency closure and return outputs/status.
 
-    This executes only runtime-plan tasks lowered to the ``edge_features``
-    opcode. Other DPA4 stages remain outside the persistent worker path.
+    This executes only the fused ``edge_features`` opcode or the dependent
+    ``edge_geometry -> radial_basis`` pair. Other DPA4 stages remain outside the
+    persistent worker path.
     """
     plan = PersistentTaskPlan.from_task_graph(
         task_graph,

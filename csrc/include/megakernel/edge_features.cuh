@@ -69,7 +69,7 @@ __device__ __forceinline__ void sinc_pair(
   }
 }
 
-__device__ __forceinline__ void edge_features_one(
+__device__ __forceinline__ void edge_geometry_one(
     const EdgeFeaturesArgs& args, int64_t edge) {
   const int64_t src = args.edge_index[edge];
   const int64_t dst = args.edge_index[args.n_edges + edge];
@@ -100,7 +100,10 @@ __device__ __forceinline__ void edge_features_one(
   args.unit[3 * edge] = displacement[0] * inv_r;
   args.unit[3 * edge + 1] = displacement[1] * inv_r;
   args.unit[3 * edge + 2] = displacement[2] * inv_r;
+}
 
+__device__ __forceinline__ void radial_features_one(
+    const EdgeFeaturesArgs& args, int64_t edge) {
   if (!args.mask[edge]) {
     args.env[edge] = 0.f;
     for (int64_t n = 0; n < args.n_radial; ++n) {
@@ -108,6 +111,7 @@ __device__ __forceinline__ void edge_features_one(
     }
     return;
   }
+  const float r = args.distance[edge];
   float basis_env, basis_derivative, edge_env, edge_derivative;
   c3_envelope_pair(r, args.cutoff, args.basis_exponent,
                    basis_env, basis_derivative);
@@ -119,6 +123,12 @@ __device__ __forceinline__ void edge_features_one(
     sinc_pair(r * args.frequencies[n], sinc, sinc_derivative);
     args.rbf[edge * args.n_radial + n] = args.frequencies[n] * sinc * basis_env;
   }
+}
+
+__device__ __forceinline__ void edge_features_one(
+    const EdgeFeaturesArgs& args, int64_t edge) {
+  edge_geometry_one(args, edge);
+  radial_features_one(args, edge);
 }
 
 }  // namespace dcu::megakernel

@@ -101,16 +101,16 @@ class DPA4TaskPlannerTests(unittest.TestCase):
 
     def test_lowers_selected_runtime_dependency_closure(self):
         graph = DPA4TaskGraph((
-            TaskTemplate('edge_features', 'edge_features', 'edge', 0, 769, 256),
-            TaskTemplate('edge_features_followup', 'edge_features', 'edge', 0, 769, 128,
-                         ('edge_features',)),
-            TaskTemplate('unselected', 'radial_basis', 'edge', 0, 769, 256),
+            TaskTemplate('edge_geometry', 'edge_geometry', 'edge', 0, 769, 256),
+            TaskTemplate('radial_basis', 'radial_basis', 'edge', 0, 769, 128,
+                         ('edge_geometry',)),
+            TaskTemplate('unselected', 'pair_embedding', 'edge', 0, 769, 256),
         ))
         plan = PersistentTaskPlan.from_task_graph(
-            graph, target_tasks='edge_features_followup', generation=41,
+            graph, target_tasks='radial_basis', generation=41,
         )
         self.assertEqual([task.name for task in plan.tasks],
-                         ['edge_features', 'edge_features_followup'])
+                         ['edge_geometry', 'radial_basis'])
         self.assertEqual([task.tile_count for task in plan.tasks], [4, 7])
         self.assertEqual(plan.tasks[1].depends_on, (0,))
         self.assertEqual(plan.queue_capacity, 11)
@@ -121,11 +121,11 @@ class DPA4TaskPlannerTests(unittest.TestCase):
 
     def test_runtime_plan_rejects_unsupported_dependency_and_queue_overflow(self):
         graph = DPA4TaskGraph((
-            TaskTemplate('geometry', 'radial_basis', 'edge', 0, 5, 2),
+            TaskTemplate('condition', 'pair_embedding', 'edge', 0, 5, 2),
             TaskTemplate('edge_features', 'edge_features', 'edge', 0, 5, 2,
-                         ('geometry',)),
+                         ('condition',)),
         ))
-        with self.assertRaisesRegex(NotImplementedError, 'radial_basis'):
+        with self.assertRaisesRegex(NotImplementedError, 'pair_embedding'):
             PersistentTaskPlan.from_task_graph(graph, target_tasks='edge_features')
         supported = DPA4TaskGraph((
             TaskTemplate('edge_features', 'edge_features', 'edge', 0, 5, 2),
@@ -140,7 +140,7 @@ class DPA4TaskPlannerTests(unittest.TestCase):
             TaskTemplate('edge_a', 'edge_features', 'edge', 0, 5, 2),
             TaskTemplate('edge_b', 'edge_features', 'edge', 0, 5, 2),
         ))
-        with self.assertRaisesRegex(NotImplementedError, 'linear task chain'):
+        with self.assertRaisesRegex(NotImplementedError, 'edge_geometry -> radial_basis'):
             PersistentTaskPlan.from_task_graph(
                 graph, target_tasks=('edge_a', 'edge_b'), generation=10,
             )

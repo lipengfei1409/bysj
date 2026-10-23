@@ -44,5 +44,5 @@ binding → Python `native.py` 自定义 autograd → `ops.py` backend dispatch�
 1. 普通 norm 改 block/wave reduction；归约构造 dst CSR 以减小 atomic 争用；GEMM 先接 DTK 支持的 BLAS 路径，再考虑 MFMA tile。
 2. 建立 load/compute/store 数据生命周期、tile shape、LDS 字节和寄存器预算，先做独立融合 kernel，复现梯度。
 3. 借鉴 ThunderKittens 的 loader/consumer/storer/controller 分工，实际 wave size、屏障与内存序必须依据 DCU 设备能力，不移植 CUDA 专属 TMA/WGMMA。
-4. `csrc/megakernel/runtime.cu` 已加入 opt-in edge-feature task queue/worker：使用有界 tile ticket、task completion/dependency counters 与 generation/status 字段；stage 依赖在所有 producer tiles 完成后释放。dispatcher 目前只支持 `edge_features`，不是完整图执行器。
+4. `csrc/megakernel/runtime.cu` 已加入 opt-in edge-feature task queue/worker：使用有界 tile ticket、task completion/dependency counters 与 generation/status 字段；stage 依赖在所有 producer tiles 完成后释放。dispatcher 目前只支持融合 `edge_features` 或 `edge_geometry -> radial_basis` 两阶段子图，不是完整图执行器。
 5. persistent kernel 的跨 CTA 等待必须避免超出实际驻留 CTA 数导致死锁；当前 worker 限制为最多一个 block/SM，队列空且无 active worker 时通过 status 报 stalled，而不是永久自旋。HIP 编译、队列/依赖实机测试与 HIP Graph/普通 launch 对照仍未执行。角色化调度不能替代缺失的算子和 VJP。
