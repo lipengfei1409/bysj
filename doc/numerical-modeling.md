@@ -30,7 +30,7 @@ N：展平原子数；E：有向边容量；F：帧数；C：通道数；R：rad
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=python python3 - <<'PY'
 import torch
-from model.modeling import AtomicBatch, EdgeGraph, DPA4Model
+from model.dpa4.modeling import AtomicBatch, EdgeGraph, DPA4Model
 model = DPA4Model.from_checkpoint('../deepmd-kit/examples/water/dpa4/lmp/pretrained.pt')
 batch = AtomicBatch(torch.tensor([[0.,0.,0.], [.96,0.,0.], [-.24,.93,0.]]),
     torch.tensor([0,1,1]), torch.zeros(3,dtype=torch.int64), 1)

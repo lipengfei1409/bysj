@@ -5,7 +5,7 @@ import unittest
 
 import torch
 
-from model.modeling import AtomicBatch, EdgeGraph, DPA4Model
+from model.dpa4.modeling import AtomicBatch, EdgeGraph, DPA4Model
 
 
 @unittest.skipUnless(os.environ.get('DPA4_RUN_MODEL_NATIVE_TESTS') == '1',

@@ -6,8 +6,8 @@ from torch import nn
 from torch.nn import functional as F
 from unittest.mock import patch
 
-from model import modeling
-from model.modeling.backend import TensorSpec
+from model.dpa4 import modeling
+from model.dpa4.modeling.backend import TensorSpec
 
 
 WATER = Path(__file__).resolve().parents[3] / 'deepmd-kit/examples/water/dpa4/lmp/pretrained.pt'
@@ -193,7 +193,7 @@ class NumericalModelingTests(unittest.TestCase):
         vec = torch.randn(4, 3, dtype=torch.float64, requires_grad=True)
         distance = torch.linalg.vector_norm(vec.detach(), dim=-1, keepdim=True).requires_grad_(True)
         unit = (vec.detach() / distance.detach()).requires_grad_(True)
-        with patch('model.modeling.numerical.ops.edge_geometry', return_value=(vec, distance, unit)):
+        with patch('model.dpa4.modeling.numerical.ops.edge_geometry', return_value=(vec, distance, unit)):
             result = b.run('edge_geometry', {'positions': batch.positions, 'edge_index': graph.edge_index,
                 'shifts': graph.shifts, 'cells': torch.zeros(2, 3, 3, dtype=torch.float64), 'edge_frame': graph.frame_index},
                 {'vec': TensorSpec((4, 3), torch.float64), 'distance': TensorSpec((4, 1), torch.float64),
@@ -208,7 +208,7 @@ class NumericalModelingTests(unittest.TestCase):
         def assembly(gradient, vectors, *args, **kwargs):
             self.assertFalse(gradient.requires_grad or vectors.requires_grad, 'native force assembly is inference-only')
             return torch.zeros(2, 3), torch.zeros(1, 3, 3)
-        with patch('model.modeling.numerical.ops.force_virial', side_effect=assembly):
+        with patch('model.dpa4.modeling.numerical.ops.force_virial', side_effect=assembly):
             b.run('force_virial', {'gradient': vectors * 2, 'edge_vec': vectors, 'edge_index': torch.tensor([[1], [0]]),
                 'edge_frame': torch.tensor([0]), 'mask': torch.tensor([True])},
                 {'force': TensorSpec((2, 3)), 'virial': TensorSpec((1, 3, 3), torch.float64)}, stage='force_virial')

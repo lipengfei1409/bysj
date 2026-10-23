@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from model.modeling import AtomicBatch, DPA4Config, DPA4Model, ShapeBackend
+from model.dpa4.modeling import AtomicBatch, DPA4Config, DPA4Model, ShapeBackend
 from dcu_dpa4.catalog import OPERATORS
 
 

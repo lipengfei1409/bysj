@@ -2,8 +2,8 @@ import os
 import unittest
 from pathlib import Path
 
-from model.checkpoint import load_checkpoint_spec
-from model.stages import build_stage_plan
+from model.dpa4.checkpoint import load_checkpoint_spec
+from model.dpa4.stages import build_stage_plan
 
 
 EXAMPLE = (

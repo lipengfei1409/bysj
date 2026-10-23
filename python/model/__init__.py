@@ -1,5 +1,16 @@
-"""Checkpoint tools and DeePMD-backed inference.
+"""Generic model-inference registry; family-specific packages load lazily."""
+from .inference import (
+    InferenceRunner,
+    ModelAdapter,
+    TextGenerationRequest,
+    TextGenerationResponse,
+    create_runner,
+    register_adapter,
+    registered_adapters,
+)
 
-The integration API lives at dcu_dpa4.deepmd; model.modeling is a separate
-shape/planning scaffold and is not used to replace DeePMD's numerical model.
-"""
+__all__ = [
+    "InferenceRunner", "ModelAdapter", "TextGenerationRequest",
+    "TextGenerationResponse", "create_runner", "register_adapter",
+    "registered_adapters",
+]

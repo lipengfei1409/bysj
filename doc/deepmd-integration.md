@@ -32,8 +32,8 @@ dp.close()
 ## checkpoint：使用 runner
 
 ```python
-from model.runner import DPA4Runner
-from model.system import load_deepmd_system
+from model.dpa4.runner import DPA4Runner
+from model.dpa4.system import load_deepmd_system
 
 system = load_deepmd_system("../deepmd-kit/examples/water/data/data_0", max_frames=1)
 with DPA4Runner(

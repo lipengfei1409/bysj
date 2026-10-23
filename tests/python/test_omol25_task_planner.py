@@ -7,8 +7,8 @@ from dcu_dpa4.megakernel import (
     DPA4TaskGraph, PersistentTaskPlan, TaskTemplate,
     build_dpa4_task_graph, execute_persistent_edge_features,
 )
-from model.modeling.components import ChargeSpinEmbedding
-from model.modeling.config import DPA4Config
+from model.dpa4.modeling.components import ChargeSpinEmbedding
+from model.dpa4.modeling.config import DPA4Config
 
 
 class OMol25ConfigTests(unittest.TestCase):
@@ -195,7 +195,7 @@ class DPA4TaskPlannerTests(unittest.TestCase):
 
 class WignerRotationTests(unittest.TestCase):
     def test_packed_blocks_are_orthogonal(self):
-        from model.modeling.wigner import WignerRotation
+        from model.dpa4.modeling.wigner import WignerRotation
 
         sign = torch.tensor([-1.0, -1.0, 1.0])
         module = WignerRotation(3, torch.tensor([1, 2, 0]), torch.outer(sign, sign))
@@ -207,7 +207,7 @@ class WignerRotationTests(unittest.TestCase):
 
 class FittingEnergyTests(unittest.TestCase):
     def test_glu_head_adds_per_type_offsets(self):
-        from model.modeling.components import FittingEnergy
+        from model.dpa4.modeling.components import FittingEnergy
 
         hidden_matrix = torch.arange(12, dtype=torch.float32).reshape(3, 4) / 10
         hidden_bias = torch.tensor([0.1, 0.2, -0.1, 0.3])
@@ -228,7 +228,7 @@ class FittingEnergyTests(unittest.TestCase):
 
 class SO3GridTests(unittest.TestCase):
     def test_neo_so3_projector_shape_and_frame_order(self):
-        from model.modeling.so3_grid import SO3GridProjector
+        from model.dpa4.modeling.so3_grid import SO3GridProjector
 
         projector = SO3GridProjector(lmax=3, mmax=3, kmax=1, dtype=torch.float32)
         self.assertEqual(projector.frame_set, (0, -1, 1))

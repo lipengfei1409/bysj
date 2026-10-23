@@ -30,4 +30,5 @@ if os.environ.get("DPA4_BUILD_HIP") == "1":
 
 setup(name="dcu-dpa4", version="0.1.0", python_requires=">=3.9",
       package_dir={"": "python"}, packages=find_packages("python"),
+      extras_require={"qwen": ["transformers>=4.51.0"]},
       ext_modules=ext_modules, cmdclass=cmdclass)

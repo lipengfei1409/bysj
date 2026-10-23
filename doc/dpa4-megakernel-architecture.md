@@ -19,7 +19,7 @@
 
 ## 2. 输入与数据合同
 
-`myproject/python/model/modeling/types.py` 定义独立数值路径的输入：
+`myproject/python/model/dpa4/modeling/types.py` 定义独立数值路径的输入：
 
 - `AtomicBatch.positions[N,3]`、`atype[N]`、`frame_index[N]`、可选 `cells[F,3,3]`
 - OMol25 条件 `charge_spin[F,2]`，也接受 `[2]` / `[1,2]` 并按帧广播；默认值由 checkpoint 的 `[charge, multiplicity]` 提供
@@ -60,11 +60,11 @@ AtomicBatch + EdgeGraph
 
 ### 目前已经接线的独立组件
 
-- OMol25 配置字段和 `charge_spin` 输入：`python/model/modeling/config.py`、`types.py`
-- charge/spin embedding、environment seed、FiLM、GIE：`python/model/modeling/components.py`
-- 参考 Wigner-D、focus/SO(2)、radial mixer、gated attention、SO(3) grid projector/product/FFN：`python/model/modeling/wigner.py`、`components.py`、`so3_grid.py`
-- checkpoint 参数映射及 loaded/deferred 报告：`python/model/modeling/loading.py`
-- 常见算子 dispatch、reference primitive 和一阶力路径：`python/model/modeling/numerical.py`
+- OMol25 配置字段和 `charge_spin` 输入：`python/model/dpa4/modeling/config.py`、`types.py`
+- charge/spin embedding、environment seed、FiLM、GIE：`python/model/dpa4/modeling/components.py`
+- 参考 Wigner-D、focus/SO(2)、radial mixer、gated attention、SO(3) grid projector/product/FFN：`python/model/dpa4/modeling/wigner.py`、`components.py`、`so3_grid.py`
+- checkpoint 参数映射及 loaded/deferred 报告：`python/model/dpa4/modeling/loading.py`
+- 常见算子 dispatch、reference primitive 和一阶力路径：`python/model/dpa4/modeling/numerical.py`
 
 这些实现目前主要是 PyTorch reference/组合算子；已有 geometry、radial、fused edge-features、RMSNorm、linear、reduce 和 force/virial primitive 可按 backend 选择。融合边特征 kernel 位于 `csrc/parallel/edge_features.cu`，Python HIP 路径也将 scalar feature VJP 接回 edge vector；它尚未 HIP 编译或在 DCU 上验证。上述新增 model-stage 代码尚未在目标 checkpoint 上完整加载或数值运行。
 

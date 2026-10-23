@@ -10,7 +10,7 @@ import statistics
 import torch
 
 from dcu_dpa4.native import native_available
-from model.modeling.dpa4 import DPA4Model
+from model.dpa4.modeling.dpa4 import DPA4Model
 from .case import make_latency_case, resolve_checkpoint
 
 

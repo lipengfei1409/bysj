@@ -5,3 +5,4 @@ recursive-include tests/python *.py
 recursive-include tests/model *.py
 include tests/__init__.py
 recursive-include doc *.md
+recursive-include examples *.py *.md

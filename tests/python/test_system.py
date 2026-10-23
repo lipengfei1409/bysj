@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from model.system import load_deepmd_system
+from model.dpa4.system import load_deepmd_system
 
 
 EXAMPLE = Path(__file__).resolve().parents[3] / "deepmd-kit/examples/water/data/data_0"

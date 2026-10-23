@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 import torch
 
-from model.modeling.dpa4 import DPA4Model
+from model.dpa4.modeling.dpa4 import DPA4Model
 from .case import make_water_accuracy_case, resolve_checkpoint
 
 
@@ -19,7 +19,7 @@ class DPA4NeoModelAccuracyTests(unittest.TestCase):
     def setUpClass(cls):
         cls.checkpoint = resolve_checkpoint()
         # Configure the reference runtime before constructing DeePMD's backend.
-        from model.runner import DPA4Runner, configure_device
+        from model.dpa4.runner import DPA4Runner, configure_device
 
         configure_device("cpu")
         cls.model = DPA4Model.from_checkpoint(

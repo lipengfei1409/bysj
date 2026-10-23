@@ -12,7 +12,7 @@ from dcu_dpa4.megakernel import (
     check_runtime_status,
 )
 from dcu_dpa4.native import native_available
-from model.modeling.config import DPA4Config
+from model.dpa4.modeling.config import DPA4Config
 
 
 @unittest.skipUnless(native_available() and torch.cuda.is_available(), "requires the HIP task runtime and a DCU")

@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from model.modeling.types import AtomicBatch, EdgeGraph
-from model.system import DeepmdSystem
+from model.dpa4.modeling.types import AtomicBatch, EdgeGraph
+from model.dpa4.system import DeepmdSystem
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

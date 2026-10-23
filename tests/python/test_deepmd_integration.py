@@ -13,8 +13,8 @@ import numpy as np
 @unittest.skipUnless(os.environ.get("DPA4_RUN_DEEPMD_TESTS")=="1","opt in to actual installed DeePMD integration")
 class DeePMDIntegrationTests(unittest.TestCase):
     def test_water_energy_force_virial_install_and_restore(self):
-        from model.runner import DPA4Runner,configure_device
-        from model.system import load_deepmd_system
+        from model.dpa4.runner import DPA4Runner,configure_device
+        from model.dpa4.system import load_deepmd_system
         from dcu_dpa4.deepmd import install_operators
 
         root=Path(__file__).resolve().parents[3]

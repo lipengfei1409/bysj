@@ -6,8 +6,8 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from model.runner import compute_metrics, configure_device
-from model.runner import DPA4Runner
+from model.dpa4.runner import compute_metrics, configure_device
+from model.dpa4.runner import DPA4Runner
 
 
 class RunnerTests(unittest.TestCase):

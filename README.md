@@ -7,26 +7,39 @@
 ```text
 myproject/
 ├── include/              header-only DCU 指令/类型层（不依赖 Torch）
-│   ├── blas/             host rocBLAS GEMM/batched封装与row-major布局转换
-│   ├── common/           config、matrix view、thread/shared tile
-│   └── ops/              thread FMA/reference MMA；group DUMMA/memory/wave/sync
 ├── csrc/                 HIP 算子、C++ 检查与 pybind 接口
-│   ├── parallel/         geometry / radial / norm / scatter / force
-│   ├── gemm/             linear 正确性基线
-│   └── include/
 ├── python/
-│   ├── dcu_dpa4/         算子合同、Torch reference、HIP dispatch/autograd
-│   │   └── deepmd/       DeePMD 实例级 adapters、eager 配置与安装/恢复
-│   └── model/            checkpoint、数据、reference runner、modeling
-├── tests/
-│   ├── csrc/             native 精度、一阶梯度、stream 测试和 benchmark
-│   └── python/           Python 接口、shape、checkpoint 和功能测试
-└── doc/                  数据流、shape、DTK 实现约定与后续计划
+│   ├── model/             通用模型 registry/runner + 模型家族插件
+│   │   ├── inference/     lazy adapter registry 与通用生命周期协议
+│   │   └── dpa4/          DPA4 checkpoint、DeepMD runner、modeling 与数据类型
+│   └── dcu_dpa4/          DPA4 HIP/reference operators、autograd、DeepMD adapters
+├── examples/
+│   ├── dpa4/              原子系统到 DPA4 E/F/V 的推理示例
+│   └── qwen3/             HuggingFace Qwen3 文本生成示例
+├── tests/                 Python/model 与 native/Csrc 测试
+└── doc/                   DPA4、模型框架、DTK 合同与验证边界
 ```
+
+`model` 通过 family/task registry 延迟加载不同 adapter；DPA4 原子系统请求与 Qwen 文本请求保持各自的数据合同，不伪装成单一输入类型。DPA4 的旧导入路径（如 `model.modeling`、`model.runner`）暂保留兼容 shim；低层 HIP binding 仍从 `dcu_dpa4._C` 加载。架构与安装细节见 [模型框架说明](doc/model-framework.md)。
 
 文档：[MegaKernel 架构](doc/dpa4-megakernel-architecture.md)、[算子合同](doc/dpa4-operators.md)、[DTK 开发约定](doc/dtk-native.md)、[数值模型](doc/numerical-modeling.md)、[DeePMD 接入](doc/deepmd-integration.md)、[rocBLAS](doc/blas.md)、[DUMMA 指令层](doc/instructions.md)、[验证记录](doc/verification.md)。
 
 独立模型的 checkpoint/API 和当前实现边界见 [数值模型说明](doc/numerical-modeling.md) 与 [MegaKernel 架构说明](doc/dpa4-megakernel-architecture.md)。当前前端与部分 SO(3)/SO(2)/attention 算子已有代码；OMol25 的 message-node/FFN grid、readout/fitting 等活跃路径仍缺失，`complete_model` 保持 false。
+
+## 模型推理示例
+
+```bash
+# DPA4 E/F/V via the installed DeePMD reference runtime
+PYTHONPATH=python python examples/dpa4/infer.py \
+  --checkpoint ../DPA4-OMol/DPA4-Neo-OMol25-100M-v20260820.pt \
+  --system /path/to/deepmd-npy-system --device cpu
+
+# Optional HuggingFace Transformers extra; model weights/tokenizer must be available
+pip install -e '.[qwen]'
+PYTHONPATH=python python examples/qwen3/infer.py --prompt 'Explain equivariant message passing.'
+```
+
+Qwen3.5 is accepted through the same Transformers text-generation adapter only when the installed Transformers version supports that model/task; multimodal inputs require a separate processor adapter. The generic registry is extensible, not an automatic guarantee that arbitrary checkpoints can be loaded.
 
 ## 指令层
 
@@ -109,8 +122,8 @@ python -m tests.csrc.benchmark --atoms 192 --edges 12288 --channels 16 --radial 
 只在已装 DeePMD 的 Python ≥3.10 环境运行；不要把这段解释为项目独立模型已经完成。默认 operator_backend="deepmd"，设为 reference/hip 可使用新的实例级适配层。
 
 ```python
-from model.runner import configure_device, DPA4Runner
-from model.system import load_deepmd_system
+from model.dpa4.runner import configure_device, DPA4Runner
+from model.dpa4.system import load_deepmd_system
 
 configure_device("cpu")  # 在任何 deepmd backend 导入之前；DCU 时为 "dcu"
 runner = DPA4Runner("../deepmd-kit/examples/water/dpa4/lmp/pretrained.pt")
