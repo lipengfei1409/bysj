@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import sys
 import subprocess
 import tempfile
 import unittest
