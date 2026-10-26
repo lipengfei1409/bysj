@@ -4,7 +4,7 @@ import os
 import unittest
 
 import torch
-from dcu_dpa4 import blas
+from kernels import blas
 
 
 @unittest.skipUnless(os.environ.get('DPA4_RUN_ROCBLAS_TESTS') == '1',

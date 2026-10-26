@@ -3,7 +3,7 @@ import unittest
 import torch
 
 from model.dpa4.modeling import AtomicBatch, DPA4Config, DPA4Model, ShapeBackend
-from dcu_dpa4.catalog import OPERATORS
+from kernels.catalog import OPERATORS
 
 
 def meta_batch(n=192, f=1):

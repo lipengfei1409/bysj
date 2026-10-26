@@ -5,14 +5,15 @@ import unittest
 
 import torch
 
-from model.dpa4.modeling import AtomicBatch, EdgeGraph, DPA4Model
+from model.dpa4.modeling import AtomicBatch, EdgeGraph
+from runtime.dpa4.loading import load_frontend_checkpoint
 
 
 @unittest.skipUnless(os.environ.get('DPA4_RUN_MODEL_NATIVE_TESTS') == '1',
                      'set DPA4_RUN_MODEL_NATIVE_TESTS=1 with water checkpoint on DCU')
 class NativeFrontendTests(unittest.TestCase):
     def setUp(self):
-        from dcu_dpa4.native import native_available
+        from kernels.native import native_available
         if not torch.cuda.is_available() or not native_available():
             raise RuntimeError('explicit native frontend test requires DCU and built HIP extension')
         self.path = Path(os.environ.get('DPA4_WATER_CHECKPOINT',
@@ -21,7 +22,7 @@ class NativeFrontendTests(unittest.TestCase):
             raise RuntimeError('set DPA4_WATER_CHECKPOINT to the trusted water pretrained.pt')
 
     def run_frontend(self, primitive, linear):
-        model = DPA4Model.from_checkpoint(self.path, primitive_backend=primitive, linear_backend=linear).to('cuda')
+        model = load_frontend_checkpoint(self.path, primitive_backend=primitive, linear_backend=linear).to('cuda')
         positions = torch.tensor([[0., 0., 0.], [.96, .1, 0.], [-.24, .93, .1]], device='cuda', requires_grad=True)
         batch = AtomicBatch(positions, torch.tensor([0, 1, 1], device='cuda'),
             torch.zeros(3, dtype=torch.int64, device='cuda'), 1)

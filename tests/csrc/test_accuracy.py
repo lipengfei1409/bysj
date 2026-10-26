@@ -1,10 +1,10 @@
-"""Run with ROCm PyTorch after building dcu_dpa4._C."""
+"""Run with ROCm PyTorch after building kernels._C."""
 import unittest
 
 import torch
 
-from dcu_dpa4 import ops
-from dcu_dpa4.native import native_available
+from kernels import ops
+from kernels.native import native_available
 
 
 @unittest.skipUnless(native_available() and torch.cuda.is_available(), "requires built HIP extension and DCU")

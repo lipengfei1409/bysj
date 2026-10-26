@@ -48,7 +48,7 @@ def load_checkpoint_spec(path: str | Path, head: str | None = None) -> Checkpoin
             raise ValueError(f"unknown head {head!r}; choices: {list(branches)}")
         model_params = branches[head]
     descriptor = model_params["descriptor"]
-    from .modeling.config import DPA4Config
+    from model.dpa4.modeling.config import DPA4Config
     config = DPA4Config.from_model_params(model_params)
     model_type = str(model_params.get("type", descriptor.get("type", ""))).lower()
     if model_type not in ("dpa4", "sezm", "se_zm"):

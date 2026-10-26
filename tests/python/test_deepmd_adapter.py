@@ -12,8 +12,8 @@ from tests.python.upstream_contracts import DEEP, module_with_upstream_forward
 
 class AdapterTests(unittest.TestCase):
     def api(self):
-        self.assertIsNotNone(importlib.util.find_spec("dcu_dpa4.deepmd"), "missing DeePMD integration package")
-        from dcu_dpa4.deepmd import install_operators
+        self.assertIsNotNone(importlib.util.find_spec("runtime.dpa4.deepmd"), "missing DeePMD integration package")
+        from runtime.dpa4.deepmd import install_operators
         return install_operators
 
     def test_linear_values_gradients_state_and_instance_isolation(self):

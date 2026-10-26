@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from dcu_dpa4 import ops
+from kernels import ops
 
 
 class InterfaceTests(unittest.TestCase):

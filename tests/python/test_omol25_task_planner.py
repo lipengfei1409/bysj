@@ -3,7 +3,7 @@ import unittest
 import torch
 import torch.nn.functional as F
 
-from dcu_dpa4.megakernel import (
+from runtime.dpa4.megakernel import (
     DPA4TaskGraph, PersistentTaskPlan, TaskTemplate,
     build_dpa4_task_graph, execute_persistent_edge_features,
 )
@@ -146,7 +146,7 @@ class DPA4TaskPlannerTests(unittest.TestCase):
             )
 
     def test_runtime_status_checker_reports_device_errors(self):
-        from dcu_dpa4.megakernel import check_runtime_status
+        from runtime.dpa4.megakernel import check_runtime_status
 
         with self.assertRaisesRegex(RuntimeError, 'stalled'):
             check_runtime_status(torch.tensor(5, dtype=torch.int32))
@@ -168,7 +168,7 @@ class DPA4TaskPlannerTests(unittest.TestCase):
             'frequencies': torch.ones(1, 4),
         }
         expected = object()
-        with patch('dcu_dpa4.ops.edge_features_persistent', return_value=expected) as dispatch:
+        with patch('kernels.ops.edge_features_persistent', return_value=expected) as dispatch:
             actual = execute_persistent_edge_features(
                 graph, target_tasks='edge_features', **tensors, cutoff=6.0,
             )

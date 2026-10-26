@@ -5,8 +5,8 @@ import statistics
 
 import torch
 
-from dcu_dpa4 import ops
-from dcu_dpa4.native import native_available
+from kernels import ops
+from kernels.native import native_available
 
 
 def time_call(fn, warmup, iterations, trials):
@@ -38,7 +38,7 @@ def main():
     if min(args.atoms, args.edges, args.channels, args.radial, args.iterations, args.trials) <= 0 or args.warmup < 0:
         parser.error("dimensions/iterations/trials must be positive, warmup nonnegative")
     if not (torch.version.hip and torch.cuda.is_available() and native_available()):
-        raise RuntimeError("benchmark requires ROCm PyTorch, DCU and a built dcu_dpa4._C; no fallback")
+        raise RuntimeError("benchmark requires ROCm PyTorch, DCU and a built kernels._C; no fallback")
     torch.manual_seed(42)
     n,e,c,r = args.atoms,args.edges,args.channels,args.radial
     pos=torch.randn(n,3,device="cuda")

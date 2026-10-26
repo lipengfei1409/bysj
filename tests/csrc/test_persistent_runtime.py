@@ -1,17 +1,17 @@
-"""Run with ROCm PyTorch after building dcu_dpa4._C."""
+"""Run with ROCm PyTorch after building kernels._C."""
 import unittest
 
 import torch
 
-from dcu_dpa4 import ops
-from dcu_dpa4.megakernel import (
+from kernels import ops
+from runtime.dpa4.megakernel import (
     DPA4TaskGraph,
     PersistentTaskPlan,
     TaskTemplate,
     build_dpa4_task_graph,
     check_runtime_status,
 )
-from dcu_dpa4.native import native_available
+from kernels.native import native_available
 from model.dpa4.modeling.config import DPA4Config
 
 

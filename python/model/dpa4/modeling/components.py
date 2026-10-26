@@ -6,8 +6,8 @@ import math
 import torch
 from torch import nn
 
-from dcu_dpa4 import ops
-from dcu_dpa4 import blas
+from kernels import ops
+from kernels import blas
 
 
 class ChannelLinear(nn.Module):

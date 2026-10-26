@@ -5,7 +5,7 @@ from typing import Mapping
 
 import torch
 
-from dcu_dpa4.catalog import OPERATORS
+from kernels.catalog import OPERATORS
 
 
 @dataclass(frozen=True)

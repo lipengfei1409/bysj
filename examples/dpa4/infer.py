@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
-from model.inference import create_runner
+from runtime.inference import create_runner
 
 
 def build_parser():
@@ -23,7 +23,7 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    from model.dpa4.system import load_deepmd_system
+    from runtime.dpa4.system import load_deepmd_system
 
     system = load_deepmd_system(args.system, max_frames=args.max_frames)
     with create_runner(

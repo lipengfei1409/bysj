@@ -7,8 +7,8 @@ import math
 import torch
 from torch import nn
 
-from dcu_dpa4.catalog import OPERATORS
-from dcu_dpa4 import ops
+from kernels.catalog import OPERATORS
+from kernels import ops
 
 
 class NumericalBackend(nn.Module):
@@ -32,6 +32,9 @@ class NumericalBackend(nn.Module):
         if not math.isfinite(version) or version < 1:
             raise ValueError('unsupported descriptor version')
         self.config, self.primitive_backend, self.version = config, primitive_backend, float(version)
+        self.prefer_fused_edge_features = primitive_backend == 'hip'
+        self.supports_fused_edge_features = True
+        self.requires_coordinate_gradients = True
         self.register_buffer('_anchor', torch.empty(0, dtype=dtype), persistent=False)
         self.operator_modules = nn.ModuleDict()
         self.stage_modules = nn.ModuleDict()
@@ -40,6 +43,10 @@ class NumericalBackend(nn.Module):
     @property
     def compute_dtype(self):
         return self._anchor.dtype
+
+    def get_operator(self, name):
+        """Return a registered stateful primitive, if present."""
+        return self.operator_modules[name] if name in self.operator_modules else None
 
     def get_extra_state(self):
         # Forward semantics cannot be inferred from learned tensor dimensions.

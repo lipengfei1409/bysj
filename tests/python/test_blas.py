@@ -6,7 +6,7 @@ import torch
 
 class BLASContractTests(unittest.TestCase):
     def api(self):
-        from dcu_dpa4 import blas
+        from kernels import blas
         return blas
 
     def test_rectangular_transpose_alpha_beta_and_no_mutation(self):

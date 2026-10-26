@@ -6,7 +6,8 @@ import unittest
 import numpy as np
 import torch
 
-from model.dpa4.modeling.dpa4 import DPA4Model
+from runtime.dpa4.execution import run_model
+from runtime.dpa4.loading import load_frontend_checkpoint
 from .case import make_water_accuracy_case, resolve_checkpoint
 
 
@@ -19,17 +20,16 @@ class DPA4NeoModelAccuracyTests(unittest.TestCase):
     def setUpClass(cls):
         cls.checkpoint = resolve_checkpoint()
         # Configure the reference runtime before constructing DeePMD's backend.
-        from model.dpa4.runner import DPA4Runner, configure_device
+        from runtime.dpa4.runner import DPA4Runner, configure_device
 
         configure_device("cpu")
-        cls.model = DPA4Model.from_checkpoint(
+        cls.model = load_frontend_checkpoint(
             cls.checkpoint, primitive_backend="reference", linear_backend="reference",
         ).eval()
         cls.system, cls.batch, cls.graph = make_water_accuracy_case(cls.model.config)
         cls.runner = DPA4Runner(cls.checkpoint, device="cpu", neighbor_backend="native")
         cls.reference = cls.runner.eval(cls.system)
-        with torch.no_grad():
-            cls.actual = cls.model(cls.batch, cls.graph, compute_forces=True)
+        cls.actual = run_model(cls.model, cls.batch, cls.graph, compute_forces=True)
 
     @classmethod
     def tearDownClass(cls):

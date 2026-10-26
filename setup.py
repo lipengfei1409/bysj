@@ -30,7 +30,7 @@ if build_hip:
         macros.append(("DPA4_ENABLE_ROCBLAS", "1"))
     if build_dumma:
         macros.append(("DPA4_ENABLE_DUMMA", "1"))
-    ext_modules = [CUDAExtension("dcu_dpa4._C", sources=sources,
+    ext_modules = [CUDAExtension("kernels._C", sources=sources,
        libraries=["rocblas"] if build_blas else [],
        define_macros=macros,
        include_dirs=[str(Path(__file__).resolve().parent / "include")],

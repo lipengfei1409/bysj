@@ -5,9 +5,9 @@ import json
 
 import torch
 
-from dcu_dpa4.catalog import OPERATORS
+from kernels.catalog import OPERATORS
 from .checkpoint import load_checkpoint_spec
-from .modeling import AtomicBatch, DPA4Config, DPA4Model, ShapeBackend
+from model.dpa4.modeling import AtomicBatch, DPA4Config, DPA4Model, ShapeBackend
 
 
 def tensor_info(tensor):
@@ -34,7 +34,7 @@ def shape_report(config, atoms, edges, frames):
     }
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     shape = commands.add_parser("shape", help="trace main DPA4 tensor shapes, not predictions")
@@ -52,7 +52,7 @@ def main():
     infer.add_argument("--operator-backend",choices=("deepmd","reference","hip"),default="deepmd")
     infer.add_argument("--neighbor-backend",choices=("native","cpu-bridge"),default="native")
     infer.add_argument("--max-frames",type=int,default=1)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.command == "operators":
         report = [asdict(o) for o in OPERATORS.values()]
     elif args.command=="infer":

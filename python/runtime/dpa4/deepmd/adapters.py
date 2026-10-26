@@ -4,7 +4,7 @@ import math
 
 import torch
 
-from .. import ops
+from kernels import ops
 
 
 def _linear_last_axis(x, weight, bias, backend):

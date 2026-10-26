@@ -8,9 +8,9 @@ from .runner import InferenceRunner
 
 
 _BUILTINS = {
-    ("dpa4", "energy-force-virial"): "model.dpa4.inference:create_adapter",
-    ("qwen3", "text-generation"): "model.inference.adapters.transformers:create_text_generation_adapter",
-    ("qwen3.5", "text-generation"): "model.inference.adapters.transformers:create_text_generation_adapter",
+    ("dpa4", "energy-force-virial"): "runtime.dpa4.inference:create_adapter",
+    ("qwen3", "text-generation"): "runtime.inference.adapters.transformers:create_text_generation_adapter",
+    ("qwen3.5", "text-generation"): "runtime.inference.adapters.transformers:create_text_generation_adapter",
 }
 _FACTORIES = {}
 _LOCK = RLock()

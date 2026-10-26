@@ -5,16 +5,12 @@ backend traces conservative energy/force plumbing without fabricating values.
 """
 from __future__ import annotations
 
-from contextlib import nullcontext
-from dataclasses import replace
-
 import torch
 from torch import nn
 
 from .backend import PlaceholderBackend, TensorSpec
 from .config import DPA4Config
 from .types import AtomicBatch, EdgeGraph, EdgeFeatures, ModelOutput
-from .numerical import NumericalBackend
 
 
 class DPA4InteractionBlock(nn.Module):
@@ -122,31 +118,6 @@ class DPA4Model(nn.Module):
         self.backend = backend if backend is not None else PlaceholderBackend()
         self.blocks = nn.ModuleList([DPA4InteractionBlock(config, i, self.backend) for i in range(config.n_blocks)])
 
-    @classmethod
-    def from_checkpoint(cls, path, *, head=None, primitive_backend='reference', linear_backend='reference'):
-        """Load supported checkpoint weights; inspect the completeness report."""
-        from .loading import load_frontend_checkpoint
-        return load_frontend_checkpoint(path, head=head, primitive_backend=primitive_backend, linear_backend=linear_backend)
-
-    def plan_execution(self, *, n_atoms, edge_capacity, n_frames, edge_tile=256, node_tile=128, fuse_edge_features=None):
-        """Return the explicit task/epoch plan; this does not launch kernels."""
-        from dcu_dpa4.megakernel import build_dpa4_task_graph
-
-        if fuse_edge_features is None:
-            fuse_edge_features = (
-                isinstance(self.backend, NumericalBackend)
-                and self.backend.primitive_backend == 'hip'
-            )
-        return build_dpa4_task_graph(
-            self.config,
-            n_atoms=n_atoms,
-            edge_capacity=edge_capacity,
-            n_frames=n_frames,
-            edge_tile=edge_tile,
-            node_tile=node_tile,
-            fuse_edge_features=fuse_edge_features,
-        )
-
     def build_graph(self, batch: AtomicBatch, edge_capacity: int):
         batch.validate()
         if edge_capacity < 0:
@@ -162,8 +133,9 @@ class DPA4Model(nn.Module):
         graph.validate()
         if batch.positions.device != graph.edge_index.device:
             raise ValueError("batch and graph must share a device")
-        if isinstance(self.backend, NumericalBackend):
-            self.backend.validate_inputs(batch, graph)
+        validate_inputs = getattr(self.backend, "validate_inputs", None)
+        if callable(validate_inputs):
+            validate_inputs(batch, graph)
         c = self.config
         n, e, f = batch.positions.shape[0], graph.mask.shape[0], batch.n_frames
         dtype = getattr(self.backend, 'compute_dtype', torch.float32)
@@ -173,15 +145,15 @@ class DPA4Model(nn.Module):
 
         cells = batch.cells if batch.cells is not None else batch.positions.new_zeros(f, 3, 3)
         if fuse_edge_features is None:
-            fuse_edge_features = (
-                isinstance(self.backend, NumericalBackend)
-                and self.backend.primitive_backend == 'hip'
+            fuse_edge_features = bool(
+                getattr(self.backend, "prefer_fused_edge_features", False)
             )
-        if fuse_edge_features and not isinstance(self.backend, NumericalBackend):
-            raise ValueError('fused edge features require a NumericalBackend')
+        if fuse_edge_features and not bool(
+            getattr(self.backend, "supports_fused_edge_features", False)
+        ):
+            raise ValueError('fused edge features require a backend that supports them')
         if fuse_edge_features:
-            radial_module = (self.backend.operator_modules['radial_basis']
-                             if 'radial_basis' in self.backend.operator_modules else None)
+            radial_module = self.backend.get_operator("radial_basis")
             if radial_module is None:
                 raise RuntimeError('fused edge features require a registered radial basis')
             edge_feature_inputs = {
@@ -236,7 +208,7 @@ class DPA4Model(nn.Module):
         degree = op("degree_reduce", {"env": radial_cache["env"], "edge_index": graph.edge_index, "mask": graph.mask},
                     {"degree": (n,), "inv_sqrt": (n, 1, 1)})
         radial = op("radial_mlp", {"rbf": radial_cache["rbf"], "env": radial_cache["env"]}, {"y": (e, c.initial_l + 1, c.channels)})["y"]
-        if isinstance(self.backend, NumericalBackend) and self.backend.version >= 1.1:
+        if float(getattr(self.backend, "version", 1.0)) >= 1.1:
             radial = radial * radial_cache['env'][:, :, None]
         radial_fused = op("radial_fuse", {"radial": radial, "pair": pair}, {"y": tuple(radial.shape)})['y']
         return EdgeFeatures(**geom, **radial_cache, type_feat=type_feat, pair=pair, **degree,
@@ -244,16 +216,10 @@ class DPA4Model(nn.Module):
 
     def forward(self, batch: AtomicBatch, graph: EdgeGraph | None = None, *, edge_capacity: int | None = None,
                 compute_forces=True, fuse_edge_features=None):
-        numerical_forces = isinstance(self.backend, NumericalBackend) and compute_forces
-        context = torch.enable_grad() if numerical_forces else nullcontext()
-        with context:
-            # Do not mutate the caller's requires_grad flag, even under no_grad.
-            if numerical_forces and not batch.positions.requires_grad:
-                batch = replace(batch, positions=batch.positions.detach().requires_grad_(True))
-            return self._forward(
-                batch, graph, edge_capacity=edge_capacity,
-                compute_forces=compute_forces, fuse_edge_features=fuse_edge_features,
-            )
+        return self._forward(
+            batch, graph, edge_capacity=edge_capacity,
+            compute_forces=compute_forces, fuse_edge_features=fuse_edge_features,
+        )
 
     def _forward(self, batch, graph, *, edge_capacity, compute_forces, fuse_edge_features):
         if graph is None:

@@ -9,8 +9,9 @@ import statistics
 
 import torch
 
-from dcu_dpa4.native import native_available
-from model.dpa4.modeling.dpa4 import DPA4Model
+from kernels.native import native_available
+from runtime.dpa4.execution import run_model
+from runtime.dpa4.loading import load_frontend_checkpoint
 from .case import make_latency_case, resolve_checkpoint
 
 
@@ -58,7 +59,7 @@ def benchmark(args):
     if not checkpoint.is_file():
         raise FileNotFoundError(checkpoint)
     device = torch.device("cuda", torch.cuda.current_device())
-    model = DPA4Model.from_checkpoint(
+    model = load_frontend_checkpoint(
         checkpoint, primitive_backend="hip", linear_backend="hip",
     ).to(device).eval()
     for parameter in model.parameters():
@@ -68,7 +69,7 @@ def benchmark(args):
 
     def invoke(compute_forces):
         if compute_forces:
-            return model(batch, graph, compute_forces=True)
+            return run_model(model, batch, graph, compute_forces=True)
         with torch.no_grad():
             return model(batch, graph, compute_forces=False)
 

@@ -11,7 +11,7 @@ def native_available():
     if not torch.version.hip:
         return False
     try:
-        importlib.import_module("dcu_dpa4._C")
+        importlib.import_module("kernels._C")
     except (ImportError, OSError):
         return False
     return True
@@ -21,7 +21,7 @@ def _extension():
     if not torch.version.hip:
         raise RuntimeError("HIP backend requires ROCm/DTK PyTorch")
     try:
-        return importlib.import_module("dcu_dpa4._C")
+        return importlib.import_module("kernels._C")
     except (ImportError, OSError) as exc:
         raise RuntimeError("build extension with DPA4_BUILD_HIP=1 python setup.py build_ext --inplace") from exc
 

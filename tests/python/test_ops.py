@@ -3,9 +3,9 @@ import unittest
 
 import torch
 
-from dcu_dpa4.geometry import edge_vectors
-from dcu_dpa4.radial import c3_cutoff_envelope, radial_basis
-from dcu_dpa4.reduce import edge_force_virial
+from kernels.geometry import edge_vectors
+from kernels.radial import c3_cutoff_envelope, radial_basis
+from kernels.reduce import edge_force_virial
 
 
 class GeometryTests(unittest.TestCase):

@@ -8,6 +8,9 @@ from unittest.mock import patch
 
 from model.dpa4 import modeling
 from model.dpa4.modeling.backend import TensorSpec
+from runtime.dpa4.execution import run_model
+from runtime.dpa4.loading import load_frontend_checkpoint
+from runtime.dpa4.numerical import NumericalBackend
 
 
 WATER = Path(__file__).resolve().parents[3] / 'deepmd-kit/examples/water/dpa4/lmp/pretrained.pt'
@@ -29,7 +32,7 @@ class TestOnlyRotation(nn.Module):
 
 
 class TestOnlySeed(nn.Module):
-    def forward(self, scalar, radial, D, env, edge_index, inv_sqrt, mask):
+    def forward(self, scalar, radial, Dt, env, edge_index, inv_sqrt, mask):
         update = torch.zeros_like(scalar).index_add(0, edge_index[1], radial[:, 0])
         return {'y': (scalar + update)[:, None, None]}
 
@@ -46,8 +49,7 @@ class TestOnlyEnergy(nn.Module):
 
 class NumericalModelingTests(unittest.TestCase):
     def backend(self, **kwargs):
-        self.assertTrue(hasattr(modeling, 'NumericalBackend'), 'numerical operator registry is missing')
-        return modeling.NumericalBackend(modeling.DPA4Config(channels=4, n_radial=2), **kwargs)
+        return NumericalBackend(modeling.DPA4Config(channels=4, n_radial=2), **kwargs)
 
     def model(self, dtype=torch.float32):
         self.assertTrue(hasattr(modeling, 'RadialMLP'), 'parameter-owning radial MLP is missing')
@@ -162,9 +164,8 @@ class NumericalModelingTests(unittest.TestCase):
 
     def test_injected_test_graph_energy_force_matches_finite_difference_under_no_grad(self):
         # These test-only modules test wiring, NOT a pretrained DPA4 implementation.
-        self.assertTrue(hasattr(modeling, 'NumericalBackend'), 'NumericalBackend is missing')
         c = modeling.DPA4Config(channels=4, n_radial=2, n_blocks=0, lmax=0, use_env_seed=False)
-        b = modeling.NumericalBackend(c, dtype=torch.float64)
+        b = NumericalBackend(c, dtype=torch.float64)
         b.register('type_embedding', modeling.TypeEmbedding(torch.ones(3, 4, dtype=torch.float64)))
         b.register('radial_basis', modeling.RadialBasis(c, torch.tensor([[1., 2.]], dtype=torch.float64)))
         b.register('radial_mlp', modeling.RadialMLP([2, 4], lmax=0, channels=4).double())
@@ -175,7 +176,7 @@ class NumericalModelingTests(unittest.TestCase):
         model = modeling.DPA4Model(c, b).eval()
         batch, graph = self.batch_graph(torch.float64)
         with torch.no_grad():
-            out = model(batch, graph)
+            out = run_model(model, batch, graph)
         self.assertFalse(batch.positions.requires_grad, 'do not mutate caller')
         torch.testing.assert_close(out.force.sum(0), torch.zeros(3, dtype=torch.float64))
         eps = 1e-5
@@ -193,7 +194,7 @@ class NumericalModelingTests(unittest.TestCase):
         vec = torch.randn(4, 3, dtype=torch.float64, requires_grad=True)
         distance = torch.linalg.vector_norm(vec.detach(), dim=-1, keepdim=True).requires_grad_(True)
         unit = (vec.detach() / distance.detach()).requires_grad_(True)
-        with patch('model.dpa4.modeling.numerical.ops.edge_geometry', return_value=(vec, distance, unit)):
+        with patch('runtime.dpa4.numerical.ops.edge_geometry', return_value=(vec, distance, unit)):
             result = b.run('edge_geometry', {'positions': batch.positions, 'edge_index': graph.edge_index,
                 'shifts': graph.shifts, 'cells': torch.zeros(2, 3, 3, dtype=torch.float64), 'edge_frame': graph.frame_index},
                 {'vec': TensorSpec((4, 3), torch.float64), 'distance': TensorSpec((4, 1), torch.float64),
@@ -208,7 +209,7 @@ class NumericalModelingTests(unittest.TestCase):
         def assembly(gradient, vectors, *args, **kwargs):
             self.assertFalse(gradient.requires_grad or vectors.requires_grad, 'native force assembly is inference-only')
             return torch.zeros(2, 3), torch.zeros(1, 3, 3)
-        with patch('model.dpa4.modeling.numerical.ops.force_virial', side_effect=assembly):
+        with patch('runtime.dpa4.numerical.ops.force_virial', side_effect=assembly):
             b.run('force_virial', {'gradient': vectors * 2, 'edge_vec': vectors, 'edge_index': torch.tensor([[1], [0]]),
                 'edge_frame': torch.tensor([0]), 'mask': torch.tensor([True])},
                 {'force': TensorSpec((2, 3)), 'virial': TensorSpec((1, 3, 3), torch.float64)}, stage='force_virial')
@@ -292,8 +293,7 @@ class NumericalModelingTests(unittest.TestCase):
 
     @unittest.skipUnless(WATER.is_file(), 'water checkpoint not available')
     def test_water_checkpoint_loads_actual_frontend_weights_only(self):
-        self.assertTrue(hasattr(modeling.DPA4Model, 'from_checkpoint'), 'frontend checkpoint factory is missing')
-        model = modeling.DPA4Model.from_checkpoint(WATER)
+        model = load_frontend_checkpoint(WATER)
         batch, graph = self.batch_graph()
         cache = model.prepare_edges(batch, graph)
         state = torch.load(WATER, map_location='cpu', weights_only=True)['model']

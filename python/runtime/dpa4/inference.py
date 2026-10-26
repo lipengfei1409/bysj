@@ -18,7 +18,7 @@ class DPA4DeepMDAdapter:
         from .runner import DPA4Runner
 
         self._runner = DPA4Runner(
-            checkpoint,
+            checkpoint=checkpoint,
             head=head,
             device=device,
             neighbor_backend=neighbor_backend,

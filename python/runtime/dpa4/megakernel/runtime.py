@@ -233,7 +233,7 @@ def execute_persistent_edge_features(
     edge_count = edge_index.shape[1]
     if any(task.work_items != edge_count for task in plan.tasks):
         raise ValueError("selected edge-feature tasks must cover the supplied edge capacity")
-    from dcu_dpa4.ops import edge_features_persistent
+    from kernels.ops import edge_features_persistent
 
     return edge_features_persistent(
         positions, edge_index, shifts, cells, edge_frame, mask, frequencies,

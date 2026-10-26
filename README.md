@@ -7,24 +7,35 @@ DPA4 operators and an experimental DPA4-Neo OMol25 model path for ROCm/DTK. The 
 ```text
 include/           DTK/HIP tile, wave, sync, DUMMA, and BLAS interfaces
 csrc/              HIP primitives, persistent edge-feature worker, pybind bindings
-python/dcu_dpa4/   reference/HIP operators, autograd, DeePMD adapters
-python/model/      generic inference API and canonical model/dpa4 package
+python/main.py      unified execution dispatcher for model tools and inference
+python/model/       DPA4 model definitions, tensor contracts, and dataflow
+python/runtime/     runners, inference adapters, checkpoint/system I/O, and execution
+python/kernels/     low-level operator APIs, HIP extension loader, and BLAS
 examples/          separate DPA4 E/F/V and Qwen text-generation entry points
 tests/             Python, native-operator, and opt-in full-model suites
 doc/               two canonical guides
 ```
 
-- [DPA4 kernels and DTK design](doc/dpa4-kernels.md): operator contracts, ThunderKittens translation boundaries, DUMMA/linear path, build and native verification.
-- [Model adapters and tests](doc/models.md): DPA4/DeePMD, Qwen text adapter, model-level accuracy and latency.
+- [DPA4 kernels and DTK design](doc/dpa4-kernels.md): upstream operator map, tile-primitive roadmap, ThunderKittens translation boundaries, build and native verification.
+- [Model adapters and tests](doc/models.md): Python package boundaries, DPA4/DeePMD, Qwen text adapter, model-level accuracy and latency.
 
 ## Quick start
+
+The unified entrypoint in `python/main.py` dispatches DPA4 tools/inference and text-generation adapters:
+
+```bash
+python python/main.py dpa4 operators
+python python/main.py dpa4 shape --atoms 192 --edges 1000 --frames 2
+python python/main.py dpa4 infer --checkpoint /path/to/model.pt --system /path/to/deepmd-npy-system
+python python/main.py text --family qwen3 --model-id Qwen/Qwen3-0.6B --prompt "Explain equivariant message passing."
+```
 
 Pure-Python model/framework checks (requires the project's Python dependencies):
 
 ```bash
 export PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}"
 python -m unittest discover -s tests/python -v
-python -m model operators
+python -m runtime operators  # equivalent DPA4-only entrypoint
 ```
 
 DPA4 E/F/V through an installed DeePMD runtime:
@@ -53,7 +64,7 @@ Use an existing DTK PyTorch environment and its installed toolkit; this project 
 source /opt/dtk/env.sh
 export PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}"
 DPA4_BUILD_HIP=1 MAX_JOBS=4 python setup.py build_ext --inplace
-python -c 'from dcu_dpa4.native import native_available; assert native_available()'
+python -c 'from kernels.native import native_available; assert native_available()'
 python -m unittest discover -s tests/csrc -v
 ```
 

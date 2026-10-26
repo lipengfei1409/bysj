@@ -4,11 +4,11 @@ from __future__ import annotations
 import math
 import torch
 
-from ..checkpoint import load_checkpoint_spec
-from .config import DPA4Config
-from .components import AttentionLogits, AttentionSoftmax, ChargeSpinEmbedding, DegreeLinear, EnvironmentSeed, EquivariantNorm, Film, FittingEnergy, FocusCompetition, GatedActivation, GatherRotate, GeometricSeed, InverseRotate, RadialSO2, SO2Linear, ScalarReadout, TensorResult, TypeEmbedding, RadialBasis, RadialMLP
-from .so3_grid import EquivariantFFN, SO3GridNet
-from .wigner import WignerRotation
+from .checkpoint import load_checkpoint_spec
+from model.dpa4.modeling.config import DPA4Config
+from model.dpa4.modeling.components import AttentionLogits, AttentionSoftmax, ChargeSpinEmbedding, DegreeLinear, EnvironmentSeed, EquivariantNorm, Film, FittingEnergy, FocusCompetition, GatedActivation, GatherRotate, GeometricSeed, InverseRotate, RadialSO2, SO2Linear, ScalarReadout, TensorResult, TypeEmbedding, RadialBasis, RadialMLP
+from model.dpa4.modeling.so3_grid import EquivariantFFN, SO3GridNet
+from model.dpa4.modeling.wigner import WignerRotation
 from .numerical import NumericalBackend
 
 
@@ -501,7 +501,7 @@ def load_frontend_checkpoint(path, *, head=None, primitive_backend='reference', 
     backend.requires_grad_(bool(d.get('trainable', True)))
     if d.get('basis_type', '').endswith('/fix'):
         backend.operator_modules['radial_basis'].adam_freqs.requires_grad_(False)
-    from .dpa4 import DPA4Model
+    from model.dpa4.modeling.dpa4 import DPA4Model
     model = DPA4Model(config, backend).eval()
     # version is read as control metadata, not a trained tensor.
     model.checkpoint_report = {

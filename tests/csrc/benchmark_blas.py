@@ -3,7 +3,7 @@ import argparse
 import json
 
 import torch
-from dcu_dpa4 import blas
+from kernels import blas
 
 
 def main():

@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import torch
 
-from model.inference import create_runner, register_adapter, registered_adapters
-from model.inference.adapters.transformers import TransformersTextAdapter
-from model.inference.types import TextGenerationRequest, TextGenerationResponse
+from runtime.inference import create_runner, register_adapter, registered_adapters
+from runtime.inference.adapters.transformers import TransformersTextAdapter
+from runtime.inference.types import TextGenerationRequest, TextGenerationResponse
 
 
 class _EchoAdapter:
@@ -31,11 +31,12 @@ class InferenceFrameworkTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         env = dict(os.environ, PYTHONPATH=f"{root / 'python'}:{root}")
         code = (
-            "import sys, model; "
+            "import sys, model, runtime; "
             "assert 'torch' not in sys.modules; "
             "assert 'transformers' not in sys.modules; "
             "assert 'deepmd' not in sys.modules; "
-            "assert callable(model.create_runner)"
+            "assert not hasattr(model, 'create_runner'); "
+            "assert callable(runtime.create_runner)"
         )
         result = subprocess.run(
             [sys.executable, "-c", code], capture_output=True, text=True, env=env,
@@ -53,23 +54,22 @@ class InferenceFrameworkTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "closed"):
             runner.predict("again")
 
-    def test_legacy_dpa4_import_paths_alias_canonical_modules(self):
-        self.assertIs(
-            importlib.import_module("model.modeling.numerical"),
-            importlib.import_module("model.dpa4.modeling.numerical"),
-        )
-        self.assertIs(
-            importlib.import_module("model.runner"),
-            importlib.import_module("model.dpa4.runner"),
-        )
-        self.assertIs(
-            importlib.import_module("model.checkpoint"),
-            importlib.import_module("model.dpa4.checkpoint"),
+    def test_model_and_runtime_packages_are_separate(self):
+        root = Path(__file__).resolve().parents[2]
+        model = importlib.import_module("model")
+        runtime = importlib.import_module("runtime")
+        self.assertFalse((root / "python/dcu_dpa4").exists())
+        self.assertFalse(hasattr(model, "create_runner"))
+        self.assertFalse(hasattr(model, "DPA4Runner"))
+        self.assertTrue(callable(runtime.create_runner))
+        self.assertEqual(
+            importlib.import_module("runtime.dpa4.inference").DPA4DeepMDAdapter.__module__,
+            "runtime.dpa4.inference",
         )
 
     def test_dpa4_adapter_delegates_to_deepmd_runner(self):
-        from model.dpa4.system import DeepmdSystem
-        from model.dpa4.inference import DPA4DeepMDAdapter
+        from runtime.dpa4.system import DeepmdSystem
+        from runtime.dpa4.inference import DPA4DeepMDAdapter
 
         class FakeRunner:
             def __init__(self, **kwargs):
@@ -86,7 +86,7 @@ class InferenceFrameworkTests(unittest.TestCase):
             coords=torch.zeros(1, 1, 3).numpy(), cells=None,
             atype=torch.tensor([0]).numpy(), type_map=("H",), energy=None, force=None,
         )
-        with patch("model.dpa4.runner.DPA4Runner", FakeRunner):
+        with patch("runtime.dpa4.runner.DPA4Runner", FakeRunner):
             adapter = DPA4DeepMDAdapter(checkpoint="local.pt", device="cpu")
             self.assertEqual(adapter.predict(system, max_frames=1), (system, {"max_frames": 1}))
             runner = adapter._runner

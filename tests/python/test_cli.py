@@ -5,17 +5,45 @@ import sys
 import unittest
 
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
 class CLITests(unittest.TestCase):
     def test_infer_has_deepmd_integration_options(self):
-        result=subprocess.run([sys.executable,"-m","model","infer","--help"],capture_output=True,text=True)
+        result=subprocess.run([sys.executable,"-m","runtime","infer","--help"],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn("--operator-backend",result.stdout)
         self.assertIn("--neighbor-backend",result.stdout)
 
+    def test_unified_main_help(self):
+        result = subprocess.run([sys.executable, str(ROOT / "python/main.py"), "--help"],
+            capture_output=True, text=True, check=True)
+        self.assertIn("dpa4", result.stdout)
+        self.assertIn("text", result.stdout)
+
+    def test_unified_main_dpa4_operator_inventory(self):
+        result = subprocess.run([sys.executable, str(ROOT / "python/main.py"), "dpa4", "operators"],
+            capture_output=True, text=True, check=True)
+        operators = json.loads(result.stdout)
+        self.assertIn("grid_project", [operator["name"] for operator in operators])
+
+    def test_unified_main_text_help(self):
+        result = subprocess.run([sys.executable, str(ROOT / "python/main.py"), "text", "--help"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--family", result.stdout)
+        self.assertIn("--prompt", result.stdout)
+
+    def test_qwen_example_uses_shared_cli(self):
+        result = subprocess.run([sys.executable, str(ROOT / "examples/qwen3/infer.py"), "--help"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--family", result.stdout)
+
     @unittest.skipUnless((Path(__file__).resolve().parents[3] / "deepmd-kit/examples/water/dpa4/lmp/pretrained.pt").is_file(), "requires adjacent water checkpoint")
     def test_pretrained_shape_trace(self):
         checkpoint = Path(__file__).resolve().parents[3] / "deepmd-kit/examples/water/dpa4/lmp/pretrained.pt"
-        result = subprocess.run([sys.executable, "-m", "model", "shape", "--checkpoint", str(checkpoint),
+        result = subprocess.run([sys.executable, "-m", "runtime", "shape", "--checkpoint", str(checkpoint),
             "--atoms", "192", "--edges", "1000", "--frames", "2"], capture_output=True, text=True, check=True)
         report = json.loads(result.stdout)
         self.assertEqual(report["outputs"]["force"]["shape"], [192, 3])
@@ -24,7 +52,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(report["trace"][-1]["operator"], "force_virial")
 
     def test_operator_inventory(self):
-        result = subprocess.run([sys.executable, "-m", "model", "operators"], capture_output=True, text=True, check=True)
+        result = subprocess.run([sys.executable, "-m", "runtime", "operators"], capture_output=True, text=True, check=True)
         operators = json.loads(result.stdout)
         self.assertIn("grid_project", [o["name"] for o in operators])
         self.assertIn("edge_gradient", [o["name"] for o in operators])

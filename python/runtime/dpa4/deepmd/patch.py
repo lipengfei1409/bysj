@@ -50,7 +50,7 @@ class DeepMDOperatorHandle:
                 p.module.forward=p.override
             else:
                 del p.module.forward
-            del p.module._dcu_dpa4_operator_owner
+            del p.module._dpa4_operator_owner
         self.active=False
 
     def __enter__(self):
@@ -66,7 +66,7 @@ def _check_eager(model):
     for path,module in model.named_modules():
         if isinstance(module,torch.jit.ScriptModule) or type(module).__module__.startswith("torch._dynamo"):
             raise TypeError("operator adapters require an eager model, not TorchScript/torch.compile")
-        if getattr(module,"_dcu_dpa4_operator_owner",None) is not None:
+        if getattr(module,"_dpa4_operator_owner",None) is not None:
             raise RuntimeError(f"operators already installed at {path or '<root>'}")
         flags=("use_triton_infer","use_cute_infer","use_cutile_infer","cuda_infer_level","triton_infer_level","_compile_infer","_act_infer")
         if any(bool(getattr(module,flag,False)) for flag in flags):
@@ -95,7 +95,7 @@ def install_operators(model,*,backend="reference",operators=("radial","rmsnorm",
         raise ValueError(f"unsupported adapter operators: {sorted(unknown)}")
     _check_eager(model)
     if backend=="hip":
-        from ..native import _extension
+        from kernels.native import _extension
         _extension()  # require a real extension before changing any forward
     candidates=[]
     for path,module in model.named_modules():
@@ -136,5 +136,5 @@ def install_operators(model,*,backend="reference",operators=("radial","rmsnorm",
             return MethodType(forward,p.module)
         p.replacement=build_wrapper(p,adapter,signature)
         p.module.forward=p.replacement
-        p.module._dcu_dpa4_operator_owner=handle
+        p.module._dpa4_operator_owner=handle
     return handle

@@ -1,6 +1,6 @@
 """End-to-end DPA4 reference runner backed by DeePMD's own model.
 
-The project-owned operators in ``python/dcu_dpa4`` are independently testable; this runner
+The project-owned operators in ``python/kernels`` are independently testable; this runner
 retains DeePMD for the not-yet-ported SO(3)/SO(2), FFN and fitting stages.
 """
 
@@ -16,7 +16,7 @@ import numpy as np
 from .checkpoint import CheckpointSpec, load_checkpoint_spec
 from .neighbor_bridge import cpu_vesin_search
 from .system import DeepmdSystem
-from dcu_dpa4.deepmd import configure_eager,install_operators
+from .deepmd import configure_eager, install_operators
 
 
 def configure_device(device: str) -> None:
