@@ -12,6 +12,8 @@ with `ctx.save_for_backward`.
 | --- | --- | --- |
 | `radial_basis.py` | Raw Bessel radial basis | Distance; no frequency-parameter gradient |
 | `cutoff_envelope.py` | C3 radial/edge envelope | Distance |
+| `edge_geometry.py` | Regularized edge lengths and unit vectors | Edge vectors |
+| `edge_quaternion.py` | Smooth two-chart edge-aligned quaternion | Edge vectors, optional cached lengths |
 | `wigner_l1.py` | Packed l=0/l=1 Wigner-D pair | Quaternion |
 | `zonal_scatter.py` | Geometric initial embedding scatter | Zonal coupling, radial features, degree normalization |
 | `env_seed_scatter.py` | Environment-seed outer-product scatter | Geometry features, edge features, degree normalization |
@@ -38,6 +40,8 @@ operator in isolation:
 
 - `DP_TILELANG_RADIAL_BASIS=1`
 - `DP_TILELANG_C3_ENVELOPE=1`
+- `DP_TILELANG_EDGE_GEOMETRY=1`
+- `DP_TILELANG_EDGE_QUATERNION=1`
 - `DP_TILELANG_WIGNER_L1=1`
 - `DP_TILELANG_ZONAL_SCATTER=1`
 - `DP_TILELANG_ENV_SEED_SCATTER=1`

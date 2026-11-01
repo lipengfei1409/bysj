@@ -10,6 +10,16 @@ from .cutoff_envelope import (
     c3_cutoff_envelope_reference,
     tilelang_c3_cutoff_envelope,
 )
+from .edge_geometry import (
+    TileLangEdgeGeometry,
+    edge_geometry_reference,
+    tilelang_edge_geometry,
+)
+from .edge_quaternion import (
+    TileLangEdgeQuaternion,
+    edge_quaternion_reference,
+    tilelang_edge_quaternion,
+)
 from .env_seed_scatter import (
     TileLangEnvironmentSeedScatter,
     environment_seed_scatter_reference,
@@ -65,6 +75,8 @@ __all__ = [
     "TileLangAttentionAggregate",
     "TileLangBesselRadialBasis",
     "TileLangC3CutoffEnvelope",
+    "TileLangEdgeGeometry",
+    "TileLangEdgeQuaternion",
     "TileLangEnvironmentSeedScatter",
     "TileLangGridProduct",
     "TileLangRotateBackL1",
@@ -77,6 +89,8 @@ __all__ = [
     "attention_aggregate_reference",
     "bessel_radial_basis_reference",
     "c3_cutoff_envelope_reference",
+    "edge_geometry_reference",
+    "edge_quaternion_reference",
     "environment_seed_scatter_reference",
     "grid_product_reference",
     "rotate_back_l1_reference",
@@ -87,6 +101,8 @@ __all__ = [
     "tilelang_attention_aggregate",
     "tilelang_bessel_radial_basis",
     "tilelang_c3_cutoff_envelope",
+    "tilelang_edge_geometry",
+    "tilelang_edge_quaternion",
     "tilelang_environment_seed_scatter",
     "tilelang_grid_product",
     "tilelang_rotate_back_l1",
