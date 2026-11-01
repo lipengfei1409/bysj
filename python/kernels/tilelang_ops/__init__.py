@@ -20,10 +20,20 @@ from .edge_quaternion import (
     edge_quaternion_reference,
     tilelang_edge_quaternion,
 )
+from .env_seed_gram import (
+    TileLangEnvironmentSeedGram,
+    environment_seed_gram_reference,
+    tilelang_environment_seed_gram,
+)
 from .env_seed_scatter import (
     TileLangEnvironmentSeedScatter,
     environment_seed_scatter_reference,
     tilelang_environment_seed_scatter,
+)
+from .environment_matrix import (
+    TileLangEnvironmentMatrix,
+    environment_matrix_reference,
+    tilelang_environment_matrix,
 )
 from .grid_product import (
     TileLangGridProduct,
@@ -77,6 +87,8 @@ __all__ = [
     "TileLangC3CutoffEnvelope",
     "TileLangEdgeGeometry",
     "TileLangEdgeQuaternion",
+    "TileLangEnvironmentMatrix",
+    "TileLangEnvironmentSeedGram",
     "TileLangEnvironmentSeedScatter",
     "TileLangGridProduct",
     "TileLangRotateBackL1",
@@ -91,6 +103,8 @@ __all__ = [
     "c3_cutoff_envelope_reference",
     "edge_geometry_reference",
     "edge_quaternion_reference",
+    "environment_matrix_reference",
+    "environment_seed_gram_reference",
     "environment_seed_scatter_reference",
     "grid_product_reference",
     "rotate_back_l1_reference",
@@ -103,6 +117,8 @@ __all__ = [
     "tilelang_c3_cutoff_envelope",
     "tilelang_edge_geometry",
     "tilelang_edge_quaternion",
+    "tilelang_environment_matrix",
+    "tilelang_environment_seed_gram",
     "tilelang_environment_seed_scatter",
     "tilelang_grid_product",
     "tilelang_rotate_back_l1",

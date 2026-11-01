@@ -16,7 +16,9 @@ with `ctx.save_for_backward`.
 | `edge_quaternion.py` | Smooth two-chart edge-aligned quaternion | Edge vectors, optional cached lengths |
 | `wigner_l1.py` | Packed l=0/l=1 Wigner-D pair | Quaternion |
 | `zonal_scatter.py` | Geometric initial embedding scatter | Zonal coupling, radial features, degree normalization |
+| `environment_matrix.py` | Build `[s, s*r_hat]` geometry channels | Edge vectors, envelope |
 | `env_seed_scatter.py` | Environment-seed outer-product scatter | Geometry features, edge features, degree normalization |
+| `env_seed_gram.py` | Invariant environment Gram projection | Aggregated environment matrix |
 | `so2_rotate_to_local_l1.py` | Source gather and local-frame projection | Node features, Wigner matrix |
 | `so2_radial_scale.py` | Per-degree local radial modulation | Local features, radial features |
 | `so2_linear_l1.py` | Block-diagonal SO2Linear for lmax=mmax=1 | Local features; frozen weights |
@@ -44,7 +46,9 @@ operator in isolation:
 - `DP_TILELANG_EDGE_QUATERNION=1`
 - `DP_TILELANG_WIGNER_L1=1`
 - `DP_TILELANG_ZONAL_SCATTER=1`
+- `DP_TILELANG_ENV_SEED_MATRIX=1`
 - `DP_TILELANG_ENV_SEED_SCATTER=1`
+- `DP_TILELANG_ENV_SEED_GRAM=1`
 - `DP_TILELANG_SO2_ROTATION_L1=1`
 - `DP_TILELANG_SO2_RADIAL_SCALE=1`
 - `DP_TILELANG_SO2_LINEAR_L1=1`
