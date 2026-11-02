@@ -10,6 +10,11 @@ from .cutoff_envelope import (
     c3_cutoff_envelope_reference,
     tilelang_c3_cutoff_envelope,
 )
+from .edge_degree import (
+    TileLangEdgeDegree,
+    edge_degree_reference,
+    tilelang_edge_degree,
+)
 from .edge_geometry import (
     TileLangEdgeGeometry,
     edge_geometry_reference,
@@ -90,6 +95,7 @@ __all__ = [
     "TileLangAttentionAggregate",
     "TileLangBesselRadialBasis",
     "TileLangC3CutoffEnvelope",
+    "TileLangEdgeDegree",
     "TileLangEdgeGeometry",
     "TileLangEdgeQuaternion",
     "TileLangEdgeTypeFeatures",
@@ -107,6 +113,7 @@ __all__ = [
     "attention_aggregate_reference",
     "bessel_radial_basis_reference",
     "c3_cutoff_envelope_reference",
+    "edge_degree_reference",
     "edge_geometry_reference",
     "edge_quaternion_reference",
     "edge_type_features_reference",
@@ -122,6 +129,7 @@ __all__ = [
     "tilelang_attention_aggregate",
     "tilelang_bessel_radial_basis",
     "tilelang_c3_cutoff_envelope",
+    "tilelang_edge_degree",
     "tilelang_edge_geometry",
     "tilelang_edge_quaternion",
     "tilelang_edge_type_features",
