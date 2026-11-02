@@ -1,10 +1,11 @@
 # TileLang DPA4 operators
 
 This package holds standalone TileLang operators for the single-card DPA4/SeZM
-energy-and-force inference path. Operators are not fused. Each module owns its
-forward kernel, backward kernel(s), `torch.autograd.Function`, and differentiable
-PyTorch reference. The autograd functions save the inputs needed by backward
-with `ctx.save_for_backward`.
+energy-and-force inference path. Operators are not fused. Force-differentiable
+modules own forward and backward TileLang kernels, a `torch.autograd.Function`,
+and a PyTorch reference. The discrete edge-type gather is forward-only because
+its frozen model parameters do not depend on coordinates. Autograd functions save
+the inputs needed by backward with `ctx.save_for_backward`.
 
 ## Operator modules
 
@@ -14,6 +15,7 @@ with `ctx.save_for_backward`.
 | `cutoff_envelope.py` | C3 radial/edge envelope | Distance |
 | `edge_geometry.py` | Regularized edge lengths and unit vectors | Edge vectors |
 | `edge_quaternion.py` | Smooth two-chart edge-aligned quaternion | Edge vectors, optional cached lengths |
+| `edge_type_features.py` | Source/destination embedding gather and sum | Frozen node type embeddings |
 | `wigner_l1.py` | Packed l=0/l=1 Wigner-D pair | Quaternion |
 | `zonal_scatter.py` | Geometric initial embedding scatter | Zonal coupling, radial features, degree normalization |
 | `environment_matrix.py` | Build `[s, s*r_hat]` geometry channels | Edge vectors, envelope |
@@ -44,6 +46,7 @@ operator in isolation:
 - `DP_TILELANG_C3_ENVELOPE=1`
 - `DP_TILELANG_EDGE_GEOMETRY=1`
 - `DP_TILELANG_EDGE_QUATERNION=1`
+- `DP_TILELANG_EDGE_TYPE_FEATURES=1`
 - `DP_TILELANG_WIGNER_L1=1`
 - `DP_TILELANG_ZONAL_SCATTER=1`
 - `DP_TILELANG_ENV_SEED_MATRIX=1`
@@ -63,8 +66,9 @@ so importing `kernels` or `kernels.tilelang_ops` does not require TileLang.
 
 ## Validation
 
-Each module has a CPU-runnable PyTorch-reference test and a TileLang forward /
-backward parity test that runs only when both TileLang and HIP/DCU are present.
+Each module has a CPU-runnable PyTorch-reference test. Force-differentiable
+operators also have TileLang forward/backward parity tests that run only when
+both TileLang and HIP/DCU are present.
 The current development host has neither TileLang nor HIP/DCU, so successful
 CPU reference tests do **not** establish that the JIT kernels compile or that a
 full DPA4 energy/force run passes on the target device. Keep that limitation

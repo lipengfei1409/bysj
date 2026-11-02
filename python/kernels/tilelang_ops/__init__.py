@@ -20,6 +20,11 @@ from .edge_quaternion import (
     edge_quaternion_reference,
     tilelang_edge_quaternion,
 )
+from .edge_type_features import (
+    TileLangEdgeTypeFeatures,
+    edge_type_features_reference,
+    tilelang_edge_type_features,
+)
 from .env_seed_gram import (
     TileLangEnvironmentSeedGram,
     environment_seed_gram_reference,
@@ -87,6 +92,7 @@ __all__ = [
     "TileLangC3CutoffEnvelope",
     "TileLangEdgeGeometry",
     "TileLangEdgeQuaternion",
+    "TileLangEdgeTypeFeatures",
     "TileLangEnvironmentMatrix",
     "TileLangEnvironmentSeedGram",
     "TileLangEnvironmentSeedScatter",
@@ -103,6 +109,7 @@ __all__ = [
     "c3_cutoff_envelope_reference",
     "edge_geometry_reference",
     "edge_quaternion_reference",
+    "edge_type_features_reference",
     "environment_matrix_reference",
     "environment_seed_gram_reference",
     "environment_seed_scatter_reference",
@@ -117,6 +124,7 @@ __all__ = [
     "tilelang_c3_cutoff_envelope",
     "tilelang_edge_geometry",
     "tilelang_edge_quaternion",
+    "tilelang_edge_type_features",
     "tilelang_environment_matrix",
     "tilelang_environment_seed_gram",
     "tilelang_environment_seed_scatter",
