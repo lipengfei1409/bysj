@@ -1,82 +1,55 @@
-# DCU DPA4
+# DCU DPA4 GEMM
 
-DPA4 operators and an experimental DPA4-Neo OMol25 model path for ROCm/DTK. The project also has a generic Python model-adapter framework and optional HuggingFace text generation. The independent DPA4 model is not yet fully validated (`complete_model=False`); no complete DPA4 or Qwen MegaKernel speedup is claimed.
+The current production operator is a contiguous, 2D FP32 `A[M,K] @ B[K,N]` implemented with DTK DUMMA. The native path is DCU-only and has no CPU, rocBLAS, or scalar-kernel fallback. A separate PyTorch oracle lives in `python/reference/` for explicit tests and comparisons. The next model milestone is single-card DPA4/SeZM inference returning energy and forces: implement required TileLang operators individually first, keep unported stages on ordinary PyTorch/kernels, and defer all fusion until the standalone operators and inference path are validated.
 
-## Layout
+## Scope
 
-```text
-include/           DTK/HIP tile, wave, sync, DUMMA, and BLAS interfaces
-csrc/              HIP primitives, persistent edge-feature worker, pybind bindings
-python/main.py      unified execution dispatcher for model tools and inference
-python/model/       DPA4 model definitions, tensor contracts, and dataflow
-python/runtime/     runners, inference adapters, checkpoint/system I/O, and execution
-python/kernels/     low-level operator APIs, HIP extension loader, and BLAS
-examples/          separate DPA4 E/F/V and Qwen text-generation entry points
-tests/             Python, native-operator, and opt-in full-model suites
-doc/               two canonical guides
+- `python/kernels/`: production GEMM API and DCU extension checks.
+- `python/kernels/tilelang_ops/`: optional TileLang operator-development package; currently includes a standalone Bessel radial-basis op with a PyTorch autograd wrapper.
+- `python/reference/`: explicit PyTorch GEMM oracle; not imported as a production fallback.
+- `csrc/gemm/gemm.cpp`: DUMMA FP32 16x16x4 kernel with masked M/N/K tails.
+- `include/`: `.h` headers for the four DUMMA API wrappers, manual-based MMA shape selectors, and shared tile/LDS/cooperative-load/synchronization helpers.
+- `tests/`: Python contracts, host-side helper contracts, and opt-in DTK/DCU accuracy tests.
+- `doc/`: GEMM kernel and tile/LDS execution notes.
+
+See [DMK current kernels](doc/dpa4-kernels.md) for implemented kernels and TileLang inference-development status, and [DeepMD-kit DPA4 operators](doc/megakernel.md) for framework dataflow, operator definitions, fused CUDA-op precedents, and distributed halo exchange.
+
+## Python API
+
+```python
+import torch
+from kernels import gemm
+from reference import gemm as reference_gemm
+
+a = torch.randn(19, 7, device="cuda", dtype=torch.float32)
+b = torch.randn(7, 23, device="cuda", dtype=torch.float32)
+y = gemm(a, b)                 # requires a supported DCU and built DUMMA extension
+expected = reference_gemm(a, b)  # explicit PyTorch oracle
 ```
 
-- [DPA4 kernels and DTK design](doc/dpa4-kernels.md): upstream operator map, tile-primitive roadmap, ThunderKittens translation boundaries, build and native verification.
-- [Model adapters and tests](doc/models.md): Python package boundaries, DPA4/DeePMD, Qwen text adapter, model-level accuracy and latency.
+The first operator contract requires two contiguous 2D FP32 tensors on the same supported DCU, with matching inner dimensions. It is forward-only and does not support batching, transposes, bias, alpha/beta/C, or autograd. The oracle is available through `PYTHONPATH=python`; `kernels.gemm` never calls it implicitly.
 
-## Quick start
+## TileLang operator development
 
-The unified entrypoint in `python/main.py` dispatches DPA4 tools/inference and text-generation adapters:
+The first milestone is single-card DPA4/SeZM inference with **standalone, non-fused TileLang operators**. Only operators needed by the selected inference configuration will be implemented one by one; other stages remain on ordinary PyTorch/kernels. The workspace is `python/kernels/tilelang_ops/`: each operator lives in its own module with separate forward/backward kernels and a `torch.autograd.Function` entry point. The first op is raw Bessel radial basis; its backward propagates force gradients to distances, while the C3 envelope remains a separate PyTorch operation. In DeepMD-kit `pt_expt`, opt in with `DP_TILELANG_RADIAL_BASIS=1`; unported operators still use PyTorch. The package is not re-exported by `kernels` and does not add TileLang as a required dependency. Fusion is deferred until individual operator correctness and the end-to-end inference path are validated. Multi-rank ghost/halo exchange is outside the initial single-card scope.
 
-```bash
-python python/main.py dpa4 operators
-python python/main.py dpa4 shape --atoms 192 --edges 1000 --frames 2
-python python/main.py dpa4 infer --checkpoint /path/to/model.pt --system /path/to/deepmd-npy-system
-python python/main.py text --family qwen3 --model-id Qwen/Qwen3-0.6B --prompt "Explain equivariant message passing."
-```
-
-Pure-Python model/framework checks (requires the project's Python dependencies):
+Run the Python contract and reference tests:
 
 ```bash
 export PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}"
 python -m unittest discover -s tests/python -v
-python -m runtime operators  # equivalent DPA4-only entrypoint
 ```
 
-DPA4 E/F/V through an installed DeePMD runtime:
+## Build and test on DTK/DCU
 
-```bash
-PYTHONPATH=python python examples/dpa4/infer.py \
-  --checkpoint /path/to/model.pt --system /path/to/deepmd-npy-system --device cpu
-```
-
-Optional Qwen3 text generation:
-
-```bash
-pip install -e '.[qwen]'
-PYTHONPATH=python python examples/qwen3/infer.py \
-  --family qwen3 --model-id Qwen/Qwen3-0.6B \
-  --prompt 'Explain equivariant message passing.'
-```
-
-Qwen3.5 is conditional on the installed Transformers model class and the included adapter supports text only. It is not a Qwen serving backend.
-
-## Build on DTK/DCU
-
-Use an existing DTK PyTorch environment and its installed toolkit; this project does not replace system dependencies:
+The extension requires HIP-enabled PyTorch, the DTK HIP compiler, and the external `<du_mma.h>` header from a compatible DTK installation. The FP32 K=4 DUMMA shape is enabled for gfx926, gfx928, gfx936, and gfx938. `gemm.cpp` contains HIP syntax despite the `.cpp` suffix; setup compiles native `.cpp` files with `hipcc` (override with `DPA4_HIP_CXX`). The project does not vendor DUMMA.
 
 ```bash
 source /opt/dtk/env.sh
 export PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}"
-DPA4_BUILD_HIP=1 MAX_JOBS=4 python setup.py build_ext --inplace
-python -c 'from kernels.native import native_available; assert native_available()'
+DPA4_BUILD_HIP=1 DPA4_ENABLE_DUMMA=1 DPA4_HIP_CXX=hipcc MAX_JOBS=4 \
+  python setup.py build_ext --inplace
 python -m unittest discover -s tests/csrc -v
 ```
 
-The DUMMA-tiled FP32 linear path is opt-in and requires a supported gfx target with `du_mma.h`:
-
-```bash
-DPA4_BUILD_HIP=1 DPA4_ENABLE_DUMMA=1 MAX_JOBS=4 \
-  python setup.py build_ext --inplace
-```
-
-rocBLAS is a separate optional host-launched path (`DPA4_BUILD_HIP=1 DPA4_BUILD_ROCBLAS=1`). It is not called inside the persistent device worker.
-
-## Current implementation boundary
-
-The current HIP extension includes geometry, radial features, edge-feature fusion, ordinary RMSNorm, linear, segment sum and force/virial assembly. `DPA4Model` still has incomplete checkpoint/VJP/native coverage. The persistent worker dispatches only fused edge features or `edge_geometry → radial_basis`; the static task planner is not a full-model executor. The newly added DUMMA linear path, native runtime, model accuracy and DCU timing require compilation and verification on the target device before use or performance claims.
+For the direct DUMMA instruction test, set `DPA4_RUN_INSTRUCTION_TESTS=1` and `DPA4_TEST_DUMMA=1` when running the C++ test suite. Native tests require a supported DCU; a non-DCU environment can run the Python oracle and host header tests but cannot verify the kernel.

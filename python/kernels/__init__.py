@@ -1,7 +1,5 @@
-"""Reference operators and HIP integration points for DPA4 inference."""
+"""DCU-only DUMMA GEMM operator."""
 
-from .geometry import edge_vectors
-from .radial import c3_cutoff_envelope, radial_basis
-from .reduce import edge_force_virial
+from .gemm import gemm
 
-__all__ = ["edge_vectors", "c3_cutoff_envelope", "radial_basis", "edge_force_virial"]
+__all__ = ["gemm"]
