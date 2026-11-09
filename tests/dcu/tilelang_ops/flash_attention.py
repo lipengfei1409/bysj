@@ -1,11 +1,9 @@
 """Test-local dense TileLang FlashAttention operator for HIP/DCU."""
 
-from __future__ import annotations
-
 import importlib.util
 import math
 from functools import lru_cache
-from typing import Any
+from typing import Any, Optional, Tuple
 
 import torch
 
@@ -58,6 +56,7 @@ def _forward_kernel_factory():
         q_shape = [batch, q_len, heads, head_dim]
         kv_shape = [batch, kv_len, heads, head_dim]
 
+        @T.prim_func
         def main(
             Q: T.Tensor(q_shape, dtype),
             K: T.Tensor(kv_shape, dtype),
@@ -178,16 +177,7 @@ def _forward_kernel_factory():
                         else:
                             LSE[batch_id, head_id, q_index] = -T.infinity(T.float32)
 
-        # Resolve dynamic shape annotations here; the eager TileLang builder
-        # cannot resolve stringified closure-local names produced by future annotations.
-        main.__annotations__ = {
-            "Q": T.Tensor(q_shape, dtype),
-            "K": T.Tensor(kv_shape, dtype),
-            "V": T.Tensor(kv_shape, dtype),
-            "Output": T.Tensor(q_shape, dtype),
-            "LSE": T.Tensor([batch, heads, q_len], T.float32),
-        }
-        return T.prim_func(main)
+        return main
 
     return flash_attention_forward
 
@@ -504,11 +494,11 @@ def _validate_inputs(
     k: torch.Tensor,
     v: torch.Tensor,
     dropout_p: float,
-    softmax_scale: float | None,
+    softmax_scale: Optional[float],
     causal: bool,
-    window_size: tuple[int, int],
+    window_size: Tuple[int, int],
     softcap: float,
-    alibi_slopes: torch.Tensor | None,
+    alibi_slopes: Optional[torch.Tensor],
     return_attn_probs: bool,
 ) -> float:
     if dropout_p != 0.0:
@@ -649,11 +639,11 @@ def flash_attn_func(
     k: torch.Tensor,
     v: torch.Tensor,
     dropout_p: float = 0.0,
-    softmax_scale: float | None = None,
+    softmax_scale: Optional[float] = None,
     causal: bool = False,
-    window_size: tuple[int, int] | None = (-1, -1),
+    window_size: Optional[Tuple[int, int]] = (-1, -1),
     softcap: float = 0.0,
-    alibi_slopes: torch.Tensor | None = None,
+    alibi_slopes: Optional[torch.Tensor] = None,
     deterministic: bool = False,
     return_attn_probs: bool = False,
 ):
