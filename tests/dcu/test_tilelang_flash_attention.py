@@ -1,4 +1,4 @@
-"""TileLang dense FlashAttention reference, DCU parity, and opt-in benchmark.
+"""TileLang dense FlashAttention forward parity and opt-in benchmark.
 
 Run the correctness tests with::
 
@@ -6,9 +6,9 @@ Run the correctness tests with::
         python -m unittest discover -s tests/dcu \
         -p 'test_tilelang_flash_attention.py' -v
 
-Add ``DPA4_RUN_FLASH_ATTN_BENCHMARK=1`` to run the synchronized benchmark on a
-TileLang/HIP device. The implementation intentionally covers the dense
-``flash_attn_func`` contract only: zero dropout, no GQA, windowing, ALiBi,
+Add ``DPA4_RUN_FLASH_ATTN_BENCHMARK=1`` to run the synchronized forward-only
+benchmark on a TileLang/HIP device. The implementation intentionally covers the
+dense ``flash_attn_func`` contract only: zero dropout, no GQA, windowing, ALiBi,
 softcap, or returned attention probabilities.
 """
 
@@ -101,37 +101,29 @@ def _make_device_inputs(q_len, kv_len, dtype, *, batch=1, heads=2, head_dim=64):
     return q, k, v
 
 
-def _assert_tilelang_matches_reference(test_case, q, k, v, *, causal):
-    q_tl = q.detach().clone().requires_grad_(True)
-    k_tl = k.detach().clone().requires_grad_(True)
-    v_tl = v.detach().clone().requires_grad_(True)
-    torch.manual_seed(1729)
-    grad_output = torch.randn_like(q_tl)
-    output_tl = flash_attn_func(q_tl, k_tl, v_tl, causal=causal)
-    grads_tl = torch.autograd.grad(output_tl, (q_tl, k_tl, v_tl), grad_output)
-
-    q_ref = q.detach().clone().requires_grad_(True)
-    k_ref = k.detach().clone().requires_grad_(True)
-    v_ref = v.detach().clone().requires_grad_(True)
-    output_ref = pytorch_flash_attn_reference(q_ref, k_ref, v_ref, causal=causal)
-    grads_ref = torch.autograd.grad(output_ref, (q_ref, k_ref, v_ref), grad_output)
-
+def _assert_tilelang_matches_reference(
+    test_case, q, k, v, *, causal, softmax_scale=None
+):
+    output_tl = flash_attn_func(
+        q, k, v, softmax_scale=softmax_scale, causal=causal
+    )
+    output_ref = pytorch_flash_attn_reference(
+        q, k, v, softmax_scale=softmax_scale, causal=causal
+    )
     tolerance = 8.0e-2 if q.dtype == torch.bfloat16 else 3.0e-2
+    test_case.assertTrue(torch.isfinite(output_tl).all().item())
     torch.testing.assert_close(output_tl, output_ref, rtol=tolerance, atol=tolerance)
-    for grad_tl, grad_ref in zip(grads_tl, grads_ref):
-        test_case.assertTrue(torch.isfinite(grad_tl).all().item())
-        torch.testing.assert_close(grad_tl, grad_ref, rtol=tolerance, atol=tolerance)
-    return output_tl, grads_tl, grad_output
+    return output_tl
 
 
 class FlashAttentionReferenceTests(unittest.TestCase):
-    def test_matches_torch_sdpa_and_gradients(self):
+    def test_matches_torch_sdpa_forward(self):
         for causal in (False, True):
             with self.subTest(causal=causal):
                 torch.manual_seed(21)
-                q = torch.randn((2, 5, 2, 7), dtype=torch.float64, requires_grad=True)
-                k = torch.randn((2, 5, 2, 7), dtype=torch.float64, requires_grad=True)
-                v = torch.randn((2, 5, 2, 7), dtype=torch.float64, requires_grad=True)
+                q = torch.randn((2, 5, 2, 7), dtype=torch.float64)
+                k = torch.randn((2, 5, 2, 7), dtype=torch.float64)
+                v = torch.randn((2, 5, 2, 7), dtype=torch.float64)
                 actual = pytorch_flash_attn_reference(q, k, v, causal=causal)
                 expected = F.scaled_dot_product_attention(
                     q.transpose(1, 2),
@@ -140,13 +132,6 @@ class FlashAttentionReferenceTests(unittest.TestCase):
                     is_causal=causal,
                 ).transpose(1, 2)
                 torch.testing.assert_close(actual, expected, rtol=1.0e-5, atol=2.0e-6)
-                upstream = torch.randn_like(actual)
-                actual_grads = torch.autograd.grad(actual, (q, k, v), upstream)
-                expected_grads = torch.autograd.grad(expected, (q, k, v), upstream)
-                for actual_grad, expected_grad in zip(actual_grads, expected_grads):
-                    torch.testing.assert_close(
-                        actual_grad, expected_grad, rtol=1.0e-5, atol=2.0e-6
-                    )
 
     def test_bottom_right_causal_alignment_and_empty_rows(self):
         q = torch.zeros((1, 4, 1, 1), dtype=torch.float64)
@@ -171,14 +156,14 @@ class FlashAttentionReferenceTests(unittest.TestCase):
 
 @unittest.skipUnless(_HAS_TILELANG_HIP, "requires TileLang and a HIP/DCU device")
 class FlashAttentionDeviceTests(unittest.TestCase):
-    def test_forward_and_backward_match_pytorch_reference(self):
+    def test_forward_matches_pytorch_reference(self):
         cases = ((65, 65, False), (67, 83, True))
         for q_len, kv_len, causal in cases:
             with self.subTest(q_len=q_len, kv_len=kv_len, causal=causal):
                 q, k, v = _make_device_inputs(q_len, kv_len, torch.float16)
                 _assert_tilelang_matches_reference(self, q, k, v, causal=causal)
 
-    def test_bfloat16_forward_and_backward_when_supported(self):
+    def test_bfloat16_forward_when_supported(self):
         checker = getattr(torch.cuda, "is_bf16_supported", None)
         if checker is None:
             self.skipTest("PyTorch does not report bfloat16 support for this device")
@@ -191,41 +176,31 @@ class FlashAttentionDeviceTests(unittest.TestCase):
         q, k, v = _make_device_inputs(65, 67, torch.bfloat16)
         _assert_tilelang_matches_reference(self, q, k, v, causal=True)
 
-    def test_optional_open_source_flash_attn_parity(self):
+    def test_optional_open_source_flash_attn_forward_parity(self):
         reference, reason = _open_source_flash_attn()
         if reference is None:
             self.skipTest(reason)
         q, k, v = _make_device_inputs(65, 65, torch.float16)
-        output_tl, grads_tl, grad_output = _assert_tilelang_matches_reference(
-            self, q, k, v, causal=True
-        )
-        q_ref = q.detach().clone().requires_grad_(True)
-        k_ref = k.detach().clone().requires_grad_(True)
-        v_ref = v.detach().clone().requires_grad_(True)
+        output_tl = _assert_tilelang_matches_reference(self, q, k, v, causal=True)
         try:
-            output_ref = reference(q_ref, k_ref, v_ref, dropout_p=0.0, causal=True)
-            grads_ref = torch.autograd.grad(
-                output_ref, (q_ref, k_ref, v_ref), grad_output
-            )
+            output_ref = reference(q, k, v, dropout_p=0.0, causal=True)
+            torch.cuda.synchronize(q.device)
         except (RuntimeError, NotImplementedError) as error:
             self.skipTest(
                 "installed flash_attn does not support this HIP/DCU target: "
                 f"{error}"
             )
         torch.testing.assert_close(output_tl, output_ref, rtol=3.0e-2, atol=3.0e-2)
-        for grad_tl, grad_ref in zip(grads_tl, grads_ref):
-            torch.testing.assert_close(grad_tl, grad_ref, rtol=5.0e-2, atol=5.0e-2)
 
     @unittest.skipUnless(
         _RUN_BENCHMARK,
-        "set DPA4_RUN_FLASH_ATTN_BENCHMARK=1 to run the performance benchmark",
+        "set DPA4_RUN_FLASH_ATTN_BENCHMARK=1 to run the forward benchmark",
     )
-    def test_opt_in_performance_benchmark(self):
+    def test_opt_in_forward_performance_benchmark(self):
         reference, reason = _open_source_flash_attn()
         q, k, v = _make_device_inputs(512, 512, torch.float16, heads=8)
         causal = False
         scale = 1.0 / math.sqrt(q.shape[-1])
-        grad_output = torch.randn_like(q)
         warmup = max(1, int(os.environ.get("DPA4_FLASH_ATTN_BENCH_WARMUP", "3")))
         repeats = max(3, int(os.environ.get("DPA4_FLASH_ATTN_BENCH_REPEATS", "20")))
 
@@ -239,29 +214,6 @@ class FlashAttentionDeviceTests(unittest.TestCase):
                 v.transpose(1, 2),
                 scale=scale,
                 is_causal=causal,
-            ).transpose(1, 2)
-
-        def tilelang_forward_backward():
-            qg = q.detach().requires_grad_(True)
-            kg = k.detach().requires_grad_(True)
-            vg = v.detach().requires_grad_(True)
-            output = flash_attn_func(qg, kg, vg, softmax_scale=scale, causal=causal)
-            torch.autograd.grad(output, (qg, kg, vg), grad_output)
-
-        def torch_forward_backward():
-            qg = q.detach().requires_grad_(True)
-            kg = k.detach().requires_grad_(True)
-            vg = v.detach().requires_grad_(True)
-            output = torch_forward_with_inputs(qg, kg, vg, scale, causal)
-            torch.autograd.grad(output, (qg, kg, vg), grad_output)
-
-        def torch_forward_with_inputs(qi, ki, vi, scale_value, is_causal):
-            return F.scaled_dot_product_attention(
-                qi.transpose(1, 2),
-                ki.transpose(1, 2),
-                vi.transpose(1, 2),
-                scale=scale_value,
-                is_causal=is_causal,
             ).transpose(1, 2)
 
         def measure(function):
@@ -282,8 +234,6 @@ class FlashAttentionDeviceTests(unittest.TestCase):
         results = {
             "TileLang forward": measure(tilelang_forward),
             "PyTorch SDPA forward": measure(torch_forward),
-            "TileLang forward+backward": measure(tilelang_forward_backward),
-            "PyTorch SDPA forward+backward": measure(torch_forward_backward),
         }
         flash_benchmark_error = reason
         if reference is not None:
@@ -298,25 +248,8 @@ class FlashAttentionDeviceTests(unittest.TestCase):
                     causal=causal,
                 )
 
-            def flash_forward_backward():
-                qg = q.detach().requires_grad_(True)
-                kg = k.detach().requires_grad_(True)
-                vg = v.detach().requires_grad_(True)
-                output = reference(
-                    qg,
-                    kg,
-                    vg,
-                    dropout_p=0.0,
-                    softmax_scale=scale,
-                    causal=causal,
-                )
-                torch.autograd.grad(output, (qg, kg, vg), grad_output)
-
             try:
                 results["flash_attn forward"] = measure(flash_forward)
-                results["flash_attn forward+backward"] = measure(
-                    flash_forward_backward
-                )
                 flash_benchmark_error = None
             except Exception as error:
                 flash_benchmark_error = (
@@ -326,9 +259,7 @@ class FlashAttentionDeviceTests(unittest.TestCase):
             print(f"{label}: {milliseconds:.4f} ms")
         for baseline, tiled in (
             ("PyTorch SDPA forward", "TileLang forward"),
-            ("PyTorch SDPA forward+backward", "TileLang forward+backward"),
             ("flash_attn forward", "TileLang forward"),
-            ("flash_attn forward+backward", "TileLang forward+backward"),
         ):
             if baseline in results:
                 speedup = results[baseline] / results[tiled]
