@@ -35,6 +35,21 @@ def _tilelang_dtype(dtype: torch.dtype, T: Any):
     raise TypeError("TileLang FlashAttention supports torch.float16 and torch.bfloat16")
 
 
+def _forward_kernel_config(device: torch.device) -> tuple[int, int, int, int, bool]:
+    """Choose the WMMA-safe TileLang configuration for RDNA targets."""
+    properties = torch.cuda.get_device_properties(device)
+    name = str(getattr(properties, "name", torch.cuda.get_device_name(device))).lower()
+    arch = str(getattr(properties, "gcnArchName", "") or "").lower()
+    is_rdna = arch.startswith(("gfx10", "gfx11", "gfx12")) or any(
+        marker in name for marker in ("radeon", "dcu", "dtk")
+    )
+    if is_rdna:
+        # Match examples/amd/example_amd_flash_attn_fwd.py: RDNA WMMA needs
+        # smaller tiles, fewer threads, and k_pack=1.
+        return 32, 32, 64, 1, True
+    return _BLOCK_M, _BLOCK_N, _THREADS, 2, False
+
+
 @lru_cache(maxsize=1)
 def _forward_kernel_factory():
     tilelang, T, GemmWarpPolicy = _tilelang_modules()
@@ -51,6 +66,8 @@ def _forward_kernel_factory():
         block_m,
         block_n,
         threads,
+        k_pack,
+        use_shared_prob_bridge,
         dtype=T.float16,
     ):
         q_shape = [batch, q_len, heads, head_dim]
@@ -74,6 +91,8 @@ def _forward_kernel_factory():
                 q_shared = T.alloc_shared([block_m, head_dim], dtype)
                 k_shared = T.alloc_shared([block_n, head_dim], dtype)
                 v_shared = T.alloc_shared([block_n, head_dim], dtype)
+                if use_shared_prob_bridge:
+                    probs_shared = T.alloc_shared([block_m, block_n], dtype)
                 scores = T.alloc_fragment([block_m, block_n], T.float32)
                 probs = T.alloc_fragment([block_m, block_n], T.float32)
                 probs_cast = T.alloc_fragment([block_m, block_n], dtype)
@@ -116,7 +135,7 @@ def _forward_kernel_factory():
                             k_shared,
                             scores,
                             transpose_B=True,
-                            k_pack=2,
+                            k_pack=k_pack,
                             policy=GemmWarpPolicy.FullRow,
                         )
                         for i, j in T.Parallel(block_m, block_n):
@@ -153,12 +172,17 @@ def _forward_kernel_factory():
                         T.reduce_sum(probs, row_sum, dim=1)
                         for i in T.Parallel(block_m):
                             l_i[i] += row_sum[i]
-                        T.copy(probs, probs_cast)
+                        if use_shared_prob_bridge:
+                            for i, j in T.Parallel(block_m, block_n):
+                                probs_shared[i, j] = T.cast(probs[i, j], dtype)
+                            T.copy(probs_shared, probs_cast)
+                        else:
+                            T.copy(probs, probs_cast)
                         T.gemm(
                             probs_cast,
                             v_shared,
                             acc_o,
-                            k_pack=2,
+                            k_pack=k_pack,
                             policy=GemmWarpPolicy.FullRow,
                         )
 
@@ -573,6 +597,9 @@ class _TileLangFlashAttention(torch.autograd.Function):
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
+        block_m, block_n, threads, k_pack, use_shared_prob_bridge = (
+            _forward_kernel_config(q.device)
+        )
         output, lse = _forward_kernel_factory()(
             batch,
             q_len,
@@ -581,9 +608,11 @@ class _TileLangFlashAttention(torch.autograd.Function):
             head_dim,
             bool(causal),
             float(scale),
-            _BLOCK_M,
-            _BLOCK_N,
-            _THREADS,
+            block_m,
+            block_n,
+            threads,
+            k_pack,
+            use_shared_prob_bridge,
             dtype,
         )(q, k, v)
         ctx.scale = float(scale)
