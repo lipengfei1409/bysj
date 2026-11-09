@@ -1,11 +1,11 @@
 # DCU DPA4 GEMM
 
-The current production operator is a contiguous, 2D FP32 `A[M,K] @ B[K,N]` implemented with DTK DUMMA. The native path is DCU-only and has no CPU, rocBLAS, or scalar-kernel fallback. A separate PyTorch oracle lives in `python/reference/` for explicit tests and comparisons. The next model milestone is single-card DPA4/SeZM inference returning energy and forces: implement required TileLang operators individually first, keep unported stages on ordinary PyTorch/kernels, and defer all fusion until the standalone operators and inference path are validated.
+The current production GEMM operator is a contiguous, 2D FP32 `A[M,K] @ B[K,N]` implemented with DTK DUMMA. The native path is DCU-only and has no CPU, rocBLAS, or scalar-kernel fallback. A separate PyTorch oracle lives in `python/reference/` for explicit tests and comparisons. For DPA4/SeZM inference, `python/model/dpa4.py` adapts DeepMD-kit rather than reimplementing its model graph; DeepMD owns checkpoint loading, neighbor-list handling, energy, forces, and virial, while selected standalone TileLang operators can be enabled in its `pt_expt` backend.
 
 ## Scope
 
 - `python/kernels/`: production GEMM API and DCU extension checks.
-- `python/kernels/tilelang_ops/`: optional TileLang operator-development package; currently includes a standalone Bessel radial-basis op with a PyTorch autograd wrapper.
+- `python/kernels/tilelang_ops/`: optional standalone TileLang operators for DPA4/SeZM, each with a PyTorch reference and (where needed) autograd wrapper.
 - `python/reference/`: explicit PyTorch GEMM oracle; not imported as a production fallback.
 - `csrc/gemm/gemm.cpp`: DUMMA FP32 16x16x4 kernel with masked M/N/K tails.
 - `include/`: `.h` headers for the four DUMMA API wrappers, manual-based MMA shape selectors, and shared tile/LDS/cooperative-load/synchronization helpers.
@@ -31,13 +31,56 @@ The first operator contract requires two contiguous 2D FP32 tensors on the same 
 
 ## TileLang operator development
 
-The first milestone is single-card DPA4/SeZM inference with **standalone, non-fused TileLang operators**. Only operators needed by the selected inference configuration will be implemented one by one; other stages remain on ordinary PyTorch/kernels. The workspace is `python/kernels/tilelang_ops/`: each operator lives in its own module with separate forward/backward kernels and a `torch.autograd.Function` entry point. The first op is raw Bessel radial basis; its backward propagates force gradients to distances, while the C3 envelope remains a separate PyTorch operation. In DeepMD-kit `pt_expt`, opt in with `DP_TILELANG_RADIAL_BASIS=1`; unported operators still use PyTorch. The package is not re-exported by `kernels` and does not add TileLang as a required dependency. Fusion is deferred until individual operator correctness and the end-to-end inference path are validated. Multi-rank ghost/halo exchange is outside the initial single-card scope.
+The current model-integration milestone is single-card DPA4/SeZM inference with **standalone, non-fused TileLang operators**. Operators live in `python/kernels/tilelang_ops/`; their dispatch is reached through DeepMD-kit `pt_expt`, whose unported stages remain on ordinary PyTorch/kernels. The optional `DPA4Model` facade is in `python/model/dpa4.py`. Fusion, training, stress/virial-specific work, and multi-rank ghost/halo exchange remain outside this inference adapter.
 
 Run the Python contract and reference tests:
 
 ```bash
 export PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}"
 python -m unittest discover -s tests/python -v
+```
+
+## DeepMD DPA4 model adapter
+
+`model.DPA4Model` delegates model construction and inference to DeepMD-kit, so
+DPA4/SeZM model configurations supported by DeepMD do not need to be re-created
+in this repository. It forwards DeepMD's public `DeepPot.eval` inputs and outputs
+(energy, force, virial, and optional atomic outputs).
+
+```python
+from model import DPA4Model
+
+with DPA4Model(
+    "water_pt_expt.pt",
+    tilelang_ops=("radial_basis", "edge_geometry", "edge_degree"),
+) as model:
+    energy, force, virial = model.eval(coords, cells, atom_types)
+```
+
+Install DeepMD-kit separately and make this project's `python/` directory
+importable (for example, put it first on `PYTHONPATH`). `tilelang_ops=None`
+leaves the caller's `DP_TILELANG_*` environment unchanged; `tilelang_ops=()`
+forces the DeepMD baseline; an explicit sequence enables just those operator
+gates while DeepMD constructs the model. The `"dpa4"` selector sets the global
+`DP_TILELANG_DPA4` fast path and is restricted by DeepMD to its supported water
+configuration. For other DPA4 scenarios, prefer individual operator selectors;
+unsupported operators/configurations fail through DeepMD rather than silently
+pretending TileLang was used. TileLang dispatch requires DeepMD's `pt_expt`
+backend; legacy `pt` checkpoints remain usable as a baseline but do not dispatch
+TileLang. Use an eager `pt_expt` training checkpoint (typically `.pt`) to
+select operators at load time; `.pt2`/`.pte` artifacts have their kernels
+fixed at export time and should be loaded without TileLang selectors.
+
+An optional integration test accepts a `.npz` containing `coords`, `atom_types`,
+and optional `cells` arrays:
+
+```bash
+export PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}"
+DP_RUN_DPA4_MODEL_INTEGRATION=1 \
+DP_DPA4_MODEL_FILE=/path/to/dpa4_pt_expt.pt \
+DP_DPA4_INPUT_NPZ=/path/to/system.npz \
+DP_DPA4_MODEL_TILELANG_OPS=radial_basis,edge_geometry \
+python -m unittest tests.python.test_dpa4_model -v
 ```
 
 ## Build and test on DTK/DCU
