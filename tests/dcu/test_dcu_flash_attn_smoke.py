@@ -19,6 +19,7 @@ from importlib import metadata
 import torch
 
 from tilelang_ops import flash_attn_func as tilelang_flash_attn_func
+from tilelang_ops.flash_attention import _forward_kernel_config
 
 _HAS_HIP_DEVICE = torch.cuda.is_available() and torch.version.hip is not None
 
@@ -48,6 +49,15 @@ class FlashAttentionSmokeTests(unittest.TestCase):
             )
 
         device = torch.device("cuda")
+        properties = torch.cuda.get_device_properties(device)
+        config = _forward_kernel_config(device)
+        print(
+            "FlashAttention smoke target: "
+            f"device={torch.cuda.get_device_name(device)}, "
+            f"arch={getattr(properties, 'gcnArchName', 'unknown')}, "
+            f"forward_config={config}",
+            flush=True,
+        )
         torch.manual_seed(2026)
         shape = (1, 64, 2, 64)  # batch, sequence, heads, head dimension
         q = torch.randn(shape, device=device, dtype=torch.float16)

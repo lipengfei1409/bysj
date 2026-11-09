@@ -36,18 +36,13 @@ def _tilelang_dtype(dtype: torch.dtype, T: Any):
 
 
 def _forward_kernel_config(device: torch.device) -> tuple[int, int, int, int, bool]:
-    """Choose the WMMA-safe TileLang configuration for RDNA targets."""
-    properties = torch.cuda.get_device_properties(device)
-    name = str(getattr(properties, "name", torch.cuda.get_device_name(device))).lower()
-    arch = str(getattr(properties, "gcnArchName", "") or "").lower()
-    is_rdna = arch.startswith(("gfx10", "gfx11", "gfx12")) or any(
-        marker in name for marker in ("radeon", "dcu", "dtk")
-    )
-    if is_rdna:
-        # Match examples/amd/example_amd_flash_attn_fwd.py: RDNA WMMA needs
-        # smaller tiles, fewer threads, and k_pack=1.
-        return 32, 32, 64, 1, True
-    return _BLOCK_M, _BLOCK_N, _THREADS, 2, False
+    """Use the conservative shared-layout configuration for this HIP kernel."""
+    if device.type != "cuda" or torch.version.hip is None:
+        raise RuntimeError("TileLang FlashAttention requires a HIP/DCU device")
+    # The DCU runtime may report an architecture name that does not identify
+    # RDNA, even when its fragment layouts need the same D-to-A bridge. Use the
+    # AMD example's WMMA-safe tile and shared-memory path on every HIP target.
+    return 32, 32, 64, 1, True
 
 
 @lru_cache(maxsize=1)
