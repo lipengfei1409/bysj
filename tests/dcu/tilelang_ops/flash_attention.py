@@ -58,7 +58,6 @@ def _forward_kernel_factory():
         q_shape = [batch, q_len, heads, head_dim]
         kv_shape = [batch, kv_len, heads, head_dim]
 
-        @T.prim_func
         def main(
             Q: T.Tensor(q_shape, dtype),
             K: T.Tensor(kv_shape, dtype),
@@ -179,7 +178,16 @@ def _forward_kernel_factory():
                         else:
                             LSE[batch_id, head_id, q_index] = -T.infinity(T.float32)
 
-        return main
+        # Resolve dynamic shape annotations here; the eager TileLang builder
+        # cannot resolve stringified closure-local names produced by future annotations.
+        main.__annotations__ = {
+            "Q": T.Tensor(q_shape, dtype),
+            "K": T.Tensor(kv_shape, dtype),
+            "V": T.Tensor(kv_shape, dtype),
+            "Output": T.Tensor(q_shape, dtype),
+            "LSE": T.Tensor([batch, heads, q_len], T.float32),
+        }
+        return T.prim_func(main)
 
     return flash_attention_forward
 

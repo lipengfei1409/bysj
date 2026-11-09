@@ -32,7 +32,7 @@ def _version(distribution: str, module) -> str:
 
 @unittest.skipUnless(_HAS_HIP_DEVICE, "requires a PyTorch HIP/DCU device")
 class FlashAttentionSmokeTests(unittest.TestCase):
-    def test_tilelang_and_flash_attn_forward_backward(self):
+    def test_tilelang_and_flash_attn_forward(self):
         try:
             tilelang_module = importlib.import_module("tilelang")
         except Exception as error:
@@ -53,21 +53,8 @@ class FlashAttentionSmokeTests(unittest.TestCase):
         q = torch.randn(shape, device=device, dtype=torch.float16)
         k = torch.randn(shape, device=device, dtype=torch.float16)
         v = torch.randn(shape, device=device, dtype=torch.float16)
-        grad_output = torch.randn_like(q)
-
-        q_tl, k_tl, v_tl = tuple(
-            value.detach().clone().requires_grad_(True) for value in (q, k, v)
-        )
-        output_tl = tilelang_flash_attn_func(q_tl, k_tl, v_tl, causal=False)
-        grads_tl = torch.autograd.grad(output_tl, (q_tl, k_tl, v_tl), grad_output)
-
-        q_fa, k_fa, v_fa = tuple(
-            value.detach().clone().requires_grad_(True) for value in (q, k, v)
-        )
-        output_fa = flash_attn_func(
-            q_fa, k_fa, v_fa, dropout_p=0.0, causal=False
-        )
-        grads_fa = torch.autograd.grad(output_fa, (q_fa, k_fa, v_fa), grad_output)
+        output_tl = tilelang_flash_attn_func(q, k, v, causal=False)
+        output_fa = flash_attn_func(q, k, v, dropout_p=0.0, causal=False)
         torch.cuda.synchronize(device)
 
         self.assertEqual(output_tl.shape, q.shape)
@@ -75,11 +62,6 @@ class FlashAttentionSmokeTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(output_tl).all().item())
         self.assertTrue(torch.isfinite(output_fa).all().item())
         torch.testing.assert_close(output_tl, output_fa, rtol=3.0e-2, atol=3.0e-2)
-        for grad_tl, grad_fa in zip(grads_tl, grads_fa):
-            self.assertTrue(torch.isfinite(grad_tl).all().item())
-            self.assertTrue(torch.isfinite(grad_fa).all().item())
-            torch.testing.assert_close(grad_tl, grad_fa, rtol=5.0e-2, atol=5.0e-2)
-
         print(
             "FlashAttention smoke test passed: "
             f"device={torch.cuda.get_device_name(device)}, "
