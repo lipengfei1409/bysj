@@ -10,9 +10,7 @@ The current production GEMM operator is a contiguous, 2D FP32 `A[M,K] @ B[K,N]` 
 - `csrc/gemm/gemm.cpp`: DUMMA FP32 16x16x4 kernel with masked M/N/K tails.
 - `include/`: `.h` headers for the four DUMMA API wrappers, manual-based MMA shape selectors, and shared tile/LDS/cooperative-load/synchronization helpers.
 - `tests/`: Python contracts, host-side helper contracts, and opt-in DTK/DCU accuracy tests.
-- `doc/`: GEMM kernel and tile/LDS execution notes.
-
-See [DMK current kernels](doc/dpa4-kernels.md) for implemented kernels and TileLang inference-development status, and [DeepMD-kit DPA4 operators](doc/megakernel.md) for framework dataflow, operator definitions, fused CUDA-op precedents, and distributed halo exchange.
+- `doc/kernel-model.html`: architecture overview for the DUMMA kernel, TileLang operators, and DPA4 model adapter.
 
 ## Python API
 
