@@ -10,7 +10,8 @@ Pass benchmark/coverage settings as CLI options when running this file directly:
 
     python tests/dcu/test_tilelang_flash_attention.py \
         --coverage --benchmark --bench-warmup 1 --bench-repeats 2 \
-        --max-qkv-input-bytes 8589934592 --report-path /tmp/fa-report.json
+        --max-qkv-input-bytes 8589934592 \
+        --report-path /tmp/fa-report.json --csv-report-path /tmp/fa-report.csv
 
 The requested stress axes are heads 8/16/32, batch 1/4/16, and head_dim
 64/128 crossed with sequence lengths 1k through 16k. Cases that error or exceed
@@ -24,6 +25,7 @@ not exercise backward.
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib.metadata
 import importlib.util
 import json
@@ -35,11 +37,13 @@ import time
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 import torch.nn.functional as F
 
 from tilelang_ops import flash_attn_func
+
 
 @dataclass(frozen=True)
 class FlashAttentionConfig:
@@ -48,6 +52,7 @@ class FlashAttentionConfig:
     bench_repeats: int | None = None
     bench_warmup: int | None = None
     report_path: Path | None = None
+    csv_report_path: Path | None = None
     max_qkv_input_bytes: int | None = None
 
 
@@ -73,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON report destination; defaults to the system temporary directory",
     )
     parser.add_argument(
+        "--csv-report-path", type=Path, default=None,
+        help="benchmark CSV destination; defaults beside the JSON report",
+    )
+    parser.add_argument(
         "--max-qkv-input-bytes", type=int, default=None,
         help="override the estimated Q/K/V input-memory budget (minimum 1 byte)",
     )
@@ -90,6 +99,7 @@ def _config_from_args(args) -> FlashAttentionConfig:
             None if args.bench_warmup is None else max(0, int(args.bench_warmup))
         ),
         report_path=args.report_path,
+        csv_report_path=args.csv_report_path,
         max_qkv_input_bytes=(
             None
             if args.max_qkv_input_bytes is None
@@ -106,6 +116,7 @@ class FlashAttentionParserTests(unittest.TestCase):
         self.assertIsNone(config.bench_repeats)
         self.assertIsNone(config.bench_warmup)
         self.assertIsNone(config.report_path)
+        self.assertIsNone(config.csv_report_path)
         self.assertIsNone(config.max_qkv_input_bytes)
 
     def test_cli_options_populate_all_config_fields(self):
@@ -116,6 +127,7 @@ class FlashAttentionParserTests(unittest.TestCase):
                 "--bench-repeats", "2",
                 "--bench-warmup", "1",
                 "--report-path", "~/flash-attn-report.json",
+                "--csv-report-path", "~/flash-attn-report.csv",
                 "--max-qkv-input-bytes", "4096",
             ]
         )
@@ -125,6 +137,7 @@ class FlashAttentionParserTests(unittest.TestCase):
         self.assertEqual(config.bench_repeats, 2)
         self.assertEqual(config.bench_warmup, 1)
         self.assertEqual(config.report_path, Path("~/flash-attn-report.json"))
+        self.assertEqual(config.csv_report_path, Path("~/flash-attn-report.csv"))
         self.assertEqual(config.max_qkv_input_bytes, 4096)
 
     def test_numeric_overrides_keep_existing_clamping(self):
@@ -135,6 +148,133 @@ class FlashAttentionParserTests(unittest.TestCase):
         self.assertEqual(config.bench_repeats, 1)
         self.assertEqual(config.bench_warmup, 0)
         self.assertEqual(config.max_qkv_input_bytes, 1)
+
+
+class FlashAttentionCsvReportTests(unittest.TestCase):
+    @staticmethod
+    def _timing(median_ms, p95_ms):
+        return {
+            "first_invocation_wall_ms": median_ms * 2,
+            "warmup_steps": 1,
+            "repeat_steps": 3,
+            "device_time": {"median_ms": median_ms, "p95_ms": p95_ms},
+            "synchronized_wall_time": {
+                "median_ms": median_ms + 0.1,
+                "p95_ms": p95_ms + 0.1,
+            },
+        }
+
+    def test_csv_flattens_backends_and_preserves_skips(self):
+        measured_case = {
+            **_case_dict((128, 64, 2, 8, 64, False), torch.float16),
+            "tilelang": self._timing(1.0, 1.2),
+            "flash_attn": self._timing(0.8, 0.9),
+            "speedup_tilelang_vs_flash_attn": {
+                "device_time_median": 0.8,
+                "synchronized_wall_time_median": 0.8,
+            },
+            "accuracy": {
+                "tilelang_vs_flash_attn": {
+                    "max_abs": 0.02,
+                    "rmse": 0.003,
+                    "relative_l2": 0.004,
+                },
+                "tilelang_vs_pytorch_reference": {
+                    "max_abs": 0.01,
+                    "rmse": 0.002,
+                    "relative_l2": 0.003,
+                },
+                "flash_attn_vs_pytorch_reference": {
+                    "max_abs": 0.015,
+                    "rmse": 0.0025,
+                    "relative_l2": 0.0035,
+                },
+            },
+            "torch_sdpa": {
+                "status": "unsupported_or_failed",
+                "reason": "flash backend unavailable",
+            },
+        }
+        skipped = {
+            **_case_dict((1024, 1024, 1, 1, 64, False), torch.float16),
+            "status": "skipped",
+            "group": "supported_long_sweep",
+            "reason": "out of memory",
+            "counted_in_metrics": False,
+        }
+        report = {
+            "benchmark_cases": [measured_case],
+            "skipped_cases": [skipped],
+            "requested_matrix": {"skipped_cases": [skipped]},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            csv_path = Path(temporary) / "benchmark.csv"
+            _write_csv_report(report, csv_path)
+            with csv_path.open(newline="", encoding="utf-8") as stream:
+                rows = list(csv.DictReader(stream))
+
+        self.assertEqual(len(rows), 6)
+        measured = {row["backend"]: row for row in rows if row["q_len"] == "128"}
+        self.assertEqual(set(measured), {"tilelang", "flash_attn", "torch_sdpa"})
+        self.assertEqual(measured["tilelang"]["device_time_median_ms"], "1.0")
+        self.assertEqual(
+            measured["tilelang"]["tilelang_vs_flash_attn_device_speedup"], "0.8"
+        )
+        self.assertEqual(measured["tilelang"]["accuracy_rmse"], "0.003")
+        self.assertEqual(measured["torch_sdpa"]["status"], "unsupported_or_failed")
+        self.assertEqual(measured["torch_sdpa"]["reason"], "flash backend unavailable")
+        skipped_rows = [row for row in rows if row["q_len"] == "1024"]
+        self.assertEqual(len(skipped_rows), 3)
+        self.assertTrue(all(row["status"] == "skipped" for row in skipped_rows))
+        self.assertTrue(all(row["reason"] == "out of memory" for row in skipped_rows))
+
+    def test_json_report_also_writes_csv_beside_it_by_default(self):
+        report = {
+            "benchmark_cases": [],
+            "skipped_cases": [],
+            "requested_matrix": {"skipped_cases": []},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            json_path = Path(temporary) / "run.json"
+            csv_path = Path(temporary) / "run.csv"
+            config = FlashAttentionConfig(benchmark=True, report_path=json_path)
+            with patch.object(sys.modules[__name__], "_CONFIG", config):
+                _write_report(report)
+                self.assertEqual(_csv_report_path(), csv_path)
+            self.assertTrue(json_path.is_file())
+            self.assertTrue(csv_path.is_file())
+            with csv_path.open(newline="", encoding="utf-8") as stream:
+                self.assertEqual(next(csv.reader(stream)), list(_CSV_FIELDNAMES))
+
+    def test_explicit_csv_report_path_is_respected(self):
+        report = {"benchmark_cases": [], "skipped_cases": []}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            json_path = root / "run.json"
+            custom = root / "custom.csv"
+            config = FlashAttentionConfig(
+                benchmark=True,
+                report_path=json_path,
+                csv_report_path=custom,
+            )
+            with patch.object(sys.modules[__name__], "_CONFIG", config):
+                self.assertEqual(_csv_report_path(), custom)
+                _write_report(report)
+            self.assertTrue(json_path.is_file())
+            self.assertTrue(custom.is_file())
+            self.assertFalse((root / "run.csv").exists())
+
+    def test_csv_and_json_paths_must_differ(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            same_path = Path(temporary) / "same.json"
+            config = FlashAttentionConfig(
+                benchmark=True,
+                report_path=same_path,
+                csv_report_path=same_path,
+            )
+            with patch.object(sys.modules[__name__], "_CONFIG", config):
+                with self.assertRaisesRegex(ValueError, "must be different"):
+                    _write_report({"benchmark_cases": []})
 
 
 _HAS_TILELANG_HIP = (
@@ -463,10 +603,253 @@ def _report_path():
     return Path(tempfile.gettempdir()) / "tilelang_flash_attention_forward_report.json"
 
 
+_CSV_CASE_KEY_FIELDS = (
+    "q_len",
+    "kv_len",
+    "batch",
+    "heads",
+    "head_dim",
+    "dtype",
+    "causal",
+)
+
+_CSV_FIELDNAMES = (
+    "case_group",
+    "device",
+    "device_name",
+    "device_arch",
+    "torch_version",
+    "torch_hip_version",
+    "tilelang_version",
+    "flash_attn_version",
+    "q_len",
+    "kv_len",
+    "batch",
+    "heads",
+    "head_dim",
+    "dtype",
+    "causal",
+    "backend",
+    "status",
+    "first_invocation_wall_ms",
+    "warmup_steps",
+    "repeat_steps",
+    "device_time_median_ms",
+    "device_time_p95_ms",
+    "synchronized_wall_time_median_ms",
+    "synchronized_wall_time_p95_ms",
+    "tilelang_vs_flash_attn_device_speedup",
+    "tilelang_vs_flash_attn_wall_speedup",
+    "tilelang_vs_torch_sdpa_device_speedup",
+    "tilelang_vs_torch_sdpa_wall_speedup",
+    "accuracy_comparison",
+    "accuracy_max_abs",
+    "accuracy_rmse",
+    "accuracy_relative_l2",
+    "tilelang_vs_pytorch_reference_max_abs",
+    "tilelang_vs_pytorch_reference_rmse",
+    "tilelang_vs_pytorch_reference_relative_l2",
+    "reason",
+)
+
+
+def _csv_report_path():
+    configured = _CONFIG.csv_report_path
+    if configured is not None:
+        return configured.expanduser()
+    return _report_path().with_suffix(".csv")
+
+
+def _csv_case_fields(case):
+    return {name: case.get(name, "") for name in _CSV_CASE_KEY_FIELDS}
+
+
+def _csv_accuracy_fields(metrics, comparison):
+    metrics = metrics or {}
+    return {
+        "accuracy_comparison": comparison if metrics else "",
+        "accuracy_max_abs": metrics.get("max_abs", ""),
+        "accuracy_rmse": metrics.get("rmse", ""),
+        "accuracy_relative_l2": metrics.get("relative_l2", ""),
+    }
+
+
+def _csv_performance_row(
+    case,
+    backend,
+    timing,
+    *,
+    status,
+    reason="",
+    accuracy=None,
+    accuracy_name="",
+    runtime=None,
+):
+    timing = timing if isinstance(timing, dict) else {}
+    runtime = runtime if isinstance(runtime, dict) else {}
+    device_time = timing.get("device_time", {})
+    wall_time = timing.get("synchronized_wall_time", {})
+    flash_speedup = case.get("speedup_tilelang_vs_flash_attn", {})
+    sdpa = case.get("torch_sdpa", {})
+    sdpa_speedup = sdpa.get("tilelang_vs_sdpa_speedup", {})
+    row = {
+        "case_group": case.get("case_group", "benchmark"),
+        "device": runtime.get("device", ""),
+        "device_name": runtime.get("device_name", ""),
+        "device_arch": runtime.get("device_arch", ""),
+        "torch_version": runtime.get("torch_version", ""),
+        "torch_hip_version": runtime.get("torch_hip_version", ""),
+        "tilelang_version": runtime.get("tilelang_version", ""),
+        "flash_attn_version": runtime.get("flash_attn_version", ""),
+        **_csv_case_fields(case),
+        "backend": backend,
+        "status": status,
+        "first_invocation_wall_ms": timing.get("first_invocation_wall_ms", ""),
+        "warmup_steps": timing.get("warmup_steps", ""),
+        "repeat_steps": timing.get("repeat_steps", ""),
+        "device_time_median_ms": device_time.get("median_ms", ""),
+        "device_time_p95_ms": device_time.get("p95_ms", ""),
+        "synchronized_wall_time_median_ms": wall_time.get("median_ms", ""),
+        "synchronized_wall_time_p95_ms": wall_time.get("p95_ms", ""),
+        "tilelang_vs_flash_attn_device_speedup": flash_speedup.get(
+            "device_time_median", ""
+        ),
+        "tilelang_vs_flash_attn_wall_speedup": flash_speedup.get(
+            "synchronized_wall_time_median", ""
+        ),
+        "tilelang_vs_torch_sdpa_device_speedup": sdpa_speedup.get(
+            "device_time_median", ""
+        ),
+        "tilelang_vs_torch_sdpa_wall_speedup": sdpa_speedup.get(
+            "synchronized_wall_time_median", ""
+        ),
+        "reason": reason,
+    }
+    row.update(_csv_accuracy_fields(accuracy, accuracy_name))
+    row.update(
+        {
+            "tilelang_vs_pytorch_reference_max_abs": "",
+            "tilelang_vs_pytorch_reference_rmse": "",
+            "tilelang_vs_pytorch_reference_relative_l2": "",
+        }
+    )
+    return row
+
+
+def _benchmark_csv_rows(report):
+    rows = []
+    runtime = report.get("runtime", {})
+    for case in report.get("benchmark_cases", []):
+        accuracy = case.get("accuracy", {})
+        backend_specs = (
+            (
+                "tilelang",
+                case.get("tilelang"),
+                "measured",
+                "",
+                accuracy.get("tilelang_vs_flash_attn"),
+                "TileLang vs flash-attn",
+            ),
+            (
+                "flash_attn",
+                case.get("flash_attn"),
+                "measured",
+                "",
+                accuracy.get("flash_attn_vs_pytorch_reference"),
+                "flash-attn vs PyTorch reference",
+            ),
+            (
+                "torch_sdpa",
+                case.get("torch_sdpa", {}),
+                case.get("torch_sdpa", {}).get("status", "not_run"),
+                case.get("torch_sdpa", {}).get("reason", ""),
+                case.get("torch_sdpa", {}).get("tilelang_vs_sdpa_accuracy"),
+                "TileLang vs PyTorch SDPA",
+            ),
+        )
+        for backend, timing, status, reason, metrics, accuracy_name in backend_specs:
+            row = _csv_performance_row(
+                case,
+                backend,
+                timing,
+                status=status,
+                reason=reason,
+                accuracy=metrics,
+                accuracy_name=accuracy_name,
+                runtime=runtime,
+            )
+            pytorch_metrics = accuracy.get("tilelang_vs_pytorch_reference", {})
+            if backend == "tilelang" and pytorch_metrics:
+                row["tilelang_vs_pytorch_reference_max_abs"] = pytorch_metrics.get(
+                    "max_abs", ""
+                )
+                row["tilelang_vs_pytorch_reference_rmse"] = pytorch_metrics.get(
+                    "rmse", ""
+                )
+                row["tilelang_vs_pytorch_reference_relative_l2"] = pytorch_metrics.get(
+                    "relative_l2", ""
+                )
+            rows.append(row)
+
+    seen_skips = set()
+    skipped_rows = [
+        row
+        for row in report.get("skipped_cases", [])
+        if row.get("group") in ("supported_long_sweep", "auxiliary_benchmark")
+    ]
+    skipped_rows.extend(report.get("requested_matrix", {}).get("skipped_cases", []))
+    for skipped in skipped_rows:
+        group = skipped.get("group", "requested_stress_matrix")
+        case_fields = _csv_case_fields(skipped)
+        identity = (
+            group,
+            *(case_fields.get(name, "") for name in _CSV_CASE_KEY_FIELDS),
+            skipped.get("reason", ""),
+        )
+        if identity in seen_skips:
+            continue
+        seen_skips.add(identity)
+        for backend in ("tilelang", "flash_attn", "torch_sdpa"):
+            row = _csv_performance_row(
+                skipped,
+                backend,
+                {},
+                status="skipped",
+                reason=skipped.get("reason", ""),
+                runtime=runtime,
+            )
+            row["case_group"] = group
+            rows.append(row)
+    return rows
+
+
+def _write_csv_report(report, path: Path | None = None) -> Path:
+    path = Path(path) if path is not None else _csv_report_path()
+    path = path.expanduser()
+    json_path = _report_path().expanduser()
+    if path.resolve() == json_path.resolve():
+        raise ValueError("CSV and JSON report paths must be different")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=_CSV_FIELDNAMES,
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        writer.writerows(_benchmark_csv_rows(report))
+    return path
+
+
 def _write_report(report):
     path = _report_path()
+    csv_path = _csv_report_path() if _CONFIG.benchmark else None
+    if csv_path is not None and csv_path.resolve() == path.resolve():
+        raise ValueError("CSV and JSON report paths must be different")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    if csv_path is not None:
+        _write_csv_report(report, csv_path)
     return path
 
 
@@ -799,6 +1182,15 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                     ),
                 },
                 "torch_sdpa": {"status": "not_run"},
+                "accuracy": {
+                    key: accuracy_row[key]
+                    for key in (
+                        "tilelang_vs_flash_attn",
+                        "tilelang_vs_pytorch_reference",
+                        "flash_attn_vs_pytorch_reference",
+                    )
+                    if key in accuracy_row
+                },
             }
 
             sdpa_forward = _make_sdpa_forward(q, k, v, scale=scale, causal=causal)
@@ -819,6 +1211,9 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                 benchmark_row["torch_sdpa"] = {
                     "status": "measured",
                     **sdpa_timing,
+                    "tilelang_vs_sdpa_accuracy": _error_metrics(
+                        output_tl, output_sdpa
+                    ),
                     "tilelang_vs_sdpa_speedup": {
                         "device_time_median": (
                             sdpa_timing["device_time"]["median_ms"]
@@ -900,6 +1295,7 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                                     seed=seed,
                                 )
                                 sweep["successful_cases"].append(accuracy_row)
+                                benchmark_row["case_group"] = "requested_stress_matrix"
                                 report["benchmark_cases"].append(benchmark_row)
                             else:
                                 accuracy_row = self._correctness_case(
@@ -1020,6 +1416,9 @@ class FlashAttentionExtendedTests(unittest.TestCase):
             "configuration": {
                 "coverage_enabled": _CONFIG.coverage,
                 "benchmark_enabled": _CONFIG.benchmark,
+                "csv_report_path": (
+                    str(_csv_report_path()) if _CONFIG.benchmark else None
+                ),
                 "bf16_supported": _bf16_supported(),
             },
         }
@@ -1073,6 +1472,7 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                 continue
             report["long_sequence_cases"].append(accuracy_row)
             if _CONFIG.benchmark:
+                benchmark_row["case_group"] = "supported_long_sweep"
                 report["benchmark_cases"].append(benchmark_row)
             _write_report(report)
             print(
@@ -1102,6 +1502,7 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                     )
                     continue
                 report["auxiliary_benchmark_accuracy_cases"].append(accuracy_row)
+                benchmark_row["case_group"] = "auxiliary_benchmark"
                 report["benchmark_cases"].append(benchmark_row)
                 _write_report(report)
                 print(
@@ -1113,6 +1514,8 @@ class FlashAttentionExtendedTests(unittest.TestCase):
         self._requested_stress_sweep(reference, report, device)
         report_path = _write_report(report)
         print(f"FlashAttention JSON report: {report_path}", flush=True)
+        if _CONFIG.benchmark:
+            print(f"FlashAttention CSV report: {_csv_report_path()}", flush=True)
 
 
 def main(argv=None) -> int:
