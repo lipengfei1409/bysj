@@ -1,40 +1,39 @@
 """TileLang dense FlashAttention forward parity and opt-in benchmark.
 
-Run the quick correctness tests with::
+Run the quick correctness tests with unittest discovery (configuration defaults
+are used)::
 
-    PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}" \
-        python -m unittest discover -s tests/dcu \
+    python -m unittest discover -s tests/dcu \
         -p 'test_tilelang_flash_attention.py' -v
 
-On a HIP/DCU host, set ``DPA4_RUN_FLASH_ATTN_COVERAGE=1`` for a broader
-forward-only precision sweep, including sequence lengths around tile boundaries
-and 1k through 16k. Add ``DPA4_RUN_FLASH_ATTN_BENCHMARK=1`` to measure those
-long sequence lengths against open-source ``flash_attn`` and PyTorch SDPA where
-SDPA is safe to run. The long sequence benchmark checks TileLang/flash-attn
-parity as well as latency. The requested stress axes are heads 8/16/32, batch
-1/4/16, and head_dim 64/128 crossed with those sequence lengths. Cases
-that error or exceed the available-memory budget are recorded as skipped and
-excluded from metrics. The budget reserves device memory for outputs, workspaces,
-and other processes; override it with ``DPA4_FLASH_ATTN_MAX_QKV_INPUT_BYTES``.
-Set ``DPA4_FLASH_ATTN_REPORT`` to choose its JSON report path; otherwise it is
-written under the system temporary directory.
+Pass benchmark/coverage settings as CLI options when running this file directly::
 
-The implementation intentionally covers the dense ``flash_attn_func`` contract
-only: zero dropout, no GQA, windowing, ALiBi, softcap, or returned attention
-probabilities. These tests do not exercise backward.
+    python tests/dcu/test_tilelang_flash_attention.py \
+        --coverage --benchmark --bench-warmup 1 --bench-repeats 2 \
+        --max-qkv-input-bytes 8589934592 --report-path /tmp/fa-report.json
+
+The requested stress axes are heads 8/16/32, batch 1/4/16, and head_dim
+64/128 crossed with sequence lengths 1k through 16k. Cases that error or exceed
+the memory budget are recorded as skipped and excluded from metrics. The budget
+reserves device memory for outputs, workspaces, and other processes. The test
+covers the dense ``flash_attn_func`` forward contract only: zero dropout, no GQA,
+windowing, ALiBi, softcap, or returned attention probabilities. These tests do
+not exercise backward.
 """
 
 from __future__ import annotations
 
+import argparse
 import importlib.metadata
 import importlib.util
 import json
 import math
-import os
 import statistics
+import sys
 import tempfile
 import time
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -42,24 +41,107 @@ import torch.nn.functional as F
 
 from tilelang_ops import flash_attn_func
 
+@dataclass(frozen=True)
+class FlashAttentionConfig:
+    benchmark: bool = False
+    coverage: bool = False
+    bench_repeats: int | None = None
+    bench_warmup: int | None = None
+    report_path: Path | None = None
+    max_qkv_input_bytes: int | None = None
+
+
+_CONFIG = FlashAttentionConfig()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run TileLang FlashAttention correctness, coverage, and benchmark tests."
+    )
+    parser.add_argument("--benchmark", action="store_true", help="run long-sequence benchmarks")
+    parser.add_argument("--coverage", action="store_true", help="run forward precision coverage")
+    parser.add_argument(
+        "--bench-repeats", type=int, default=None,
+        help="override adaptive repeats per timing sample (minimum 1)",
+    )
+    parser.add_argument(
+        "--bench-warmup", type=int, default=None,
+        help="override adaptive warmup calls (minimum 0)",
+    )
+    parser.add_argument(
+        "--report-path", type=Path, default=None,
+        help="JSON report destination; defaults to the system temporary directory",
+    )
+    parser.add_argument(
+        "--max-qkv-input-bytes", type=int, default=None,
+        help="override the estimated Q/K/V input-memory budget (minimum 1 byte)",
+    )
+    return parser
+
+
+def _config_from_args(args) -> FlashAttentionConfig:
+    return FlashAttentionConfig(
+        benchmark=bool(args.benchmark),
+        coverage=bool(args.coverage),
+        bench_repeats=(
+            None if args.bench_repeats is None else max(1, int(args.bench_repeats))
+        ),
+        bench_warmup=(
+            None if args.bench_warmup is None else max(0, int(args.bench_warmup))
+        ),
+        report_path=args.report_path,
+        max_qkv_input_bytes=(
+            None
+            if args.max_qkv_input_bytes is None
+            else max(1, int(args.max_qkv_input_bytes))
+        ),
+    )
+
+
+class FlashAttentionParserTests(unittest.TestCase):
+    def test_cli_defaults_preserve_short_test_mode(self):
+        config = _config_from_args(build_parser().parse_args([]))
+        self.assertFalse(config.benchmark)
+        self.assertFalse(config.coverage)
+        self.assertIsNone(config.bench_repeats)
+        self.assertIsNone(config.bench_warmup)
+        self.assertIsNone(config.report_path)
+        self.assertIsNone(config.max_qkv_input_bytes)
+
+    def test_cli_options_populate_all_config_fields(self):
+        args = build_parser().parse_args(
+            [
+                "--benchmark",
+                "--coverage",
+                "--bench-repeats", "2",
+                "--bench-warmup", "1",
+                "--report-path", "~/flash-attn-report.json",
+                "--max-qkv-input-bytes", "4096",
+            ]
+        )
+        config = _config_from_args(args)
+        self.assertTrue(config.benchmark)
+        self.assertTrue(config.coverage)
+        self.assertEqual(config.bench_repeats, 2)
+        self.assertEqual(config.bench_warmup, 1)
+        self.assertEqual(config.report_path, Path("~/flash-attn-report.json"))
+        self.assertEqual(config.max_qkv_input_bytes, 4096)
+
+    def test_numeric_overrides_keep_existing_clamping(self):
+        args = build_parser().parse_args(
+            ["--bench-repeats", "0", "--bench-warmup", "-2", "--max-qkv-input-bytes", "0"]
+        )
+        config = _config_from_args(args)
+        self.assertEqual(config.bench_repeats, 1)
+        self.assertEqual(config.bench_warmup, 0)
+        self.assertEqual(config.max_qkv_input_bytes, 1)
+
+
 _HAS_TILELANG_HIP = (
     importlib.util.find_spec("tilelang") is not None
     and torch.version.hip is not None
     and torch.cuda.is_available()
 )
-_RUN_BENCHMARK = os.environ.get("DPA4_RUN_FLASH_ATTN_BENCHMARK", "0").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-_RUN_COVERAGE = os.environ.get("DPA4_RUN_FLASH_ATTN_COVERAGE", "0").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-_RUN_EXTENDED = _RUN_BENCHMARK or _RUN_COVERAGE
 _LONG_SEQUENCE_LENGTHS = (1024, 2048, 4096, 8192, 16384)
 _REQUESTED_HEAD_COUNTS = (8, 16, 32)
 _REQUESTED_BATCH_SIZES = (1, 4, 16)
@@ -238,9 +320,9 @@ def _summarize_samples(samples):
 
 def _benchmark_steps(q_len, kv_len, *, batch=1, heads=1, head_dim=64):
     work = batch * heads * q_len * kv_len * head_dim
-    override = os.environ.get("DPA4_FLASH_ATTN_BENCH_REPEATS")
+    override = _CONFIG.bench_repeats
     if override is not None:
-        repeats = max(1, int(override))
+        repeats = override
     elif work <= 1_000_000_000:
         repeats = 10
     elif work <= 10_000_000_000:
@@ -254,9 +336,9 @@ def _benchmark_steps(q_len, kv_len, *, batch=1, heads=1, head_dim=64):
     else:
         repeats = 1
 
-    warmup_override = os.environ.get("DPA4_FLASH_ATTN_BENCH_WARMUP")
+    warmup_override = _CONFIG.bench_warmup
     if warmup_override is not None:
-        warmup = max(0, int(warmup_override))
+        warmup = warmup_override
     elif work <= 1_000_000_000:
         warmup = 3
     elif work <= 10_000_000_000:
@@ -375,9 +457,9 @@ def _runtime_metadata(device, flash_module):
 
 
 def _report_path():
-    configured = os.environ.get("DPA4_FLASH_ATTN_REPORT")
-    if configured:
-        return Path(configured).expanduser()
+    configured = _CONFIG.report_path
+    if configured is not None:
+        return configured.expanduser()
     return Path(tempfile.gettempdir()) / "tilelang_flash_attention_forward_report.json"
 
 
@@ -390,9 +472,9 @@ def _write_report(report):
 
 def _qkv_input_budget(device):
     """Keep Q/K/V inputs within a conservative share of available device RAM."""
-    override = os.environ.get("DPA4_FLASH_ATTN_MAX_QKV_INPUT_BYTES")
+    override = _CONFIG.max_qkv_input_bytes
     if override is not None:
-        return max(1, int(override)), {"source": "environment override"}
+        return override, {"source": "CLI override"}
     try:
         free_bytes, total_bytes = torch.cuda.mem_get_info(device)
     except Exception as error:
@@ -549,11 +631,13 @@ class FlashAttentionDeviceTests(unittest.TestCase):
             )
 
 
-@unittest.skipUnless(
-    _RUN_EXTENDED,
-    "set DPA4_RUN_FLASH_ATTN_COVERAGE=1 and/or DPA4_RUN_FLASH_ATTN_BENCHMARK=1",
-)
 class FlashAttentionExtendedTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not (_CONFIG.benchmark or _CONFIG.coverage):
+            raise unittest.SkipTest("pass --benchmark and/or --coverage to enable extended tests")
+        super().setUpClass()
+
     def _require_runtime_and_reference(self):
         if not _HAS_TILELANG_HIP:
             self.skipTest(
@@ -808,7 +892,7 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                             continue
 
                         try:
-                            if _RUN_BENCHMARK:
+                            if _CONFIG.benchmark:
                                 accuracy_row, benchmark_row = self._benchmark_case(
                                     reference,
                                     case,
@@ -909,8 +993,8 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                 ),
                 "p95": "nearest-rank percentile",
                 "long_repeat_policy": (
-                    "adaptive by estimated workload; override with "
-                    "DPA4_FLASH_ATTN_BENCH_REPEATS"
+                    "adaptive by estimated workload; override with --bench-repeats "
+                    "or --bench-warmup"
                 ),
             },
             "coverage_cases": [],
@@ -934,14 +1018,14 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                 "skipped_case_count": 0,
             },
             "configuration": {
-                "coverage_enabled": _RUN_COVERAGE,
-                "benchmark_enabled": _RUN_BENCHMARK,
+                "coverage_enabled": _CONFIG.coverage,
+                "benchmark_enabled": _CONFIG.benchmark,
                 "bf16_supported": _bf16_supported(),
             },
         }
         report_path = _write_report(report)
 
-        if _RUN_COVERAGE:
+        if _CONFIG.coverage:
             coverage = [(case, torch.float16) for case in _FORWARD_COVERAGE_CASES]
             if _bf16_supported():
                 coverage.extend(
@@ -968,7 +1052,7 @@ class FlashAttentionExtendedTests(unittest.TestCase):
         for index, sequence_length in enumerate(_LONG_SEQUENCE_LENGTHS):
             case = (sequence_length, sequence_length, 1, 1, 64, False)
             try:
-                if _RUN_BENCHMARK:
+                if _CONFIG.benchmark:
                     accuracy_row, benchmark_row = self._benchmark_case(
                         reference,
                         case,
@@ -988,7 +1072,7 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                 )
                 continue
             report["long_sequence_cases"].append(accuracy_row)
-            if _RUN_BENCHMARK:
+            if _CONFIG.benchmark:
                 report["benchmark_cases"].append(benchmark_row)
             _write_report(report)
             print(
@@ -996,14 +1080,14 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                 + json.dumps(accuracy_row, sort_keys=True),
                 flush=True,
             )
-            if _RUN_BENCHMARK:
+            if _CONFIG.benchmark:
                 print(
                     "FlashAttention benchmark: "
                     + json.dumps(benchmark_row, sort_keys=True),
                     flush=True,
                 )
 
-        if _RUN_BENCHMARK:
+        if _CONFIG.benchmark:
             for index, case in enumerate(_EXTRA_BENCHMARK_CASES):
                 try:
                     accuracy_row, benchmark_row = self._benchmark_case(
@@ -1031,5 +1115,18 @@ class FlashAttentionExtendedTests(unittest.TestCase):
         print(f"FlashAttention JSON report: {report_path}", flush=True)
 
 
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    global _CONFIG
+    _CONFIG = _config_from_args(args)
+    program = unittest.main(
+        module=sys.modules[__name__],
+        argv=[sys.argv[0]],
+        exit=False,
+        verbosity=2,
+    )
+    return 0 if program.result.wasSuccessful() else 1
+
+
 if __name__ == "__main__":
-    unittest.main()
+    raise SystemExit(main())
