@@ -1,15 +1,16 @@
-"""DPA4 profiling CLI: direct inference, one-card LAMMPS, or four-card MPI LAMMPS.
+"""DPA4 profiling and periodic test-data generation CLI.
 
 Every model, input, executable, and output path is passed as a CLI argument.
-The three modes are distinct:
+The profiling modes are distinct:
 
 1. ``dpa4`` profiles exactly one direct ``DPA4Model.eval`` on one HCU. It
    estimates a large periodic system from available memory, then records one
    successful call; sizing probes occur outside the trace.
-2. ``lammps-single`` runs one LAMMPS rank on one HCU.
-3. ``lammps-mpi4`` runs one distributed LAMMPS simulation across exactly four
-   MPI ranks/cards. It requires a DPA4 frozen model with the with-comm artifact;
-   it is not four independent Python inference processes.
+2. ``lammps`` runs one simulation on a single host using one rank per ID in
+   ``--gpu-ids``. One ID runs directly; multiple IDs launch that many MPI ranks
+   and require a DPA4 frozen model with the with-comm artifact. This is one
+   distributed simulation, not independent Python inference processes. The
+   fixed ``lammps-single`` and ``lammps-mpi4`` command names remain available.
 
 Examples::
 
@@ -22,11 +23,21 @@ Examples::
         --lammps-input /inputs/profile.template --lammps-exe /opt/dtk/bin/lmp \
         --gpu-ids 0 --output-dir /tmp/dpa4-lmp-one
 
-    python3 tests/deepmd/test_dpa4_inference_profile.py lammps-mpi4 \
-        --model-file /models/dpa4-with-comm.pt2 --data-file /systems/water.data \
-        --lammps-input /inputs/profile.template --lammps-exe /opt/dtk/bin/lmp \
-        --mpi-exe /opt/mpi/bin/mpirun --gpu-ids 0,1,2,3 \
-        --replicate 2,2,2 --steps 0 --output-dir /tmp/dpa4-lmp-four
+    python3 tests/deepmd/test_dpa4_inference_profile.py lammps \
+        --model-file /models/dpa4-with-comm.pt2 \
+        --data-file /path/to/lammps/examples/rdf-adf/data.spce \
+        --lammps-input tests/deepmd/dpa4_water_profile.template \
+        --lammps-exe /opt/dtk/bin/lmp --mpi-exe /opt/mpi/bin/mpirun \
+        --gpu-ids 0,1,2 --replicate 2,2,2 --steps 0 \
+        --output-dir /tmp/dpa4-lmp-three
+
+    python3 tests/deepmd/test_dpa4_inference_profile.py generate-data \
+        --input-npz /systems/water.npz --replicate 4,4,4 \
+        --output-npz /tmp/water-profile.npz
+
+``generate-data`` creates a reusable direct-inference NPZ by periodically
+replicating a supplied structure. It preserves source atom type indices and
+requires an existing periodic cell; the indices must match the selected model.
 
 LAMMPS templates must use ``${model}`` in ``pair_style deepmd``, ``${data}``
 in ``read_data``, include ``atom_modify map yes``, and use ``run ${steps}``.
@@ -37,8 +48,11 @@ force evaluation without advancing dynamics; use a positive value for a longer
 simulation. LAMMPS profiling uses DeepMD's ``DP_PROFILER`` Kineto trace
 (rank-specific in MPI mode) and ``timer full`` output.
 
-For LAMMPS DPA4, the ``lammps-mpi4`` model must be a frozen artifact containing
+For any multi-rank LAMMPS DPA4 run, the model must be a frozen artifact containing
 ``model/extra/forward_lower_with_comm.pt2`` (or metadata marking a comm artifact).
+The bundled water template assumes model type order O,H; use a compatible model.
+The sample ``data.spce`` contains bonded topology and is intended for the default
+zero-step profile; positive ``--steps`` also advances its SPC/E bond/angle terms.
 A plain ``DPA4Model.eval`` call does not distribute one inference across ranks.
 """
 
@@ -220,6 +234,56 @@ def _replicate_system(system, factors: tuple[int, int, int]):
     super_types = np.concatenate(type_copies, axis=0)[None, ...]
     super_cell = np.diag([rx, ry, rz]) @ cell
     return super_coords, super_types, super_cell.reshape(1, 9)
+
+
+def generate_test_data(source_system, factors: tuple[int, int, int]):
+    """Build a reusable periodic test system by replicating supplied geometry."""
+    try:
+        factors = tuple(factors)
+    except TypeError as error:
+        raise ValueError("replication must contain three positive integers") from error
+    if len(factors) != 3 or any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, np.integer))
+        or value < 1
+        for value in factors
+    ):
+        raise ValueError("replication must contain three positive integers")
+    factors = tuple(int(value) for value in factors)
+
+    coords, atom_types, cells = source_system
+    if cells is None:
+        raise ValueError("periodic test-data generation requires a source cell")
+    if np.any(atom_types < 0):
+        raise ValueError("atom type indices must be nonnegative")
+    cell = cells[0].reshape(3, 3)
+    if not np.isfinite(cell).all() or abs(float(np.linalg.det(cell))) <= 1.0e-12:
+        raise ValueError("source cell must be finite and nonsingular")
+    if not np.isfinite(coords).all():
+        raise ValueError("source coordinates must be finite")
+    return _replicate_system((coords, atom_types, cells), factors)
+
+
+def _write_generated_npz(output_path: Path, system) -> Path:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    coords, atom_types, cells = system
+    try:
+        stream = output_path.open("xb")
+    except FileExistsError:
+        raise FileExistsError(f"refusing to overwrite generated input: {output_path}") from None
+    try:
+        with stream:
+            np.savez_compressed(
+                stream,
+                coords=coords,
+                atom_types=atom_types,
+                cells=cells,
+            )
+    except BaseException:
+        output_path.unlink(missing_ok=True)
+        raise
+    return output_path
 
 
 def _outputs_to_arrays(outputs):
@@ -567,6 +631,31 @@ def _run_dpa4(args) -> int:
         model.close()
 
 
+def _run_generate_data(args) -> int:
+    source_path = args.input_npz if args.input_npz is not None else args.geometry
+    if not source_path.is_file():
+        raise FileNotFoundError(f"source geometry does not exist: {source_path}")
+    if args.output_npz.exists() or args.output_npz.is_symlink():
+        raise FileExistsError(f"refusing to overwrite generated input: {args.output_npz}")
+    source_system = (
+        _load_npz_system(source_path)
+        if args.input_npz is not None
+        else _read_lammps_system(source_path)
+    )
+    generated_system = generate_test_data(source_system, args.replicate)
+    output_path = _write_generated_npz(args.output_npz, generated_system)
+    summary = {
+        "source": str(source_path.resolve()),
+        "output_npz": str(output_path.resolve()),
+        "source_atoms": int(source_system[0].shape[1]),
+        "generated_atoms": int(generated_system[0].shape[1]),
+        "replication_factors": list(args.replicate),
+        "atom_types_preserved": True,
+    }
+    print(json.dumps(summary, sort_keys=True), flush=True)
+    return 0
+
+
 def _metadata_has_comm_artifact(value: Any) -> bool:
     if isinstance(value, dict):
         for key, nested in value.items():
@@ -581,7 +670,7 @@ def _metadata_has_comm_artifact(value: Any) -> bool:
 
 def _check_with_comm_model(model_path: Path) -> None:
     if not zipfile.is_zipfile(model_path):
-        raise ValueError("four-rank LAMMPS requires a frozen with-comm .pt2 archive")
+        raise ValueError("multi-rank LAMMPS requires a frozen with-comm .pt2 archive")
     with zipfile.ZipFile(model_path) as archive:
         names = archive.namelist()
         has_comm_path = any(
@@ -602,9 +691,14 @@ def _check_with_comm_model(model_path: Path) -> None:
                 break
     if not (has_comm_path or has_comm_metadata):
         raise ValueError(
-            "four-rank LAMMPS requires a DPA4 .pt2 with "
+            "multi-rank LAMMPS requires a DPA4 .pt2 with "
             "model/extra/forward_lower_with_comm.pt2 (has_comm_artifact=true)"
         )
+
+
+def _validate_lammps_model_for_ranks(model_path: Path, ranks: int) -> None:
+    if ranks > 1:
+        _check_with_comm_model(model_path)
 
 
 def _validate_lammps_template(text: str, replicate: tuple[int, int, int]) -> None:
@@ -702,17 +796,30 @@ def _build_lammps_command(
     if ranks == 1:
         return command_lmp
     if mpi_exe is None:
-        raise ValueError("four-rank LAMMPS command requires an MPI launcher")
+        raise ValueError("multi-rank LAMMPS command requires an MPI launcher")
     wrapper = work_dir / "rank_exec.py"
     wrapper.write_text(_mpi_rank_wrapper_text())
     return [
         str(mpi_exe),
         "-np",
-        "4",
+        str(ranks),
         sys.executable,
         str(wrapper),
         *command_lmp,
     ]
+
+
+def _lammps_rank_count(args) -> int:
+    fixed_modes = {"lammps-single": 1, "lammps-mpi4": 4}
+    if args.mode == "lammps":
+        ranks = len(args.gpu_ids)
+    elif args.mode in fixed_modes:
+        ranks = fixed_modes[args.mode]
+    else:
+        raise ValueError(f"unsupported LAMMPS mode: {args.mode}")
+    if len(args.gpu_ids) != ranks:
+        raise ValueError(f"{args.mode} requires exactly {ranks} distinct --gpu-ids")
+    return ranks
 
 
 def _run_lammps(args) -> int:
@@ -720,15 +827,14 @@ def _run_lammps(args) -> int:
         raise ValueError("--steps must be zero or a positive integer")
     if args.timeout is not None and args.timeout <= 0:
         raise ValueError("--timeout must be positive")
-    ranks = 1 if args.mode == "lammps-single" else 4
+    ranks = _lammps_rank_count(args)
     model_path = Path(args.model_file).resolve()
     data_path = Path(args.data_file).resolve()
     input_path = Path(args.lammps_input).resolve()
     for path, label in ((model_path, "model"), (data_path, "data file"), (input_path, "LAMMPS input")):
         if not path.is_file():
             raise FileNotFoundError(f"{label} does not exist: {path}")
-    if ranks == 4:
-        _check_with_comm_model(model_path)
+    _validate_lammps_model_for_ranks(model_path, ranks)
     template = input_path.read_text()
     _validate_lammps_template(template, args.replicate)
 
@@ -736,14 +842,17 @@ def _run_lammps(args) -> int:
     if lmp_exe is None:
         raise FileNotFoundError(f"LAMMPS executable not found: {args.lammps_exe}")
     mpi_exe = None
-    if ranks == 4:
-        mpi_exe = shutil.which(args.mpi_exe) or (args.mpi_exe if Path(args.mpi_exe).is_file() else None)
+    if ranks > 1:
+        requested_mpi_exe = getattr(args, "mpi_exe", None)
+        if not requested_mpi_exe:
+            raise ValueError("--mpi-exe is required when using multiple GPU IDs")
+        mpi_exe = shutil.which(requested_mpi_exe) or (
+            requested_mpi_exe if Path(requested_mpi_exe).is_file() else None
+        )
         if mpi_exe is None:
-            raise FileNotFoundError(f"MPI launcher not found: {args.mpi_exe}")
+            raise FileNotFoundError(f"MPI launcher not found: {requested_mpi_exe}")
 
     gpu_ids = args.gpu_ids
-    if len(gpu_ids) != ranks:
-        raise ValueError(f"{args.mode} requires exactly {ranks} distinct --gpu-ids")
     if not torch.cuda.is_available() or torch.version.hip is None:
         raise RuntimeError("LAMMPS profile launcher requires a HIP/DCU PyTorch runtime")
     visible_device_count = torch.cuda.device_count()
@@ -850,7 +959,9 @@ def _run_lammps(args) -> int:
     return 0
 
 
-def _add_lammps_arguments(parser: argparse.ArgumentParser, *, mpi: bool) -> None:
+def _add_lammps_arguments(
+    parser: argparse.ArgumentParser, *, mpi: bool, mpi_optional: bool = False
+) -> None:
     parser.add_argument("--model-file", type=Path, required=True)
     parser.add_argument("--data-file", type=Path, required=True)
     parser.add_argument("--lammps-input", type=Path, required=True)
@@ -867,11 +978,18 @@ def _add_lammps_arguments(parser: argparse.ArgumentParser, *, mpi: bool) -> None
         "--gpu-ids",
         type=_parse_gpu_ids,
         required=True,
-        help="comma-separated visible GPU indices (one for single, four for MPI)",
+        help=(
+            "comma-separated visible GPU indices; in `lammps`, the number of IDs "
+            "selects the MPI rank count (one rank per GPU)"
+        ),
     )
     parser.add_argument("--timeout", type=float, default=None)
-    if mpi:
-        parser.add_argument("--mpi-exe", required=True, help="mpirun/mpiexec path or PATH name")
+    if mpi or mpi_optional:
+        parser.add_argument(
+            "--mpi-exe",
+            required=mpi,
+            help="mpirun/mpiexec path or PATH name; required for multiple GPUs",
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -902,6 +1020,36 @@ def build_parser() -> argparse.ArgumentParser:
         "lammps-mpi4", help="profile one distributed four-rank LAMMPS simulation"
     )
     _add_lammps_arguments(lammps_mpi4, mpi=True)
+    lammps = subparsers.add_parser(
+        "lammps",
+        help="profile a LAMMPS DPA4 simulation using the requested GPU count",
+        description=(
+            "Use one MPI rank per --gpu-ids entry on this host. A single GPU "
+            "runs LAMMPS directly; multiple GPUs launch one distributed "
+            "single-host simulation."
+        ),
+    )
+    _add_lammps_arguments(lammps, mpi=False, mpi_optional=True)
+
+    generate = subparsers.add_parser(
+        "generate-data",
+        help="replicate a supplied periodic structure into a reusable NPZ input",
+        description=(
+            "Create a larger, deterministic profile input by periodically copying "
+            "a supplied NPZ or orthorhombic LAMMPS geometry. Atom type indices "
+            "are preserved; ensure they match the model used for profiling."
+        ),
+    )
+    source = generate.add_mutually_exclusive_group(required=True)
+    source.add_argument("--input-npz", type=Path)
+    source.add_argument("--geometry", type=Path)
+    generate.add_argument(
+        "--replicate",
+        type=_parse_triplet,
+        required=True,
+        help="periodic replication factors x,y,z (each must be positive)",
+    )
+    generate.add_argument("--output-npz", type=Path, required=True)
     return parser
 
 
@@ -911,6 +1059,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(raw_argv)
     args.cli_command = [sys.executable, str(Path(__file__).resolve()), *raw_argv]
     try:
+        if args.mode == "generate-data":
+            return _run_generate_data(args)
         if args.mode == "dpa4":
             if not args.model_file.is_file():
                 raise FileNotFoundError(f"model file does not exist: {args.model_file}")
@@ -923,7 +1073,7 @@ def main(argv: list[str] | None = None) -> int:
             if not 0.05 <= args.memory_fraction <= 0.85:
                 raise ValueError("--memory-fraction must be in [0.05, 0.85]")
             return _run_dpa4(args)
-        if args.mode in ("lammps-single", "lammps-mpi4"):
+        if args.mode in ("lammps", "lammps-single", "lammps-mpi4"):
             return _run_lammps(args)
         parser.error(f"unknown mode: {args.mode}")
     except Exception as error:
@@ -962,6 +1112,35 @@ class DPA4ProfilerCLITests(unittest.TestCase):
         self.assertEqual(mpi.mode, "lammps-mpi4")
         self.assertEqual(mpi.gpu_ids, (0, 1, 2, 3))
         self.assertEqual(mpi.replicate, (2, 2, 2))
+        self.assertEqual(_lammps_rank_count(mpi), 4)
+
+        dynamic = parser.parse_args(
+            [
+                "lammps",
+                "--model-file", "model.pt2",
+                "--data-file", "water.data",
+                "--lammps-input", "water.template",
+                "--lammps-exe", "lmp",
+                "--mpi-exe", "mpirun",
+                "--gpu-ids", "0,2,3",
+                "--output-dir", "out/dynamic",
+            ]
+        )
+        self.assertEqual(dynamic.mode, "lammps")
+        self.assertEqual(dynamic.gpu_ids, (0, 2, 3))
+        self.assertEqual(_lammps_rank_count(dynamic), 3)
+
+        generate = parser.parse_args(
+            [
+                "generate-data",
+                "--input-npz", "seed.npz",
+                "--replicate", "2,3,4",
+                "--output-npz", "expanded.npz",
+            ]
+        )
+        self.assertEqual(generate.mode, "generate-data")
+        self.assertEqual(generate.replicate, (2, 3, 4))
+        self.assertEqual(generate.output_npz, Path("expanded.npz"))
 
     def test_four_rank_artifact_requires_comm_route(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -974,6 +1153,104 @@ class DPA4ProfilerCLITests(unittest.TestCase):
                 archive.writestr("metadata.json", '{"has_comm_artifact": false}')
             with self.assertRaisesRegex(ValueError, "forward_lower_with_comm"):
                 _check_with_comm_model(model)
+
+    def test_dynamic_lammps_rank_count_and_command_generation(self):
+        parser = build_parser()
+        with self.assertRaises(argparse.ArgumentTypeError):
+            _parse_gpu_ids("0,0")
+        with self.assertRaises(argparse.ArgumentTypeError):
+            _parse_gpu_ids("0,-1")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for ranks in (1, 2, 4):
+                gpu_ids = ",".join(str(index) for index in range(ranks))
+                argv = [
+                    "lammps",
+                    "--model-file", "model.pt2",
+                    "--data-file", "water.data",
+                    "--lammps-input", "water.template",
+                    "--lammps-exe", "lmp",
+                    "--gpu-ids", gpu_ids,
+                    "--output-dir", "out",
+                ]
+                mpi_exe = None if ranks == 1 else "/bin/mpirun"
+                if mpi_exe is not None:
+                    argv.extend(["--mpi-exe", mpi_exe])
+                args = parser.parse_args(argv)
+                self.assertEqual(_lammps_rank_count(args), ranks)
+
+                work_dir = root / f"work-{ranks}"
+                work_dir.mkdir()
+                command = _build_lammps_command(
+                    args,
+                    ranks=ranks,
+                    lmp_exe="/bin/lmp",
+                    mpi_exe=mpi_exe,
+                    mode_dir=root / f"mode-{ranks}",
+                    work_dir=work_dir,
+                )
+                if ranks == 1:
+                    self.assertEqual(command[0], "/bin/lmp")
+                else:
+                    self.assertEqual(command[:3], ["/bin/mpirun", "-np", str(ranks)])
+
+            args = parser.parse_args(
+                [
+                    "lammps",
+                    "--model-file", "model.pt2",
+                    "--data-file", "water.data",
+                    "--lammps-input", "water.template",
+                    "--lammps-exe", "lmp",
+                    "--gpu-ids", "0,1",
+                    "--output-dir", "out",
+                ]
+            )
+            work_dir = root / "work-no-mpi"
+            work_dir.mkdir()
+            with self.assertRaisesRegex(ValueError, "requires an MPI launcher"):
+                _build_lammps_command(
+                    args,
+                    ranks=2,
+                    lmp_exe="/bin/lmp",
+                    mpi_exe=None,
+                    mode_dir=root / "mode-no-mpi",
+                    work_dir=work_dir,
+                )
+
+            fixed = parser.parse_args(
+                [
+                    "lammps-mpi4",
+                    "--model-file", "model.pt2",
+                    "--data-file", "water.data",
+                    "--lammps-input", "water.template",
+                    "--lammps-exe", "lmp",
+                    "--mpi-exe", "mpirun",
+                    "--gpu-ids", "0,1",
+                    "--output-dir", "out",
+                ]
+            )
+            with self.assertRaisesRegex(ValueError, "requires exactly 4"):
+                _lammps_rank_count(fixed)
+
+    def test_multi_rank_lammps_always_requires_with_comm_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            model = Path(temporary) / "model.pt2"
+            model.write_bytes(b"plain model")
+            _validate_lammps_model_for_ranks(model, 1)
+            with self.assertRaisesRegex(ValueError, "multi-rank LAMMPS"):
+                _validate_lammps_model_for_ranks(model, 2)
+
+            with zipfile.ZipFile(model, "w") as archive:
+                archive.writestr("metadata.json", '{"has_comm_artifact": true}')
+            _validate_lammps_model_for_ranks(model, 2)
+            _validate_lammps_model_for_ranks(model, 4)
+
+    def test_sample_water_template_matches_profile_contract(self):
+        template_path = Path(__file__).with_name("dpa4_water_profile.template")
+        template = template_path.read_text()
+        self.assertIn("atom_style full", template)
+        self.assertIn("pair_coeff * * O H", template)
+        _validate_lammps_template(template, (2, 2, 2))
 
     def test_mpi_command_passes_model_data_and_replication_as_lammps_vars(self):
         args = build_parser().parse_args(
@@ -1036,6 +1313,102 @@ class DPA4ProfilerGeometryTests(unittest.TestCase):
         self.assertEqual(atom_types.shape, (1, 16))
         np.testing.assert_allclose(cells.reshape(3, 3), np.diag([6.0, 8.0, 10.0]))
         self.assertEqual(np.unique(coords[0], axis=0).shape[0], 16)
+
+    def test_generate_test_data_preserves_types_and_expands_cell(self):
+        source = (
+            np.asarray([[[0.2, 0.3, 0.4], [1.2, 1.3, 1.4]]]),
+            np.asarray([[0, 2]], dtype=np.int32),
+            np.diag([3.0, 4.0, 5.0]).reshape(1, 9),
+        )
+        original_coords = source[0].copy()
+        generated = generate_test_data(source, (2, 1, 2))
+        coords, atom_types, cells = generated
+        self.assertEqual(coords.shape, (1, 8, 3))
+        np.testing.assert_array_equal(atom_types, [[0, 2, 0, 2, 0, 2, 0, 2]])
+        np.testing.assert_allclose(cells.reshape(3, 3), np.diag([6.0, 4.0, 10.0]))
+        np.testing.assert_array_equal(coords[0, :2], source[0][0])
+        np.testing.assert_array_equal(source[0], original_coords)
+
+    def test_generate_test_data_requires_periodic_cell(self):
+        source = (
+            np.asarray([[[0.0, 0.0, 0.0]]]),
+            np.asarray([[0]], dtype=np.int32),
+            None,
+        )
+        with self.assertRaisesRegex(ValueError, "requires a source cell"):
+            generate_test_data(source, (2, 2, 2))
+
+    def test_generated_npz_round_trips_through_direct_loader(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_path = root / "seed.npz"
+            output_path = root / "generated" / "profile.npz"
+            np.savez_compressed(
+                source_path,
+                coords=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+                atom_types=np.asarray([0, 1], dtype=np.int32),
+                cells=np.diag([3.0, 4.0, 5.0]),
+            )
+            result = main(
+                [
+                    "generate-data",
+                    "--input-npz", str(source_path),
+                    "--replicate", "2,1,1",
+                    "--output-npz", str(output_path),
+                ]
+            )
+            self.assertEqual(result, 0)
+            generated = _load_npz_system(output_path)
+            self.assertEqual(generated[0].shape, (1, 4, 3))
+            np.testing.assert_array_equal(generated[1], [[0, 1, 0, 1]])
+            np.testing.assert_allclose(
+                generated[2].reshape(3, 3), np.diag([6.0, 4.0, 5.0])
+            )
+
+    def test_generate_data_accepts_lammps_geometry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            geometry = root / "seed.data"
+            output_path = root / "expanded.npz"
+            geometry.write_text(
+                """2 atoms
+2 atom types
+
+0 3 xlo xhi
+0 4 ylo yhi
+0 5 zlo zhi
+
+Atoms # atomic
+
+1 1 0.0 0.0 0.0
+2 2 1.0 0.0 0.0
+"""
+            )
+            result = main(
+                [
+                    "generate-data",
+                    "--geometry", str(geometry),
+                    "--replicate", "2,1,1",
+                    "--output-npz", str(output_path),
+                ]
+            )
+            self.assertEqual(result, 0)
+            generated = _load_npz_system(output_path)
+            self.assertEqual(generated[0].shape, (1, 4, 3))
+            np.testing.assert_array_equal(generated[1], [[0, 1, 0, 1]])
+
+    def test_generated_npz_refuses_to_overwrite(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output_path = Path(temporary) / "existing.npz"
+            output_path.write_bytes(b"keep this file")
+            system = (
+                np.asarray([[[0.0, 0.0, 0.0]]]),
+                np.asarray([[0]], dtype=np.int32),
+                np.eye(3).reshape(1, 9),
+            )
+            with self.assertRaisesRegex(FileExistsError, "refusing to overwrite"):
+                _write_generated_npz(output_path, system)
+            self.assertEqual(output_path.read_bytes(), b"keep this file")
 
     def test_replication_factor_product_never_exceeds_limit(self):
         for limit in range(1, 80):
