@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="DPA4 direct inference and LAMMPS profiling paths, their inputs, outputs, and a controlled workflow for evaluating TileLang operators.">
+  <title>DPA4 Profile Guide</title>
+  <style>
+    :root {
+      --bg: #eef3f2;
+      --surface: #f9fbfa;
+      --ink: #162d30;
+      --muted: #51676a;
+      --line: #cbd8d6;
+      --accent: #08796f;
+      --soft: #e0ece9;
+      --body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #10191b;
+        --surface: #172326;
+        --ink: #e2eeec;
+        --muted: #a2b8b5;
+        --line: #304345;
+        --accent: #69c9b8;
+        --soft: #203535;
+        color-scheme: dark;
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #10191b;
+      --surface: #172326;
+      --ink: #e2eeec;
+      --muted: #a2b8b5;
+      --line: #304345;
+      --accent: #69c9b8;
+      --soft: #203535;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      padding-block: clamp(1.5rem, 5vw, 4rem);
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px));
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--body);
+      line-height: 1.6;
+    }
+    main { width: min(100%, 1080px); margin-inline: auto; display: grid; gap: 2.4rem; }
+    header, section { display: grid; gap: 1rem; }
+    .eyebrow, .section-id, .tag {
+      margin: 0;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: clamp(2.1rem, 6vw, 3.8rem); line-height: 1.06; letter-spacing: -0.04em; text-wrap: balance; }
+    h2 { font-size: clamp(1.45rem, 3vw, 2rem); line-height: 1.2; text-wrap: balance; }
+    h3 { font-size: 1.05rem; }
+    .lead { max-width: 72ch; color: var(--muted); font-size: 1.04rem; }
+    nav, .link-row { display: flex; flex-wrap: wrap; gap: 0.55rem 1.2rem; }
+    a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
+    a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .section-head { display: grid; gap: 0.25rem; }
+    .cards, .columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+    .card, .panel {
+      min-width: 0;
+      padding: clamp(1rem, 2.4vw, 1.4rem);
+      border: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .card { display: grid; align-content: start; gap: 0.65rem; }
+    .flow { color: var(--accent); font-family: var(--mono); font-size: 0.87rem; overflow-wrap: anywhere; }
+    .muted { color: var(--muted); font-size: 0.94rem; }
+    .callout { padding: 0.9rem 1rem; border-left: 3px solid var(--accent); background: var(--soft); color: var(--muted); }
+    .code-wrap, .table-wrap { min-width: 0; overflow-x: auto; border: 1px solid var(--line); background: var(--surface); }
+    pre { min-width: max-content; margin: 0; padding: 1rem; color: var(--ink); font: 0.82rem/1.65 var(--mono); }
+    code { font: 0.9em var(--mono); overflow-wrap: anywhere; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; min-width: 650px; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
+    th, td { padding: 0.65rem 0.8rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    thead th { color: var(--muted); font: 600 0.75rem var(--mono); }
+    tbody tr:last-child td { border-bottom: 0; }
+    .steps { display: grid; gap: 0.7rem; counter-reset: step; }
+    .step { display: grid; grid-template-columns: 2rem minmax(0, 1fr); gap: 0.75rem; align-items: start; }
+    .step::before {
+      counter-increment: step;
+      content: counter(step, decimal-leading-zero);
+      color: var(--accent);
+      font: 0.78rem var(--mono);
+      padding-top: 0.18rem;
+    }
+    footer { border-top: 1px solid var(--line); padding-top: 1rem; color: var(--muted); font-size: 0.84rem; }
+    @media (max-width: 700px) { .cards, .columns { grid-template-columns: minmax(0, 1fr); } }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">MYPROJECT / TESTING</p>
+      <h1>DPA4 Profile Paths</h1>
+      <p class="lead">两条 profile 路径各自使用不同输入：直接调用 DPA4Model 做单卡推理，或用 LAMMPS 运行单 rank/多卡 MPI 模拟。生成的 NPZ 仅供直接推理，不是 LAMMPS data 文件。</p>
+      <nav aria-label="页面导航">
+        <a href="#paths">两条路径</a>
+        <a href="#inputs">输入与产物</a>
+        <a href="#tilelang">TileLang 后续测试</a>
+      </nav>
+    </header>
+
+    <section id="paths">
+      <div class="section-head">
+        <p class="section-id">01 / Execution</p>
+        <h2>选择运行路径</h2>
+      </div>
+      <div class="cards">
+        <article class="card">
+          <p class="tag">Direct · one HCU</p>
+          <h3>独立测试 DPA4Model</h3>
+          <p class="flow">NPZ / geometry → DPA4Model.eval → torch.profiler</p>
+          <p class="muted">不启动 LAMMPS。输入是 NPZ（coords、atom_types、cells）或当前几何读取器支持的正交盒几何；模型由 DeepMD 加载。可用 <code>generate-data</code> 从真实周期结构扩胞后生成可复用 NPZ。</p>
+          <div class="code-wrap"><pre><code>python tests/deepmd/test_dpa4_inference_profile.py dpa4 \
+  --model-file /models/water.pt \
+  --input-npz /systems/water.npz \
+  --device cuda:0 --max-atoms 8192 \
+  --tilelang-ops "" \
+  --output-dir /tmp/profile-baseline</code></pre></div>
+          <p class="muted"><code>--tilelang-ops ""</code> 显式关闭 TileLang selectors，作为 baseline。输出包含 Chrome trace 和 JSON summary；<code>--max-atoms</code> 是上限，需检查 summary 的实际 <code>atom_count</code>。</p>
+        </article>
+        <article class="card">
+          <p class="tag">LAMMPS · one rank per HCU</p>
+          <h3>使用 LAMMPS 模拟</h3>
+          <p class="flow">LAMMPS data + input template + .pt2 → lmp / MPI</p>
+          <p class="muted">此路径传入原生 LAMMPS data 文件和模板。<code>--gpu-ids</code> 中每个 ID 对应一个单机 rank；多个 ID 需 MPI 和 with-comm 模型。仓库模板 <code>tests/deepmd/dpa4_water_profile.template</code> 对应水样例 O,H 类型顺序。</p>
+          <div class="code-wrap"><pre><code>python tests/deepmd/test_dpa4_inference_profile.py lammps \
+  --model-file /models/water-with-comm.pt2 \
+  --data-file /path/to/lammps/examples/rdf-adf/data.spce \
+  --lammps-input tests/deepmd/dpa4_water_profile.template \
+  --lammps-exe /opt/dtk/bin/lmp --mpi-exe mpirun \
+  --gpu-ids 0,1,2 --replicate 2,2,2 --steps 0 \
+  --output-dir /tmp/profile-lammps</code></pre></div>
+          <p class="muted">3 个 GPU ID 会启动 3 个 MPI rank；<code>2,2,2</code> 将 4,500 原子的样例扩为 36,000 原子。默认 <code>--steps 0</code>；增加 steps 时模板还会计算 SPC/E bond/angle 项。该样例 data 是 full-style LAMMPS 输入，应通过 <code>--data-file</code> 使用，不要当作直接路径的 <code>--geometry</code>。</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="inputs">
+      <div class="section-head">
+        <p class="section-id">02 / Contract</p>
+        <h2>输入和输出不能混用</h2>
+      </div>
+      <div class="table-wrap" role="region" aria-label="DPA4 profile inputs and outputs" tabindex="0">
+        <table>
+          <thead><tr><th>路径</th><th>必需输入</th><th>扩胞方式</th><th>profile 产物</th></tr></thead>
+          <tbody>
+            <tr><td>直接 <code>dpa4</code></td><td>eager DeepMD model + NPZ/支持的 geometry</td><td>profile 根据可用显存估算；<code>generate-data</code> 可离线扩 NPZ</td><td>单次 eval 的 Chrome trace + JSON summary</td></tr>
+            <tr><td><code>lammps</code></td><td>frozen <code>.pt2</code> + LAMMPS data + template + lmp；多卡另需 MPI</td><td>模板内 <code>replicate ${rx} ${ry} ${rz}</code></td><td>DeepMD DP_PROFILER trace、rank logs、JSON summary</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="callout">直接推理的 <code>generate-data</code> 输出是 NPZ，不是 LAMMPS <code>read_data</code> 文件。多卡 LAMMPS 运行要求单机每 rank 一个可见 GPU 和包含 with-comm 路径的模型；水样例要求 model type map 为 O,H。</p>
+    </section>
+
+    <section id="tilelang">
+      <div class="section-head">
+        <p class="section-id">03 / TileLang validation</p>
+        <h2>算子接入后，先验正确性，再测性能</h2>
+        <p class="lead">不要只比较 profile 时间。保持输入、模型类型映射、实际 atom_count、设备和运行条件一致，并分开验证算子与完整模型。</p>
+      </div>
+      <div class="panel steps">
+        <div class="step"><p><strong>单算子 parity。</strong> 对新 TileLang 算子跑相应单元测试，比较 TileLang 与 PyTorch/reference 的输出误差；一次先启用一个 op，便于定位错误。</p></div>
+        <div class="step"><p><strong>完整 DPA4 correctness。</strong> 对相同 NPZ 和 eager <code>pt_expt</code> 模型，分别用 <code>tilelang_ops=()</code> baseline 和 <code>tilelang_ops=("radial_basis", ...)</code> candidate，比较 energy、force、virial；先运行现有 DPA4 模型集成测试。</p></div>
+        <div class="step"><p><strong>直接 profile 对照。</strong> 用相同 <code>--input-npz</code>、<code>--max-atoms</code>、设备和内存参数各运行一次。检查 summary 的 <code>atom_count</code> 与 <code>tilelang_ops</code>；再比较 Chrome trace 的 TileLang kernel/device time、总 wall time 和显存。多次运行并记录中位数，避免把 JIT 首次调用当作稳态结果。</p></div>
+        <div class="step"><p><strong>LAMMPS 集成验证（可选）。</strong> <code>.pt2/.pte</code> 的 TileLang selectors 在导出时固定，不能在当前 LAMMPS 命令加载后切换。分别导出 baseline 与已集成 TileLang 的模型，再用完全相同的 data、template、replication、rank 数和 steps 做模拟对照；多 rank 模型需带 with-comm artifact。</p></div>
+      </div>
+      <p class="callout">TileLang direct dispatch 需要 eager <code>pt_expt</code> checkpoint；普通 <code>pt</code> 不会静默回退，导出的 <code>.pt2/.pte</code> 也不能通过 <code>--tilelang-ops</code> 改变算子选择。</p>
+      <div class="link-row">
+        <a href="../tests/deepmd/test_dpa4_inference_profile.py">Profile CLI</a>
+        <a href="../tests/deepmd/dpa4_water_profile.template">Water LAMMPS template</a>
+        <a href="../python/model/dpa4.py">DPA4Model selector</a>
+        <a href="kernel-model.html">TileLang operator design</a>
+      </div>
+    </section>
+
+    <footer><p>性能结论必须在目标 HIP/DCU、目标 DeepMD/LAMMPS 构建和匹配模型上验证；CPU-only parser/unit tests 不能证明算子已在 DCU 执行。</p></footer>
+  </main>
+</body>
+</html>
