@@ -9,12 +9,14 @@ cmdclass = {}
 build_hip = os.environ.get("DPA4_BUILD_HIP") == "1"
 build_dumma = os.environ.get("DPA4_ENABLE_DUMMA") == "1"
 build_rmsnorm = os.environ.get("DPA4_ENABLE_RMSNORM") == "1"
-if (build_dumma or build_rmsnorm) and not build_hip:
-    raise RuntimeError("native operator flags require DPA4_BUILD_HIP=1")
+if build_dumma and not build_hip:
+    raise RuntimeError("DPA4_ENABLE_DUMMA=1 requires DPA4_BUILD_HIP=1")
+if build_rmsnorm and not build_hip:
+    raise RuntimeError("DPA4_ENABLE_RMSNORM=1 requires DPA4_BUILD_HIP=1")
 if build_hip and not (build_dumma or build_rmsnorm):
     raise RuntimeError(
-        "DPA4_BUILD_HIP=1 requires at least one operator flag: "
-        "DPA4_ENABLE_DUMMA=1 or DPA4_ENABLE_RMSNORM=1"
+        "the native GEMM requires DPA4_ENABLE_DUMMA=1 unless "
+        "DPA4_ENABLE_RMSNORM=1 is selected"
     )
 if build_hip:
     # Native kernels use HIP syntax in .cpp translation units. Follow the DTK
