@@ -9,14 +9,17 @@ cmdclass = {}
 build_hip = os.environ.get("DPA4_BUILD_HIP") == "1"
 build_dumma = os.environ.get("DPA4_ENABLE_DUMMA") == "1"
 build_rmsnorm = os.environ.get("DPA4_ENABLE_RMSNORM") == "1"
+build_gie = os.environ.get("DPA4_ENABLE_GIE") == "1"
 if build_dumma and not build_hip:
     raise RuntimeError("DPA4_ENABLE_DUMMA=1 requires DPA4_BUILD_HIP=1")
 if build_rmsnorm and not build_hip:
     raise RuntimeError("DPA4_ENABLE_RMSNORM=1 requires DPA4_BUILD_HIP=1")
-if build_hip and not (build_dumma or build_rmsnorm):
+if build_gie and not build_hip:
+    raise RuntimeError("DPA4_ENABLE_GIE=1 requires DPA4_BUILD_HIP=1")
+if build_hip and not (build_dumma or build_rmsnorm or build_gie):
     raise RuntimeError(
         "the native GEMM requires DPA4_ENABLE_DUMMA=1 unless "
-        "DPA4_ENABLE_RMSNORM=1 is selected"
+        "DPA4_ENABLE_RMSNORM=1 or DPA4_ENABLE_GIE=1 is selected"
     )
 if build_hip:
     # Native kernels use HIP syntax in .cpp translation units. Follow the DTK
@@ -38,6 +41,9 @@ if build_hip:
     if build_rmsnorm:
         sources.append("csrc/rmsnorm/rmsnorm.cpp")
         define_macros.append(("DPA4_ENABLE_RMSNORM", "1"))
+    if build_gie:
+        sources.append("csrc/gie/gie.cpp")
+        define_macros.append(("DPA4_ENABLE_GIE", "1"))
 
     ext_modules = [CUDAExtension(
         "kernels._C",

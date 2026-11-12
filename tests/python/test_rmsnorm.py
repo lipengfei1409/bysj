@@ -45,6 +45,7 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
                 "DPA4_BUILD_HIP": "1",
                 "DPA4_ENABLE_DUMMA": "0",
                 "DPA4_ENABLE_RMSNORM": "1",
+                "DPA4_ENABLE_GIE": "0",
             }
         )
         self.assertEqual(extension["name"], "kernels._C")
@@ -60,6 +61,7 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
                 "DPA4_BUILD_HIP": "1",
                 "DPA4_ENABLE_DUMMA": "1",
                 "DPA4_ENABLE_RMSNORM": "0",
+                "DPA4_ENABLE_GIE": "0",
             }
         )
         self.assertEqual(
