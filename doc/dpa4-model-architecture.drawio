@@ -1,0 +1,246 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net" modified="2026-11-12T00:00:00.000Z" agent="Claude Code" version="25.0.3" type="device">
+  <diagram id="dpa4-overview" name="DPA4 总览">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1680" pageHeight="1040" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="ov2" value="&lt;b&gt;DPA4 / SeZM 推理结构&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#203B43;strokeColor=#203B43;fontColor=#FFFFFF;fontSize=24;align=center;verticalAlign=middle;spacing=8;fontStyle=1;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="24" width="1600" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="ov3" value="证据边界：宏观模型流据项目文档描述，由 DeepMD-kit 管理；实线仅用于仓库可核对的独立算子数据流，虚线表示 DeepMD 所有或尚未验证的模型连接 / 顺序。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="84" width="1600" height="58" as="geometry" />
+        </mxCell>
+        <mxCell id="ov4" value="&lt;b&gt;图例&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F7F7;strokeColor=#B6C8CA;fontColor=#15323B;fontSize=12;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="166" width="90" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="ov5" value="已核对的独立算子流" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#288779;fontColor=#15323B;fontSize=12;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="145" y="166" width="190" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="ov6" value="DeepMD 管理 / 接线未由本仓库证明" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C88729;fontColor=#15323B;fontSize=12;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="350" y="166" width="320" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="ov7" value="&lt;b&gt;输入&lt;/b&gt;&lt;br&gt;坐标 R[N,3]&lt;br&gt;原子类型[N]&lt;br&gt;晶胞 / 周期边界" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="250" width="205" height="126" as="geometry" />
+        </mxCell>
+        <mxCell id="ov8" value="&lt;b&gt;邻居图&lt;/b&gt;&lt;br&gt;src[E] / dst[E]&lt;br&gt;边向量与 cutoff 邻域" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="290" y="250" width="220" height="126" as="geometry" />
+        </mxCell>
+        <mxCell id="ov9" value="&lt;b&gt;边几何与径向特征&lt;/b&gt;&lt;br&gt;距离、单位方向、envelope&lt;br&gt;径向基 / 类型特征" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="555" y="250" width="260" height="126" as="geometry" />
+        </mxCell>
+        <mxCell id="ov10" value="&lt;b&gt;GIE 初始几何嵌入&lt;/b&gt;&lt;br&gt;zonal scatter&lt;br&gt;environment-seed / Gram" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="860" y="250" width="230" height="126" as="geometry" />
+        </mxCell>
+        <mxCell id="ov11" value="&lt;b&gt;SeZM 交互与 readout&lt;/b&gt;&lt;br&gt;相互作用层数、顺序、宽度&lt;br&gt;依赖模型 / DeepMD 配置" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEE6FA;strokeColor=#8064A2;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="1135" y="250" width="255" height="126" as="geometry" />
+        </mxCell>
+        <mxCell id="ov12" value="&lt;b&gt;能量输出&lt;/b&gt;&lt;br&gt;原子能 Eᵢ&lt;br&gt;总能 E = Σᵢ Eᵢ" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9E5E1;strokeColor=#C86C62;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="1435" y="250" width="205" height="126" as="geometry" />
+        </mxCell>
+        <mxCell id="ov13" value="构图" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C88729;strokeWidth=2;dashed=1;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="ov7" target="ov8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ov14" value="边特征" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C88729;strokeWidth=2;dashed=1;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="ov8" target="ov9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ov15" value="几何输入" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C88729;strokeWidth=2;dashed=1;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="ov9" target="ov10">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ov16" value="嵌入 / 特征" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C88729;strokeWidth=2;dashed=1;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="ov10" target="ov11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ov17" value="readout" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C88729;strokeWidth=2;dashed=1;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="ov11" target="ov12">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ov18" value="&lt;b&gt;导数输出&lt;/b&gt;&lt;br&gt;力：Fᵢ = −∂E/∂rᵢ&lt;br&gt;virial / 应力按 DeepMD API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9E5E1;strokeColor=#C86C62;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="1185" y="430" width="350" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="ov19" value="自动微分 / 导数" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C88729;strokeWidth=2;dashed=1;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="ov12" target="ov18">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ov20" value="&lt;b&gt;DeepMD-owned macro graph&lt;/b&gt;&lt;br&gt;DPA4Model 是 DeepPot 薄适配层；DeepMD 负责 checkpoint、neighbor handling、完整 descriptor / interaction / fitting 与能量、力、virial 评估。&lt;br&gt;本仓库没有完整模型定义；图中的宏观节点是上下文，不代表已验证的层级或 dispatch 顺序。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="440" width="1080" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="ov21" value="&lt;b&gt;本仓库的可选 TileLang 算子清单&lt;/b&gt; · standalone / non-fused · DeepMD pt_expt 通过 DP_TILELANG_* gates 选择；下列分组仅作模块归类，不表示实际执行顺序。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#203B43;strokeColor=#203B43;fontColor=#FFFFFF;fontSize=15;align=left;verticalAlign=middle;spacing=8;fontStyle=1;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="590" width="1600" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="ov22" value="&lt;b&gt;径向与边输入&lt;/b&gt;&lt;br&gt;radial_basis&lt;br&gt;cutoff_envelope&lt;br&gt;edge_geometry · edge_degree&lt;br&gt;edge_type_features" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="675" width="360" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="ov23" value="&lt;b&gt;旋转准备&lt;/b&gt;&lt;br&gt;edge_quaternion&lt;br&gt;wigner_l1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="430" y="675" width="250" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="ov24" value="&lt;b&gt;GIE&lt;/b&gt;&lt;br&gt;zonal_scatter&lt;br&gt;environment_matrix&lt;br&gt;env_seed_scatter&lt;br&gt;env_seed_gram" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="710" y="675" width="330" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="ov25" value="&lt;b&gt;EMFA SO(2)&lt;/b&gt;&lt;br&gt;so2_rotate_to_local_l1&lt;br&gt;so2_radial_scale · so2_linear_l1&lt;br&gt;so2_rotate_back_l1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEE6FA;strokeColor=#8064A2;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="675" width="320" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="ov26" value="&lt;b&gt;交互 / 读出相关&lt;/b&gt;&lt;br&gt;segment_softmax&lt;br&gt;attention_aggregate&lt;br&gt;grid_product" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9E5E1;strokeColor=#C86C62;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="675" width="220" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="ov27" value="源码边界：python/model/dpa4.py · doc/kernel-model.html · python/kernels/tilelang_ops/README.md。GIE 与 EMFA SO(2) 的可核对计算细节见后两页。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F7F7;strokeColor=#B6C8CA;fontColor=#15323B;fontSize=12;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="895" width="1600" height="52" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="gie-dataflow" name="GIE 数据流">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1680" pageHeight="1120" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="gie2" value="&lt;b&gt;GIE / 几何初始嵌入：仓库可核对的数据流&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#203B43;strokeColor=#203B43;fontColor=#FFFFFF;fontSize=23;align=center;verticalAlign=middle;spacing=8;fontStyle=1;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="24" width="1600" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="gie3" value="两个 standalone 分支分别画出：zonal scatter 与 environment-seed。它们是算子级计算图，不推断完整 DeepMD 模型中二者的相对调用顺序。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="84" width="1600" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="gie4" value="&lt;b&gt;分支 A · zonal scatter&lt;/b&gt;  [python/kernels/tilelang_ops/zonal_scatter.py]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=16;align=left;verticalAlign=middle;spacing=8;fontStyle=1;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="170" width="1600" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="gie5" value="&lt;b&gt;zonal coupling&lt;/b&gt;&lt;br&gt;z[E,R]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="50" y="245" width="190" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="gie6" value="&lt;b&gt;radial features&lt;/b&gt;&lt;br&gt;radial[E,S,C]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="50" y="370" width="190" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="gie7" value="&lt;b&gt;索引 / 归一化&lt;/b&gt;&lt;br&gt;dst[E]&lt;br&gt;radial_slot[R]&lt;br&gt;d⁻¹ᐟ²[N]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="280" y="280" width="205" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="gie8" value="&lt;b&gt;按边 e 与 zonal 行 r 计算&lt;/b&gt;&lt;br&gt;slot = radial_slot[r]&lt;br&gt;n = dst[e]&lt;br&gt;&lt;br&gt;Δ = zonal[e,r] × radial[e,slot,:] × d⁻¹ᐟ²[n]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="545" y="265" width="430" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="gie9" value="&lt;b&gt;目标节点累加&lt;/b&gt;&lt;br&gt;Y[N,R+1,C]，初始化为 0&lt;br&gt;Y[n,r+1,:] += Δ&lt;br&gt;r=0 留作保留行" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9E5E1;strokeColor=#C86C62;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="270" width="300" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="gie10" value="zonal[e,r]" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="gie5" target="gie8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gie11" value="radial lookup" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="gie6" target="gie8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gie12" value="dst / slot / norm" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="gie7" target="gie8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gie13" value="scatter-add" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="gie8" target="gie9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gie14" value="等价标量式：Y[dst[e], r+1, c] += zonal[e,r] · radial[e, radial_slot[r], c] · inv_sqrt_deg[dst[e]]。对共享目标节点的入边做累加。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F7F7;strokeColor=#B6C8CA;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="50" y="465" width="1290" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="gie15" value="&lt;b&gt;分支 B · environment-seed matrix → scatter → invariant Gram&lt;/b&gt;  [environment_matrix.py · env_seed_scatter.py · env_seed_gram.py]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=16;align=left;verticalAlign=middle;spacing=8;fontStyle=1;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="555" width="1600" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="gie16" value="&lt;b&gt;边几何&lt;/b&gt;&lt;br&gt;edge_vec[E,3]&lt;br&gt;edge_env[E,1]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="50" y="645" width="205" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="gie17" value="&lt;b&gt;环境几何通道&lt;/b&gt;&lt;br&gt;inv_r = 1/√(||v||²+ε²)&lt;br&gt;a = edge_env × inv_r&lt;br&gt;r̃ = [a, a·v·inv_r]&lt;br&gt;r̃[E,4]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="320" y="620" width="305" height="165" as="geometry" />
+        </mxCell>
+        <mxCell id="gie18" value="&lt;b&gt;边 embedding 与索引&lt;/b&gt;&lt;br&gt;features[E,D]&lt;br&gt;dst[E]&lt;br&gt;inv_sqrt_deg[N]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="690" y="640" width="245" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="gie19" value="&lt;b&gt;degree-normalized outer-product scatter&lt;/b&gt;&lt;br&gt;M[dst[e],j,k] += r̃[e,j] × features[e,k] × inv_sqrt_deg[dst[e]]&lt;br&gt;&lt;br&gt;M[N,4,D]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9E5E1;strokeColor=#C86C62;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="990" y="620" width="360" height="165" as="geometry" />
+        </mxCell>
+        <mxCell id="gie20" value="&lt;b&gt;不变量 Gram 投影&lt;/b&gt;&lt;br&gt;G = Mᵀ · M[..., :A]&lt;br&gt;G[N,D,A]&lt;br&gt;A = axis_dim ≤ D" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEE6FA;strokeColor=#8064A2;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="1390" y="640" width="240" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="gie21" value="向量与 envelope" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="gie16" target="gie17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gie22" value="r̃[e,j]" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="gie17" target="gie19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gie23" value="features / dst / degree" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="gie18" target="gie19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gie24" value="节点环境矩阵" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="gie19" target="gie20">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gie25" value="逐节点公式：G[n,d,a] = Σⱼ₌₀³ M[n,j,d] · M[n,j,a]（第二个轴截取前 A 个 embedding 方向）。输出是对局部坐标轴的 invariant Gram projection。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F7F7;strokeColor=#B6C8CA;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="50" y="830" width="1580" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="gie26" value="&lt;b&gt;范围说明&lt;/b&gt;&lt;br&gt;上述形状与公式来自 TileLang kernel/reference；模型层如何构造 features、如何消费 GIE 输出以及它们在完整 SeZM descriptor 中的先后关系，由 DeepMD 配置决定且本仓库未完整定义。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="50" y="930" width="1580" height="84" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="emfa-so2" name="EMFA SO(2)">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1680" pageHeight="1120" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="so2" value="&lt;b&gt;EMFA SO(2) 卷积：局部 frame 中的算子数据流&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#203B43;strokeColor=#203B43;fontColor=#FFFFFF;fontSize=23;align=center;verticalAlign=middle;spacing=8;fontStyle=1;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="24" width="1600" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="so3" value="仓库实现范围：lmax=mmax=1，FP32、HIP/DCU standalone kernels。实线描述源文件中可核对的局部算子输入 / 输出；reshape、层级编排与完整 DeepMD dispatch 不在此仓库中证明。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="84" width="1600" height="58" as="geometry" />
+        </mxCell>
+        <mxCell id="so4" value="&lt;b&gt;边向量&lt;/b&gt;&lt;br&gt;v[e] ∈ R³&lt;br&gt;可选缓存长度" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="45" y="230" width="190" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="so5" value="&lt;b&gt;edge quaternion&lt;/b&gt;&lt;br&gt;q[E,4]&lt;br&gt;平滑 two-chart 构造&lt;br&gt;edge_quaternion.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="285" y="215" width="250" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="so6" value="&lt;b&gt;packed l=0 / l=1 Wigner-D&lt;/b&gt;&lt;br&gt;D[E,4,4] 与 Dᵀ[E,4,4]&lt;br&gt;wigner_l1.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="585" y="215" width="285" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="so7" value="几何" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="so4" target="so5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="so8" value="q" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="so5" target="so6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="so9" value="&lt;b&gt;节点特征&lt;/b&gt;&lt;br&gt;X[N,4,C]&lt;br&gt;源索引 src[E]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="45" y="430" width="210" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="so10" value="&lt;b&gt;gather + rotate to local&lt;/b&gt;&lt;br&gt;X_local[e] = P·D[e]·X[src[e]]&lt;br&gt;X_local[E,4,C]&lt;br&gt;so2_rotate_to_local_l1.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="345" y="405" width="365" height="165" as="geometry" />
+        </mxCell>
+        <mxCell id="so11" value="D" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="so6" target="so10">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="so12" value="X, src" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="so9" target="so10">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="so13" value="&lt;b&gt;径向调制系数&lt;/b&gt;&lt;br&gt;R[E,M,C]&lt;br&gt;由 radial / degree 路径提供" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="45" y="690" width="255" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="so14" value="&lt;b&gt;elementwise radial scale&lt;/b&gt;&lt;br&gt;V[e,m,c] = X_local[e,m,c] × R[e,m,c]&lt;br&gt;so2_radial_scale.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="345" y="675" width="365" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="so15" value="local features" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="so10" target="so14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="so16" value="radial weights" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="so13" target="so14">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="so17" value="&lt;b&gt;block-diagonal SO2Linear&lt;/b&gt;&lt;br&gt;两个等宽 |m| blocks 独立收缩；不做跨 block 混合&lt;br&gt;Y₀ = X₀W₀；Y₁ = X₁W₁&lt;br&gt;so2_linear_l1.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEE6FA;strokeColor=#8064A2;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="790" y="665" width="365" height="175" as="geometry" />
+        </mxCell>
+        <mxCell id="so18" value="按 focus / m 分组的局部特征" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="so14" target="so17">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="so19" value="&lt;b&gt;rotate back to global&lt;/b&gt;&lt;br&gt;应用 Dᵀ / 逆变换&lt;br&gt;边输出 X_global[E,4,F·C]&lt;br&gt;so2_rotate_back_l1.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9E5E1;strokeColor=#C86C62;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="1235" y="665" width="360" height="175" as="geometry" />
+        </mxCell>
+        <mxCell id="so20" value="Dᵀ" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="so6" target="so19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="so21" value="SO(2) 输出" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#52747C;strokeWidth=2;dashed=0;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="so17" target="so19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="so22" value="&lt;b&gt;source 形状约束&lt;/b&gt;&lt;br&gt;rotate-to-local：X[N,4,C] + D[E,4,4] + src[E] → [E,4,C]&lt;br&gt;radial scale：values / radial 同形 [E,M,C]，逐元素相乘&lt;br&gt;SO2Linear：X[F,E,I] × W[I,F,O] → Y[F,E,O]；权重冻结时仅 feature path 参与反向&lt;br&gt;rotate-back：局部特征按 [E,F,4,C] 布局输入，输出 [E,4,F·C]。层间 layout / reshape 由调用方组织。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F7F7;strokeColor=#B6C8CA;fontColor=#15323B;fontSize=12;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="45" y="875" width="1070" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="so23" value="&lt;b&gt;边界&lt;/b&gt;&lt;br&gt;此页是运算符级 SO(2) 数据流示意，不声称每个 DPA4 模型都按该顺序连接这些 kernel。DeepMD pt_expt 构建时由 DP_TILELANG_* gate 选择支持的独立阶段；精确模型 wiring 不在本仓库。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="875" width="445" height="150" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

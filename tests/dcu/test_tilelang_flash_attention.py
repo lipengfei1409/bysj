@@ -6,17 +6,19 @@ are used)::
     python -m unittest discover -s tests/dcu \
         -p 'test_tilelang_flash_attention.py' -v
 
-Pass benchmark/coverage settings as CLI options when running this file directly::
+Run the fixed-axis benchmark directly; add ``--coverage`` separately for the
+broader heads/head_dim correctness matrix::
 
     python tests/dcu/test_tilelang_flash_attention.py \
-        --coverage --benchmark --bench-warmup 1 --bench-repeats 2 \
+        --benchmark --bench-warmup 1 --bench-repeats 2 \
         --max-qkv-input-bytes 8589934592 \
         --report-path /tmp/fa-report.json --csv-report-path /tmp/fa-report.csv
 
-The requested stress axes are heads 8/16/32, batch 1/4/16, and head_dim
-64/128 crossed with sequence lengths 1k through 16k. Cases that error or exceed
-the memory budget are recorded as skipped and excluded from metrics. The budget
-reserves device memory for outputs, workspaces, and other processes. The test
+The benchmark fixes heads=8 and head_dim=128, varying only batch (1/4/16) and
+sequence length (1k through 16k). Broader head/head_dim coverage remains in the
+correctness matrix. Cases that error or exceed the memory budget are recorded as
+skipped and excluded from metrics. The budget reserves device memory for
+outputs, workspaces, and other processes. The test
 covers the dense ``flash_attn_func`` forward contract only: zero dropout, no GQA,
 windowing, ALiBi, softcap, or returned attention probabilities. These tests do
 not exercise backward.
@@ -63,8 +65,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run TileLang FlashAttention correctness, coverage, and benchmark tests."
     )
-    parser.add_argument("--benchmark", action="store_true", help="run long-sequence benchmarks")
-    parser.add_argument("--coverage", action="store_true", help="run forward precision coverage")
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="benchmark sequence length and batch only (heads=8, head_dim=128)",
+    )
+    parser.add_argument(
+        "--coverage",
+        action="store_true",
+        help="run broad forward correctness coverage across heads and head_dim",
+    )
     parser.add_argument(
         "--bench-repeats", type=int, default=None,
         help="override adaptive repeats per timing sample (minimum 1)",
@@ -149,6 +159,101 @@ class FlashAttentionParserTests(unittest.TestCase):
         self.assertEqual(config.bench_warmup, 0)
         self.assertEqual(config.max_qkv_input_bytes, 1)
 
+    def test_benchmark_help_documents_fixed_heads_and_dimension(self):
+        help_text = build_parser().format_help()
+        self.assertIn("benchmark sequence length and batch only", help_text)
+        self.assertIn("heads=8,", help_text)
+        self.assertIn("head_dim=128)", help_text)
+
+
+class FlashAttentionBenchmarkMatrixTests(unittest.TestCase):
+    def test_benchmark_matrix_varies_only_sequence_length_and_batch(self):
+        cases = _requested_benchmark_cases()
+        axes = _requested_benchmark_axes()
+
+        self.assertEqual(len(cases), 15)
+        self.assertEqual(len(set(cases)), 15)
+        self.assertEqual(axes["heads"], 8)
+        self.assertEqual(axes["head_dim"], 128)
+        self.assertEqual(axes["batch"], [1, 4, 16])
+        self.assertEqual(axes["sequence_lengths"], [1024, 2048, 4096, 8192, 16384])
+        self.assertEqual(axes["dtype"], "torch.float16")
+        self.assertFalse(axes["causal"])
+        self.assertEqual({case[2] for case in cases}, {1, 4, 16})
+        self.assertEqual({case[3] for case in cases}, {8})
+        self.assertEqual({case[4] for case in cases}, {128})
+        self.assertTrue(all(case[0] == case[1] for case in cases))
+
+    def test_broad_correctness_matrix_remains_unchanged(self):
+        cases = _requested_stress_cases()
+        self.assertEqual(len(cases), 90)
+        self.assertEqual({case[3] for case in cases}, {8, 16, 32})
+        self.assertEqual({case[4] for case in cases}, {64, 128})
+        self.assertTrue(set(_requested_benchmark_cases()).issubset(set(cases)))
+        self.assertEqual(len(_FORWARD_COVERAGE_CASES), 12)
+        self.assertEqual(len(_BF16_COVERAGE_CASES), 4)
+
+    def test_benchmark_runner_only_times_fixed_matrix(self):
+        class Runner:
+            def __init__(self):
+                self.cases = []
+
+            def _benchmark_case(self, reference, case, dtype, seed):
+                self.cases.append(case)
+                row = {**_case_dict(case, dtype), "timing": "synthetic"}
+                return {}, row
+
+        runner = Runner()
+        report = {
+            "benchmark_matrix": {"successful_cases": [], "skipped_cases": []},
+            "benchmark_cases": [],
+            "skipped_cases": [],
+        }
+        config = FlashAttentionConfig(benchmark=True)
+        with (
+            patch.object(sys.modules[__name__], "_CONFIG", config),
+            patch.object(sys.modules[__name__], "_qkv_input_budget", return_value=(10**12, "test")),
+            patch.object(sys.modules[__name__], "_write_report"),
+            patch("builtins.print"),
+        ):
+            FlashAttentionExtendedTests._requested_benchmark_sweep(
+                runner, reference=None, report=report, device=None
+            )
+
+        self.assertEqual(runner.cases, list(_requested_benchmark_cases()))
+        self.assertEqual(len(report["benchmark_cases"]), 15)
+        self.assertEqual(report["benchmark_matrix"]["requested_case_count"], 15)
+        self.assertEqual(report["benchmark_matrix"]["successful_case_count"], 15)
+
+    def test_correctness_runner_keeps_the_full_matrix_without_timing(self):
+        class Runner:
+            def __init__(self):
+                self.cases = []
+
+            def _correctness_case(self, reference, case, dtype, seed):
+                self.cases.append(case)
+                return {**_case_dict(case, dtype), "correct": True}
+
+        runner = Runner()
+        report = {
+            "requested_matrix": {"successful_cases": [], "skipped_cases": []},
+            "skipped_cases": [],
+        }
+        config = FlashAttentionConfig(coverage=True)
+        with (
+            patch.object(sys.modules[__name__], "_CONFIG", config),
+            patch.object(sys.modules[__name__], "_qkv_input_budget", return_value=(10**12, "test")),
+            patch.object(sys.modules[__name__], "_write_report"),
+            patch("builtins.print"),
+        ):
+            FlashAttentionExtendedTests._requested_stress_sweep(
+                runner, reference=None, report=report, device=None
+            )
+
+        self.assertEqual(runner.cases, list(_requested_stress_cases()))
+        self.assertEqual(report["requested_matrix"]["requested_case_count"], 90)
+        self.assertEqual(report["requested_matrix"]["successful_case_count"], 90)
+
 
 class FlashAttentionCsvReportTests(unittest.TestCase):
     @staticmethod
@@ -164,9 +269,9 @@ class FlashAttentionCsvReportTests(unittest.TestCase):
             },
         }
 
-    def test_csv_flattens_backends_and_preserves_skips(self):
+    def test_csv_flattens_backends_and_only_includes_benchmark_skips(self):
         measured_case = {
-            **_case_dict((128, 64, 2, 8, 64, False), torch.float16),
+            **_case_dict((2048, 2048, 4, 8, 128, False), torch.float16),
             "tilelang": self._timing(1.0, 1.2),
             "flash_attn": self._timing(0.8, 0.9),
             "speedup_tilelang_vs_flash_attn": {
@@ -195,17 +300,34 @@ class FlashAttentionCsvReportTests(unittest.TestCase):
                 "reason": "flash backend unavailable",
             },
         }
-        skipped = {
-            **_case_dict((1024, 1024, 1, 1, 64, False), torch.float16),
+        benchmark_skip = {
+            **_case_dict((1024, 1024, 1, 8, 128, False), torch.float16),
             "status": "skipped",
-            "group": "supported_long_sweep",
+            "group": "requested_benchmark_matrix",
             "reason": "out of memory",
             "counted_in_metrics": False,
         }
+        correctness_skips = [
+            {
+                **_case_dict((4096, 4096, 1, 32, 128, False), torch.float16),
+                "status": "skipped",
+                "group": "requested_stress_matrix",
+                "reason": "correctness-only skip",
+                "counted_in_metrics": False,
+            },
+            {
+                **_case_dict((8192, 8192, 1, 1, 64, False), torch.float16),
+                "status": "skipped",
+                "group": "supported_long_sweep_correctness",
+                "reason": "supplemental correctness skip",
+                "counted_in_metrics": False,
+            },
+        ]
         report = {
             "benchmark_cases": [measured_case],
-            "skipped_cases": [skipped],
-            "requested_matrix": {"skipped_cases": [skipped]},
+            "skipped_cases": correctness_skips,
+            "benchmark_matrix": {"skipped_cases": [benchmark_skip]},
+            "requested_matrix": {"skipped_cases": correctness_skips[:1]},
         }
         with tempfile.TemporaryDirectory() as temporary:
             csv_path = Path(temporary) / "benchmark.csv"
@@ -214,7 +336,7 @@ class FlashAttentionCsvReportTests(unittest.TestCase):
                 rows = list(csv.DictReader(stream))
 
         self.assertEqual(len(rows), 6)
-        measured = {row["backend"]: row for row in rows if row["q_len"] == "128"}
+        measured = {row["backend"]: row for row in rows if row["q_len"] == "2048"}
         self.assertEqual(set(measured), {"tilelang", "flash_attn", "torch_sdpa"})
         self.assertEqual(measured["tilelang"]["device_time_median_ms"], "1.0")
         self.assertEqual(
@@ -223,9 +345,11 @@ class FlashAttentionCsvReportTests(unittest.TestCase):
         self.assertEqual(measured["tilelang"]["accuracy_rmse"], "0.003")
         self.assertEqual(measured["torch_sdpa"]["status"], "unsupported_or_failed")
         self.assertEqual(measured["torch_sdpa"]["reason"], "flash backend unavailable")
-        skipped_rows = [row for row in rows if row["q_len"] == "1024"]
+        skipped_rows = [row for row in rows if row["status"] == "skipped"]
         self.assertEqual(len(skipped_rows), 3)
-        self.assertTrue(all(row["status"] == "skipped" for row in skipped_rows))
+        self.assertTrue(all(row["q_len"] == "1024" for row in skipped_rows))
+        self.assertTrue(all(row["heads"] == "8" for row in skipped_rows))
+        self.assertTrue(all(row["head_dim"] == "128" for row in skipped_rows))
         self.assertTrue(all(row["reason"] == "out of memory" for row in skipped_rows))
 
     def test_json_report_also_writes_csv_beside_it_by_default(self):
@@ -286,16 +410,60 @@ _LONG_SEQUENCE_LENGTHS = (1024, 2048, 4096, 8192, 16384)
 _REQUESTED_HEAD_COUNTS = (8, 16, 32)
 _REQUESTED_BATCH_SIZES = (1, 4, 16)
 _REQUESTED_HEAD_DIMS = (64, 128)
+_BENCHMARK_HEADS = 8
+_BENCHMARK_HEAD_DIM = 128
 _DEFAULT_MAX_QKV_INPUT_BYTES = 16 * 1024 * 1024 * 1024
 _QKV_TOTAL_MEMORY_FRACTION = 0.25
 _QKV_FREE_MEMORY_FRACTION = 0.50
-# Keep a few representative non-square and multi-head measurements in addition
-# to the requested long, equal-length sweep.
-_EXTRA_BENCHMARK_CASES = (
+# Supplemental unequal-length and causal cases remain correctness checks only.
+_SUPPLEMENTAL_CORRECTNESS_CASES = (
     (512, 512, 1, 8, 64, False),
     (512, 512, 1, 8, 64, True),
     (2048, 4096, 1, 4, 64, True),
 )
+
+
+def _requested_stress_cases():
+    return tuple(
+        (sequence_length, sequence_length, batch, heads, head_dim, False)
+        for sequence_length in _LONG_SEQUENCE_LENGTHS
+        for batch in _REQUESTED_BATCH_SIZES
+        for heads in _REQUESTED_HEAD_COUNTS
+        for head_dim in _REQUESTED_HEAD_DIMS
+    )
+
+
+def _requested_benchmark_cases():
+    return tuple(
+        (
+            sequence_length,
+            sequence_length,
+            batch,
+            _BENCHMARK_HEADS,
+            _BENCHMARK_HEAD_DIM,
+            False,
+        )
+        for sequence_length in _LONG_SEQUENCE_LENGTHS
+        for batch in _REQUESTED_BATCH_SIZES
+    )
+
+
+def _requested_benchmark_axes():
+    return {
+        "heads": _BENCHMARK_HEADS,
+        "batch": list(_REQUESTED_BATCH_SIZES),
+        "head_dim": _BENCHMARK_HEAD_DIM,
+        "sequence_lengths": list(_LONG_SEQUENCE_LENGTHS),
+        "dtype": "torch.float16",
+        "causal": False,
+    }
+
+
+def _estimated_qkv_input_bytes(case):
+    q_len, kv_len, batch, heads, head_dim, _causal = case
+    return batch * heads * head_dim * (q_len + 2 * kv_len) * 2
+
+
 # The explicit reference materializes scores. At 8 million FP32 elements this
 # is already a 32 MiB tensor before softmax and other intermediate storage.
 _MAX_REFERENCE_SCORE_ELEMENTS = 8_000_000
@@ -792,12 +960,9 @@ def _benchmark_csv_rows(report):
             rows.append(row)
 
     seen_skips = set()
-    skipped_rows = [
-        row
-        for row in report.get("skipped_cases", [])
-        if row.get("group") in ("supported_long_sweep", "auxiliary_benchmark")
-    ]
-    skipped_rows.extend(report.get("requested_matrix", {}).get("skipped_cases", []))
+    # Correctness-only skips do not belong in the benchmark CSV. The dedicated
+    # matrix contains only cases that would have been timed by --benchmark.
+    skipped_rows = report.get("benchmark_matrix", {}).get("skipped_cases", [])
     for skipped in skipped_rows:
         group = skipped.get("group", "requested_stress_matrix")
         case_fields = _csv_case_fields(skipped)
@@ -1242,109 +1407,73 @@ class FlashAttentionExtendedTests(unittest.TestCase):
         print("FlashAttention case skipped: " + json.dumps(row, sort_keys=True), flush=True)
 
     def _requested_stress_sweep(self, reference, report, device):
+        """Run the original broad matrix for accuracy coverage only."""
         max_input_bytes, memory_policy = _qkv_input_budget(device)
         sweep = report["requested_matrix"]
         sweep["max_qkv_input_bytes"] = max_input_bytes
         sweep["memory_budget_policy"] = memory_policy
 
         seed = 20264000
-        for sequence_length in _LONG_SEQUENCE_LENGTHS:
-            for batch in _REQUESTED_BATCH_SIZES:
-                for heads in _REQUESTED_HEAD_COUNTS:
-                    for head_dim in _REQUESTED_HEAD_DIMS:
-                        case = (
-                            sequence_length,
-                            sequence_length,
-                            batch,
-                            heads,
-                            head_dim,
-                            False,
-                        )
-                        input_bytes = (
-                            batch
-                            * heads
-                            * head_dim
-                            * (sequence_length + 2 * sequence_length)
-                            * torch.empty((), dtype=torch.float16).element_size()
-                        )
-                        reason = None
-                        if input_bytes > max_input_bytes:
-                            reason = (
-                                f"estimated Q/K/V input size {input_bytes} bytes "
-                                f"exceeds available-memory budget {max_input_bytes} bytes"
-                            )
+        for case in _requested_stress_cases():
+            input_bytes = _estimated_qkv_input_bytes(case)
+            if input_bytes > max_input_bytes:
+                row = {
+                    **_case_dict(case, torch.float16),
+                    "status": "skipped",
+                    "group": "requested_stress_matrix",
+                    "reason": (
+                        f"estimated Q/K/V input size {input_bytes} bytes exceeds "
+                        f"available-memory budget {max_input_bytes} bytes"
+                    ),
+                    "estimated_qkv_input_bytes": input_bytes,
+                    "counted_in_metrics": False,
+                }
+                sweep["skipped_cases"].append(row)
+                report["skipped_cases"].append(row)
+                _write_report(report)
+                seed += 1
+                continue
 
-                        if reason is not None:
-                            row = {
-                                **_case_dict(case, torch.float16),
-                                "status": "skipped",
-                                "group": "requested_stress_matrix",
-                                "reason": reason[:1000],
-                                "estimated_qkv_input_bytes": input_bytes,
-                                "counted_in_metrics": False,
-                            }
-                            sweep["skipped_cases"].append(row)
-                            continue
+            try:
+                accuracy_row = self._correctness_case(
+                    reference,
+                    case,
+                    torch.float16,
+                    seed=seed,
+                )
+            except Exception as error:
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                row = {
+                    **_case_dict(case, torch.float16),
+                    "status": "skipped",
+                    "group": "requested_stress_matrix",
+                    "reason": f"{type(error).__name__}: {error}"[:1000],
+                    "estimated_qkv_input_bytes": input_bytes,
+                    "counted_in_metrics": False,
+                }
+                sweep["skipped_cases"].append(row)
+                report["skipped_cases"].append(row)
+                print(
+                    "FlashAttention correctness case skipped: "
+                    + json.dumps(row, sort_keys=True),
+                    flush=True,
+                )
+            else:
+                accuracy_row["estimated_qkv_input_bytes"] = input_bytes
+                accuracy_row["counted_in_metrics"] = True
+                sweep["successful_cases"].append(accuracy_row)
+                print(
+                    "FlashAttention correctness matrix: "
+                    + json.dumps(accuracy_row, sort_keys=True),
+                    flush=True,
+                )
+            _write_report(report)
+            seed += 1
 
-                        try:
-                            if _CONFIG.benchmark:
-                                accuracy_row, benchmark_row = self._benchmark_case(
-                                    reference,
-                                    case,
-                                    torch.float16,
-                                    seed=seed,
-                                )
-                                sweep["successful_cases"].append(accuracy_row)
-                                benchmark_row["case_group"] = "requested_stress_matrix"
-                                report["benchmark_cases"].append(benchmark_row)
-                            else:
-                                accuracy_row = self._correctness_case(
-                                    reference,
-                                    case,
-                                    torch.float16,
-                                    seed=seed,
-                                )
-                                sweep["successful_cases"].append(accuracy_row)
-                        except Exception as error:
-                            try:
-                                torch.cuda.empty_cache()
-                            except Exception:
-                                pass
-                            row = {
-                                **_case_dict(case, torch.float16),
-                                "status": "skipped",
-                                "group": "requested_stress_matrix",
-                                "reason": (
-                                    f"{type(error).__name__}: {error}"
-                                )[:1000],
-                                "estimated_qkv_input_bytes": input_bytes,
-                                "counted_in_metrics": False,
-                            }
-                            sweep["skipped_cases"].append(row)
-                            report["skipped_cases"].append(row)
-                            print(
-                                "FlashAttention case skipped: "
-                                + json.dumps(row, sort_keys=True),
-                                flush=True,
-                            )
-                        else:
-                            row = sweep["successful_cases"][-1]
-                            row["estimated_qkv_input_bytes"] = input_bytes
-                            row["counted_in_metrics"] = True
-                            _write_report(report)
-                            print(
-                                "FlashAttention requested sweep: "
-                                + json.dumps(row, sort_keys=True),
-                                flush=True,
-                            )
-                        seed += 1
-
-        sweep["requested_case_count"] = (
-            len(_LONG_SEQUENCE_LENGTHS)
-            * len(_REQUESTED_BATCH_SIZES)
-            * len(_REQUESTED_HEAD_COUNTS)
-            * len(_REQUESTED_HEAD_DIMS)
-        )
+        sweep["requested_case_count"] = len(_requested_stress_cases())
         sweep["successful_case_count"] = len(sweep["successful_cases"])
         sweep["skipped_case_count"] = len(sweep["skipped_cases"])
         skip_reasons = {}
@@ -1354,10 +1483,96 @@ class FlashAttentionExtendedTests(unittest.TestCase):
         sweep["skip_reason_counts"] = skip_reasons
         _write_report(report)
         print(
-            "Requested stress matrix totals: "
+            "Requested correctness matrix totals: "
             f"requested={sweep['requested_case_count']}, "
             f"successful={sweep['successful_case_count']}, "
             f"skipped={sweep['skipped_case_count']} (skips excluded from metrics)",
+            flush=True,
+        )
+
+    def _requested_benchmark_sweep(self, reference, report, device):
+        """Benchmark only the fixed-head/fixed-dimension 15-case matrix."""
+        max_input_bytes, memory_policy = _qkv_input_budget(device)
+        matrix = report["benchmark_matrix"]
+        matrix["max_qkv_input_bytes"] = max_input_bytes
+        matrix["memory_budget_policy"] = memory_policy
+
+        for index, case in enumerate(_requested_benchmark_cases()):
+            input_bytes = _estimated_qkv_input_bytes(case)
+            if input_bytes > max_input_bytes:
+                row = {
+                    **_case_dict(case, torch.float16),
+                    "status": "skipped",
+                    "group": "requested_benchmark_matrix",
+                    "reason": (
+                        f"estimated Q/K/V input size {input_bytes} bytes exceeds "
+                        f"available-memory budget {max_input_bytes} bytes"
+                    ),
+                    "estimated_qkv_input_bytes": input_bytes,
+                    "counted_in_metrics": False,
+                }
+                matrix["skipped_cases"].append(row)
+                report["skipped_cases"].append(row)
+                _write_report(report)
+                continue
+
+            try:
+                _accuracy_row, benchmark_row = self._benchmark_case(
+                    reference,
+                    case,
+                    torch.float16,
+                    seed=20264000 + index,
+                )
+            except Exception as error:
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                row = {
+                    **_case_dict(case, torch.float16),
+                    "status": "skipped",
+                    "group": "requested_benchmark_matrix",
+                    "reason": f"{type(error).__name__}: {error}"[:1000],
+                    "estimated_qkv_input_bytes": input_bytes,
+                    "counted_in_metrics": False,
+                }
+                matrix["skipped_cases"].append(row)
+                report["skipped_cases"].append(row)
+                print(
+                    "FlashAttention benchmark case skipped: "
+                    + json.dumps(row, sort_keys=True),
+                    flush=True,
+                )
+                _write_report(report)
+                continue
+
+            benchmark_row["case_group"] = "requested_benchmark_matrix"
+            benchmark_row["estimated_qkv_input_bytes"] = input_bytes
+            benchmark_row["counted_in_metrics"] = True
+            report["benchmark_cases"].append(benchmark_row)
+            matrix["successful_cases"].append(benchmark_row)
+            _write_report(report)
+            print(
+                "FlashAttention benchmark: "
+                + json.dumps(benchmark_row, sort_keys=True),
+                flush=True,
+            )
+
+        matrix["requested_case_count"] = len(_requested_benchmark_cases())
+        matrix["successful_case_count"] = len(matrix["successful_cases"])
+        matrix["skipped_case_count"] = len(matrix["skipped_cases"])
+        skip_reasons = {}
+        for row in matrix["skipped_cases"]:
+            reason = row["reason"]
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+        matrix["skip_reason_counts"] = skip_reasons
+        _write_report(report)
+        print(
+            "Requested benchmark matrix totals: "
+            f"requested={matrix['requested_case_count']}, "
+            f"successful={matrix['successful_case_count']}, "
+            f"skipped={matrix['skipped_case_count']} "
+            "(correctness-only cases are not benchmarked)",
             flush=True,
         )
 
@@ -1379,6 +1594,10 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                 "report unsupported rather than risk quadratic-memory fallback"
             ),
             "benchmark_notes": {
+                "shape_policy": (
+                    "heads=8 and head_dim=128 are fixed; only batch and equal "
+                    "query/key sequence length vary"
+                ),
                 "first_invocation": (
                     "synchronized wall time inside this process; may reuse JIT or "
                     "disk caches and is not guaranteed to be a cold compile"
@@ -1396,9 +1615,10 @@ class FlashAttentionExtendedTests(unittest.TestCase):
             "coverage_cases": [],
             "long_sequence_cases": [],
             "benchmark_cases": [],
-            "auxiliary_benchmark_accuracy_cases": [],
+            "supplemental_correctness_cases": [],
             "skipped_cases": [],
             "requested_matrix": {
+                "purpose": "broad forward correctness matrix; never timed",
                 "axes": {
                     "heads": list(_REQUESTED_HEAD_COUNTS),
                     "batch": list(_REQUESTED_BATCH_SIZES),
@@ -1410,6 +1630,17 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                 "successful_cases": [],
                 "skipped_cases": [],
                 "requested_case_count": 0,
+                "successful_case_count": 0,
+                "skipped_case_count": 0,
+            },
+            "benchmark_matrix": {
+                "enabled": _CONFIG.benchmark,
+                "axes": _requested_benchmark_axes(),
+                "successful_cases": [],
+                "skipped_cases": [],
+                "requested_case_count": (
+                    len(_requested_benchmark_cases()) if _CONFIG.benchmark else 0
+                ),
                 "successful_case_count": 0,
                 "skipped_case_count": 0,
             },
@@ -1448,49 +1679,36 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                     flush=True,
                 )
 
-        for index, sequence_length in enumerate(_LONG_SEQUENCE_LENGTHS):
-            case = (sequence_length, sequence_length, 1, 1, 64, False)
-            try:
-                if _CONFIG.benchmark:
-                    accuracy_row, benchmark_row = self._benchmark_case(
-                        reference,
-                        case,
-                        torch.float16,
-                        seed=20262000 + index,
-                    )
-                else:
+        if _CONFIG.coverage:
+            for index, sequence_length in enumerate(_LONG_SEQUENCE_LENGTHS):
+                case = (sequence_length, sequence_length, 1, 1, 64, False)
+                try:
                     accuracy_row = self._correctness_case(
                         reference,
                         case,
                         torch.float16,
                         seed=20262000 + index,
                     )
-            except Exception as error:
-                self._record_skipped(
-                    report, case, torch.float16, error, group="supported_long_sweep"
-                )
-                continue
-            report["long_sequence_cases"].append(accuracy_row)
-            if _CONFIG.benchmark:
-                benchmark_row["case_group"] = "supported_long_sweep"
-                report["benchmark_cases"].append(benchmark_row)
-            _write_report(report)
-            print(
-                "FlashAttention long sequence: "
-                + json.dumps(accuracy_row, sort_keys=True),
-                flush=True,
-            )
-            if _CONFIG.benchmark:
+                except Exception as error:
+                    self._record_skipped(
+                        report,
+                        case,
+                        torch.float16,
+                        error,
+                        group="supported_long_sweep_correctness",
+                    )
+                    continue
+                report["long_sequence_cases"].append(accuracy_row)
+                _write_report(report)
                 print(
-                    "FlashAttention benchmark: "
-                    + json.dumps(benchmark_row, sort_keys=True),
+                    "FlashAttention long-sequence correctness: "
+                    + json.dumps(accuracy_row, sort_keys=True),
                     flush=True,
                 )
 
-        if _CONFIG.benchmark:
-            for index, case in enumerate(_EXTRA_BENCHMARK_CASES):
+            for index, case in enumerate(_SUPPLEMENTAL_CORRECTNESS_CASES):
                 try:
-                    accuracy_row, benchmark_row = self._benchmark_case(
+                    accuracy_row = self._correctness_case(
                         reference,
                         case,
                         torch.float16,
@@ -1498,20 +1716,26 @@ class FlashAttentionExtendedTests(unittest.TestCase):
                     )
                 except Exception as error:
                     self._record_skipped(
-                        report, case, torch.float16, error, group="auxiliary_benchmark"
+                        report,
+                        case,
+                        torch.float16,
+                        error,
+                        group="supplemental_correctness",
                     )
                     continue
-                report["auxiliary_benchmark_accuracy_cases"].append(accuracy_row)
-                benchmark_row["case_group"] = "auxiliary_benchmark"
-                report["benchmark_cases"].append(benchmark_row)
+                report["supplemental_correctness_cases"].append(accuracy_row)
                 _write_report(report)
                 print(
-                    "FlashAttention benchmark: "
-                    + json.dumps(benchmark_row, sort_keys=True),
+                    "FlashAttention supplemental correctness: "
+                    + json.dumps(accuracy_row, sort_keys=True),
                     flush=True,
                 )
 
-        self._requested_stress_sweep(reference, report, device)
+            self._requested_stress_sweep(reference, report, device)
+
+        if _CONFIG.benchmark:
+            self._requested_benchmark_sweep(reference, report, device)
+
         report_path = _write_report(report)
         print(f"FlashAttention JSON report: {report_path}", flush=True)
         if _CONFIG.benchmark:
