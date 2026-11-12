@@ -20,7 +20,7 @@ class TileLangOpsPackageTests(unittest.TestCase):
         with patch.dict(sys.modules, {"tilelang": None}):
             kernels = importlib.import_module("kernels")
             package = importlib.import_module("kernels.tilelang_ops")
-        self.assertEqual(kernels.__all__, ["gemm"])
+        self.assertEqual(kernels.__all__, ["gemm", "rmsnorm", "rmsnorm_available"])
         self.assertIn("tilelang_bessel_radial_basis", package.__all__)
 
 

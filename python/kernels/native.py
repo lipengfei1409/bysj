@@ -45,20 +45,34 @@ def require_dcu(*tensors):
     return torch.device("cuda", index)
 
 
-def _extension():
+def _extension(required_symbol="gemm"):
+    """Load the optional native module and require the requested operator."""
     _require_hip_runtime()
     try:
         extension = importlib.import_module("kernels._C")
     except (ImportError, OSError) as exc:
-        raise RuntimeError(
-            "build the DUMMA GEMM extension with DPA4_BUILD_HIP=1 "
-            "DPA4_ENABLE_DUMMA=1 on a supported DCU"
-        ) from exc
-    if not hasattr(extension, "gemm"):
-        raise RuntimeError(
-            "the loaded kernels._C extension has no DUMMA GEMM; rebuild with "
-            "DPA4_BUILD_HIP=1 DPA4_ENABLE_DUMMA=1"
-        )
+        if required_symbol == "gemm":
+            guidance = (
+                "build the DUMMA GEMM extension with DPA4_BUILD_HIP=1 "
+                "DPA4_ENABLE_DUMMA=1 on a supported DCU"
+            )
+        else:
+            guidance = (
+                "build the native extension with DPA4_BUILD_HIP=1 and the "
+                "matching DPA4_ENABLE_* operator flag on a supported DCU"
+            )
+        raise RuntimeError(guidance) from exc
+    if not hasattr(extension, required_symbol):
+        if required_symbol == "gemm":
+            detail = (
+                "the loaded kernels._C extension has no DUMMA GEMM; rebuild with "
+                "DPA4_BUILD_HIP=1 DPA4_ENABLE_DUMMA=1"
+            )
+        else:
+            detail = (
+                f"the loaded kernels._C extension has no {required_symbol!r} entry point"
+            )
+        raise RuntimeError(detail)
     return extension
 
 
