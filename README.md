@@ -1,6 +1,6 @@
 # DCU DPA4 Native Operators
 
-The optional HIP extension in this checkout builds standalone RMSNorm and GIE (`zonal_scatter`) operators for DCU. The C++/HIP DUMMA GEMM source is not present in `csrc`; the Python `kernels.gemm` wrapper, PyTorch oracle, and DUMMA comparison benchmark are retained, but this extension does not export `kernels._C.gemm`. For DPA4/SeZM inference, `python/model/dpa4.py` adapts DeepMD-kit rather than reimplementing its model graph; DeepMD owns checkpoint loading, neighbor-list handling, energy, forces, and virial, while selected TileLang operators or per-instance native GIE/RMSNorm patches can be enabled for eager `pt_expt` models.
+The optional HIP extension in this checkout builds standalone RMSNorm and GIE (`zonal_scatter`) operators for DCU. The C++/HIP DUMMA GEMM source is not present in `csrc`; the Python `kernels.gemm` wrapper, PyTorch oracle, and DUMMA comparison benchmark are retained, but this extension does not export `kernels._C.gemm`. For DPA4/SeZM inference, `python/model/dpa4.py` adapts DeepMD-kit rather than reimplementing its model graph; DeepMD owns checkpoint loading, neighbor-list handling, energy, forces, and virial. The adapter patches GIE and RMSNorm with the existing HIP/DCU operators by default for eager `pt_expt` `.pt` models; TileLang remains standalone and is not dispatched by this adapter.
 
 ## Scope
 
@@ -9,7 +9,7 @@ The optional HIP extension in this checkout builds standalone RMSNorm and GIE (`
 - `python/reference/`: explicit PyTorch oracles, including the GEMM oracle; these are not imported as production fallbacks.
 - `csrc/rmsnorm.cpp` and `csrc/gie.cpp`: native HIP operator sources included by the optional extension build.
 - `tests/`: Python contracts, host-side helper contracts, and opt-in DTK/DCU accuracy tests.
-- `doc/kernel-model.html`: architecture overview for the TileLang operators and DPA4 model adapter.
+- `doc/kernel-model.html`: architecture overview for standalone TileLang operators and the native GIE/RMSNorm DPA4 adapter.
 
 ## Python API
 
@@ -28,7 +28,7 @@ The retained GEMM wrapper requires two contiguous 2D FP32 tensors on the same su
 
 ## TileLang operator development
 
-The current model-integration milestone is single-card DPA4/SeZM inference with **standalone, non-fused TileLang operators** and explicit native HIP GIE/RMSNorm patches. TileLang operators live in `python/kernels/tilelang_ops/`; native operators live in `csrc/` and `python/kernels/`. Dispatch is reached through DeepMD-kit `pt_expt`, whose unported stages remain on ordinary PyTorch/kernels. The optional `DPA4Model` facade is in `python/model/dpa4.py`. Fusion, training, stress/virial-specific work, and multi-rank ghost/halo exchange remain outside this inference adapter.
+The DPA4/SeZM `DPA4Model` adapter uses the existing native HIP GIE/RMSNorm operators by default for eager `pt_expt` `.pt` inference. It does not dispatch TileLang operators; the standalone TileLang package remains available for separate kernel work. DeepMD-kit still owns the model graph and all unpatched stages. Fusion, training, stress/virial-specific work, and multi-rank ghost/halo exchange remain outside this inference adapter.
 
 Run the Python contract and reference tests:
 
@@ -47,45 +47,35 @@ in this repository. It forwards DeepMD's public `DeepPot.eval` inputs and output
 ```python
 from model import DPA4Model
 
-with DPA4Model(
-    "water_pt_expt.pt",
-    tilelang_ops=("radial_basis", "edge_geometry", "edge_degree"),
-) as model:
+with DPA4Model("water_pt_expt.pt") as model:  # native GIE + RMSNorm by default
     energy, force, virial = model.eval(coords, cells, atom_types)
+
+# Explicit DeepMD baseline, without native patches:
+with DPA4Model("water_pt_expt.pt", native_ops=()) as baseline:
+    energy, force, virial = baseline.eval(coords, cells, atom_types)
 ```
 
 Install DeepMD-kit separately and make this project's `python/` directory
-importable (for example, put it first on `PYTHONPATH`). `tilelang_ops=None`
-leaves the caller's `DP_TILELANG_*` environment unchanged; `tilelang_ops=()`
-forces the DeepMD baseline; an explicit sequence enables just those operator
-gates while DeepMD constructs the model. The `"dpa4"` selector sets the global
-`DP_TILELANG_DPA4` fast path and is restricted by DeepMD to its supported water
-configuration. For other DPA4 scenarios, prefer individual operator selectors;
-unsupported operators/configurations fail through DeepMD rather than silently
-pretending TileLang was used. TileLang dispatch requires DeepMD's `pt_expt`
-backend; legacy `pt` checkpoints remain usable as a baseline but do not dispatch
-TileLang. Use an eager `pt_expt` training checkpoint (typically `.pt`) to
-select operators at load time; `.pt2`/`.pte` artifacts have their kernels
-fixed at export time and should be loaded without TileLang selectors.
+importable (for example, put it first on `PYTHONPATH`). By default, `DPA4Model`
+patches matching GIE and plain RMSNorm modules per model instance using the
+existing native HIP/DCU operators. Unsupported individual inputs retain
+DeepMD's original implementation. Pass `native_ops=()` to explicitly use the
+DeepMD baseline, or pass `native_ops=("gie",)` / `("rmsnorm",)` to select one
+patch. The adapter does not mutate `DP_TILELANG_*` environment variables;
+use a DeepMD-kit checkout with the DPA4 TileLang dispatch removed. The legacy
+`tilelang_ops` argument accepts only `None` or an empty iterable and rejects
+non-empty selections. The standalone TileLang package remains available but is
+not registered into the DeepMD DPA4 path.
 
-The standalone HIP/DCU GIE zonal-scatter and RMSNorm operators can also be
-selected explicitly for an eager `pt_expt` `.pt` model. These patches are
-per-model, disabled by default, and leave unsupported module inputs on
-DeepMD's original implementation:
-
-```python
-with DPA4Model(
-    "water_pt_expt.pt",
-    native_ops=("gie", "rmsnorm"),
-) as model:
-    energy, force, virial = model.eval(coords, cells, atom_types)
-```
-
-Build the HIP extension and run on a supported DCU. These wrappers use PyTorch's
-`device="cuda"` tensors on the HIP backend; they are not NVIDIA CUDA kernels.
-Native post-load patching is not available for legacy `pt` or exported
-`.pt2`/`.pte` artifacts. Only plain RMSNorm and the supported GIE scatter path
-are replaced; other SeZM modules remain in DeepMD.
+Native patches require the HIP extension, a supported DCU, and an eager
+`pt_expt` checkpoint ending in `.pt`; an unavailable extension, unsupported
+backend, or missing target module raises clearly instead of silently falling
+back for the whole model. These wrappers use PyTorch's `device="cuda"` tensors
+on the HIP backend; they are not NVIDIA CUDA kernels. Native post-load patching
+is not available for legacy `pt` or exported `.pt2`/`.pte` artifacts. Exported
+artifacts keep their operator choices fixed at export; `native_ops=()` does not
+rewrite an already-exported graph. Only the plain RMSNorm and supported GIE
+scatter stages are replaced; other SeZM modules remain in DeepMD.
 
 An optional integration test accepts a `.npz` containing `coords`, `atom_types`,
 and optional `cells` arrays:
@@ -95,7 +85,7 @@ export PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}"
 DP_RUN_DPA4_MODEL_INTEGRATION=1 \
 DP_DPA4_MODEL_FILE=/path/to/dpa4_pt_expt.pt \
 DP_DPA4_INPUT_NPZ=/path/to/system.npz \
-DP_DPA4_MODEL_TILELANG_OPS=radial_basis,edge_geometry \
+DP_DPA4_MODEL_NATIVE_OPS=gie,rmsnorm \
 python -m unittest tests.python.test_dpa4_model -v
 ```
 

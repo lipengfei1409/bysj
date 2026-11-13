@@ -470,7 +470,7 @@ def _profile_events(profiler) -> tuple[str, list[dict[str, Any]]]:
     return sort_key, rows
 
 
-def _parse_tilelang_ops(raw: str | None):
+def _parse_native_ops(raw: str | None):
     if raw is None:
         return None
     return tuple(item.strip() for item in raw.split(",") if item.strip())
@@ -502,7 +502,7 @@ def _construct_dpa4_model(args):
 
         return DPA4Model(
             args.model_file,
-            tilelang_ops=_parse_tilelang_ops(args.tilelang_ops),
+            native_ops=_parse_native_ops(args.native_ops),
         )
     finally:
         if not initialized_modules:
@@ -592,7 +592,8 @@ def _run_dpa4(args) -> int:
             "model_file": str(Path(args.model_file).resolve()),
             "input_source": input_source,
             "backend": str(getattr(model, "backend", "unknown")),
-            "tilelang_ops": list(getattr(model, "tilelang_ops", ())),
+            "native_ops": list(getattr(model, "native_ops", ())),
+            "native_ops_patched": dict(getattr(model, "native_ops_patched", {})),
             "device": str(device),
             "device_name": device_name,
             "ranks": 1,
@@ -1010,7 +1011,14 @@ def build_parser() -> argparse.ArgumentParser:
     dpa4.add_argument("--expected-dcu-name", default="K500SM_AI")
     dpa4.add_argument("--max-atoms", type=int, default=0)
     dpa4.add_argument("--memory-fraction", type=float, default=0.50)
-    dpa4.add_argument("--tilelang-ops", default=None)
+    dpa4.add_argument(
+        "--native-ops",
+        default=None,
+        help=(
+            "comma-separated native operators (gie,rmsnorm by default); "
+            "pass an empty string to run the DeepMD baseline"
+        ),
+    )
 
     lammps_single = subparsers.add_parser(
         "lammps-single", help="profile a one-rank LAMMPS DPA4 simulation"
@@ -1095,6 +1103,21 @@ class DPA4ProfilerCLITests(unittest.TestCase):
         )
         self.assertEqual(direct.mode, "dpa4")
         self.assertEqual(direct.model_file, Path("model.pt"))
+        self.assertIsNone(_parse_native_ops(direct.native_ops))
+        self.assertEqual(_parse_native_ops(""), ())
+        self.assertEqual(_parse_native_ops("gie,rmsnorm"), ("gie", "rmsnorm"))
+        direct_native = parser.parse_args(
+            [
+                "dpa4",
+                "--model-file", "model.pt",
+                "--input-npz", "system.npz",
+                "--output-dir", "out/native",
+                "--native-ops", "gie,rmsnorm",
+            ]
+        )
+        self.assertEqual(
+            _parse_native_ops(direct_native.native_ops), ("gie", "rmsnorm")
+        )
 
         mpi = parser.parse_args(
             [

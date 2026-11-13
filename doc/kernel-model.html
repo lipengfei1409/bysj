@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="项目内核、TileLang DPA4 算子及 DeepMD 模型接入的简明设计说明。">
+  <meta name="description" content="项目原生算子、独立 TileLang kernels 与 DeepMD DPA4 接入的简明设计说明。">
   <title>DPA4 Kernel Design</title>
   <style>
     /* Layout: compact technical field guide; cool DCU teal, system text, monospace APIs. */
@@ -89,8 +89,8 @@
     td code { color: var(--ink); }
     .code-wrap { min-width: 0; overflow-x: auto; border: 1px solid var(--line); background: var(--surface); }
     pre { min-width: max-content; margin: 0; padding: 1rem; color: var(--ink); font-size: 0.84rem; line-height: 1.65; }
-    .selector-note { display: grid; gap: 0.4rem; color: var(--muted); font-size: 0.92rem; }
-    .selector-note code { color: var(--ink); }
+    .scope-note { display: grid; gap: 0.4rem; color: var(--muted); font-size: 0.92rem; }
+    .scope-note code { color: var(--ink); }
     .source-links { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; font-size: 0.88rem; }
     footer { border-top: 1px solid var(--line); padding-top: 1rem; color: var(--muted); font-size: 0.84rem; }
     @media (max-width: 700px) {
@@ -106,7 +106,7 @@
     <header>
       <p class="eyebrow">MYPROJECT / DESIGN</p>
       <h1>内核与模型</h1>
-      <p class="lead">本仓库提供 RMSNorm/GIE 原生算子与可选 TileLang 内核；DPA4/SeZM 完整 descriptor、interaction、fitting 和能量/力/virial 路径由 DeepMD-kit 实现。下方源码映射对应相邻 <code>deepmd-kit</code> checkout 的 commit <code>1a2e083b</code>。</p>
+      <p class="lead">本仓库提供 RMSNorm/GIE 原生算子与独立 TileLang 内核；DPA4Model 默认用原生算子替换 GIE/RMSNorm，适配器不启用 TileLang。DPA4/SeZM 完整 descriptor、interaction、fitting 和能量/力/virial 路径由 DeepMD-kit 实现。下方源码映射对应相邻 <code>deepmd-kit</code> checkout 的 DPA4 实现。</p>
       <nav aria-label="页面导航">
         <a href="#architecture">架构</a>
         <a href="#deepmd-code">DeepMD 源码</a>
@@ -130,8 +130,8 @@
         <article class="path">
           <p class="tag">DPA4 / SeZM inference</p>
           <h3>DeepMD adapter</h3>
-          <p class="flow">DPA4Model → DeepPot → DeepMD pt_expt → 可选 TileLang 算子</p>
-          <p>模型图、邻居图、能量和导数由 DeepMD-kit 执行；本项目只替换显式选择且受支持的独立算子阶段。</p>
+          <p class="flow">DPA4Model → DeepPot → DeepMD pt_expt → native GIE/RMSNorm</p>
+          <p>模型图、邻居图、能量和导数由 DeepMD-kit 执行；适配器默认仅将受支持的 GIE 和 plain RMSNorm 阶段替换为原生 HIP/DCU 算子。TileLang 不参与该路径。</p>
         </article>
       </div>
       <p class="callout">DPA4 的一般数据流由 DeepMD-kit 负责：坐标、类型与邻居图 → 边几何和径向特征 → SeZM 交互块与读出 → 原子能量及总能量；力和 virial 由模型导数得到。该模型图不是本仓库重新实现的内核清单。</p>
@@ -148,7 +148,7 @@
 
     <section id="deepmd-code">
       <div class="section-head">
-        <p class="section-id">DeepMD source map · 1a2e083b</p>
+        <p class="section-id">DeepMD source map · 8a33872b</p>
         <h2>SeZM 模块、函数与代码出处</h2>
         <p class="lead">下面按运行顺序列出 DeepMD 中可直接核对的模块和入口。源码相对路径链接到工作区相邻的 <code>deepmd-kit/</code>。</p>
       </div>
@@ -156,12 +156,12 @@
         <table>
           <thead><tr><th>阶段</th><th>模块 / 函数</th><th>代码出处</th></tr></thead>
           <tbody>
-            <tr><td>注册与 descriptor 入口</td><td><code>DPA4Model._create_deep_pot</code> → <code>pt_expt.DescrptDPA4.forward</code> → <code>dpmodel.DescrptDPA4.call</code> → <code>_run_graph</code></td><td><a href="../python/model/dpa4.py"><code>python/model/dpa4.py</code></a>:127–136 → DeepPot；<a href="../../deepmd-kit/deepmd/pt_expt/descriptor/dpa4.py"><code>pt_expt/descriptor/dpa4.py</code></a>:308–313, 660–698；<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4.py"><code>dpmodel/descriptor/dpa4.py</code></a>:234–290, 1276–1388, 1477–1555</td></tr>
-            <tr><td>边与径向特征</td><td><code>_edge_cache_from_arrays</code>, <code>RadialBasis.call</code>, <code>RadialMLP.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/edge_cache.py"><code>dpa4_nn/edge_cache.py</code></a>:266–449；<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/radial.py"><code>dpa4_nn/radial.py</code></a>:51–155, 457–590；descriptor 调用点：<code>dpa4.py</code>:1585–1628</td></tr>
-            <tr><td>初始 embedding</td><td><code>SeZMTypeEmbedding.call</code>, 可选 <code>EnvironmentInitialEmbedding.call</code>, <code>GeometricInitialEmbedding.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/embedding.py"><code>dpa4_nn/embedding.py</code></a>:71–150, 214–418, 438–804；调用顺序：<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4.py"><code>dpa4.py</code></a>:1559–1575, 1630–1697。pt_expt GIE override：<a href="../../deepmd-kit/deepmd/pt_expt/descriptor/dpa4_nn/embedding.py"><code>pt_expt/descriptor/dpa4_nn/embedding.py</code></a>:136–205</td></tr>
+            <tr><td>注册与 descriptor 入口</td><td><code>DPA4Model._create_deep_pot</code> → <code>pt_expt.DescrptDPA4.forward</code> → <code>dpmodel.DescrptDPA4.call</code> → <code>_run_graph</code></td><td><a href="../python/model/dpa4.py"><code>python/model/dpa4.py</code></a>:58–68 → DeepPot；<a href="../../deepmd-kit/deepmd/pt_expt/descriptor/dpa4.py"><code>pt_expt/descriptor/dpa4.py</code></a>:234–248, 478–479；<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4.py"><code>dpmodel/descriptor/dpa4.py</code></a>:234–290, 1276–1388, 1477–1555</td></tr>
+            <tr><td>边与径向特征</td><td><code>_edge_cache_from_arrays</code>, <code>RadialBasis.call</code>, <code>RadialMLP.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/edge_cache.py"><code>dpa4_nn/edge_cache.py</code></a>:262–425；<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/radial.py"><code>dpa4_nn/radial.py</code></a>:51–155, 457–590；descriptor 调用点：<code>dpa4.py</code>:1587–1624</td></tr>
+            <tr><td>初始 embedding</td><td><code>SeZMTypeEmbedding.call</code>, 可选 <code>EnvironmentInitialEmbedding.call</code>, <code>GeometricInitialEmbedding.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/embedding.py"><code>dpa4_nn/embedding.py</code></a>:71–150, 214–418, 438–804；调用顺序：<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4.py"><code>dpa4.py</code></a>:1559–1575, 1630–1697。pt_expt GIE override：<a href="../../deepmd-kit/deepmd/pt_expt/descriptor/dpa4_nn/embedding.py"><code>pt_expt/descriptor/dpa4_nn/embedding.py</code></a>:48–120</td></tr>
             <tr><td>交互层</td><td><code>SeZMInteractionBlock.call</code>, <code>SO2Convolution.call</code>, <code>EquivariantFFN.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/block.py"><code>dpa4_nn/block.py</code></a>:113–155, 644–849；<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/so2.py"><code>dpa4_nn/so2.py</code></a>:935–956, 1635–1681, 2328–2405, 2570–2698；<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/ffn.py"><code>dpa4_nn/ffn.py</code></a>:52–70, 264–279</td></tr>
             <tr><td>注意力（可选）</td><td><code>attention_weights</code>, <code>_attention_softmax</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/so2.py"><code>dpa4_nn/so2.py</code></a>:2055–2168</td></tr>
-            <tr><td>readout / energy fitting</td><td><code>DescrptDPA4._apply_readout</code>, <code>SeZMEnergyFittingNet</code>, <code>EnergyModel.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4.py"><code>dpmodel/descriptor/dpa4.py</code></a>:1867–1910；<a href="../../deepmd-kit/deepmd/dpmodel/fitting/dpa4_ener.py"><code>dpmodel/fitting/dpa4_ener.py</code></a>:357–424；pt_expt fitting registry：<a href="../../deepmd-kit/deepmd/pt_expt/fitting/dpa4_ener.py"><code>pt_expt/fitting/dpa4_ener.py</code></a>:65–70；<a href="../../deepmd-kit/deepmd/pt_expt/model/dpa4_model.py"><code>pt_expt/model/dpa4_model.py</code></a>:35–42；<a href="../../deepmd-kit/deepmd/dpmodel/model/ener_model.py"><code>dpmodel/model/ener_model.py</code></a>:88–137；<a href="../../deepmd-kit/deepmd/pt_expt/model/ener_model.py"><code>pt_expt/model/ener_model.py</code></a>:328–382</td></tr>
+            <tr><td>readout / energy fitting</td><td><code>DescrptDPA4._apply_readout</code>, <code>SeZMEnergyFittingNet</code>, <code>EnergyModel.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4.py"><code>dpmodel/descriptor/dpa4.py</code></a>:1863–1906；<a href="../../deepmd-kit/deepmd/dpmodel/fitting/dpa4_ener.py"><code>dpmodel/fitting/dpa4_ener.py</code></a>:357–424；pt_expt fitting registry：<a href="../../deepmd-kit/deepmd/pt_expt/fitting/dpa4_ener.py"><code>pt_expt/fitting/dpa4_ener.py</code></a>:65–70；<a href="../../deepmd-kit/deepmd/pt_expt/model/dpa4_model.py"><code>pt_expt/model/dpa4_model.py</code></a>:35–42；<a href="../../deepmd-kit/deepmd/dpmodel/model/ener_model.py"><code>dpmodel/model/ener_model.py</code></a>:88–137；<a href="../../deepmd-kit/deepmd/pt_expt/model/ener_model.py"><code>pt_expt/model/ener_model.py</code></a>:328–382</td></tr>
           </tbody>
         </table>
       </div>
@@ -172,45 +172,45 @@
       <div class="section-head">
         <p class="section-id">Standalone · Opt-in · Non-fused</p>
         <h2>TileLang 算子</h2>
-        <p class="lead">以下模块位于 <code>python/kernels/tilelang_ops/</code>。算子按需独立启用；通用层、图构建和未替换阶段仍由 PyTorch/DeepMD 执行。</p>
+        <p class="lead">以下模块位于 <code>python/kernels/tilelang_ops/</code>，是独立可调用的 kernel/reference API；DeepMD DPA4 路径不再注册或自动分派这些算子。</p>
       </div>
-      <div class="table-wrap" role="region" aria-label="TileLang 算子与选择开关" tabindex="0">
+      <div class="table-wrap" role="region" aria-label="TileLang 独立算子目录" tabindex="0">
         <table>
           <thead>
-            <tr><th scope="col">模块</th><th scope="col">作用</th><th scope="col">选择开关</th></tr>
+            <tr><th scope="col">模块</th><th scope="col">作用</th></tr>
           </thead>
           <tbody>
-            <tr class="group-row"><th colspan="3">径向特征与边几何</th></tr>
-            <tr data-op="radial_basis"><td><a href="../python/kernels/tilelang_ops/radial_basis.py"><code>radial_basis</code></a></td><td>距离的 raw Bessel 径向基展开。</td><td><code>DP_TILELANG_RADIAL_BASIS</code></td></tr>
-            <tr data-op="cutoff_envelope"><td><a href="../python/kernels/tilelang_ops/cutoff_envelope.py"><code>cutoff_envelope</code></a></td><td>C3 径向/边 cutoff envelope。</td><td><code>DP_TILELANG_C3_ENVELOPE</code></td></tr>
-            <tr data-op="edge_geometry"><td><a href="../python/kernels/tilelang_ops/edge_geometry.py"><code>edge_geometry</code></a></td><td>正则化边长与单位方向向量。</td><td><code>DP_TILELANG_EDGE_GEOMETRY</code></td></tr>
-            <tr data-op="edge_degree"><td><a href="../python/kernels/tilelang_ops/edge_degree.py"><code>edge_degree</code></a></td><td>目标节点度数及逆平方根归一化。</td><td><code>DP_TILELANG_EDGE_DEGREE</code></td></tr>
-            <tr data-op="edge_quaternion"><td><a href="../python/kernels/tilelang_ops/edge_quaternion.py"><code>edge_quaternion</code></a></td><td>双 chart 的平滑边对齐 quaternion。</td><td><code>DP_TILELANG_EDGE_QUATERNION</code></td></tr>
-            <tr data-op="edge_type_features"><td><a href="../python/kernels/tilelang_ops/edge_type_features.py"><code>edge_type_features</code></a></td><td>收集并相加源/目标节点的类型嵌入。</td><td><code>DP_TILELANG_EDGE_TYPE_FEATURES</code></td></tr>
+            <tr class="group-row"><th colspan="2">径向特征与边几何</th></tr>
+            <tr data-op="radial_basis"><td><a href="../python/kernels/tilelang_ops/radial_basis.py"><code>radial_basis</code></a></td><td>距离的 raw Bessel 径向基展开。</td></tr>
+            <tr data-op="cutoff_envelope"><td><a href="../python/kernels/tilelang_ops/cutoff_envelope.py"><code>cutoff_envelope</code></a></td><td>C3 径向/边 cutoff envelope。</td></tr>
+            <tr data-op="edge_geometry"><td><a href="../python/kernels/tilelang_ops/edge_geometry.py"><code>edge_geometry</code></a></td><td>正则化边长与单位方向向量。</td></tr>
+            <tr data-op="edge_degree"><td><a href="../python/kernels/tilelang_ops/edge_degree.py"><code>edge_degree</code></a></td><td>目标节点度数及逆平方根归一化。</td></tr>
+            <tr data-op="edge_quaternion"><td><a href="../python/kernels/tilelang_ops/edge_quaternion.py"><code>edge_quaternion</code></a></td><td>双 chart 的平滑边对齐 quaternion。</td></tr>
+            <tr data-op="edge_type_features"><td><a href="../python/kernels/tilelang_ops/edge_type_features.py"><code>edge_type_features</code></a></td><td>收集并相加源/目标节点的类型嵌入。</td></tr>
 
-            <tr class="group-row"><th colspan="3">方向表示与环境嵌入</th></tr>
-            <tr data-op="wigner_l1"><td><a href="../python/kernels/tilelang_ops/wigner_l1.py"><code>wigner_l1</code></a></td><td>打包 l=0/l=1 Wigner-D 与转置。</td><td><code>DP_TILELANG_WIGNER_L1</code></td></tr>
-            <tr data-op="zonal_scatter"><td><a href="../python/kernels/tilelang_ops/zonal_scatter.py"><code>zonal_scatter</code></a></td><td>几何初始嵌入的 destination scatter。</td><td><code>DP_TILELANG_ZONAL_SCATTER</code></td></tr>
-            <tr data-op="environment_matrix"><td><a href="../python/kernels/tilelang_ops/environment_matrix.py"><code>environment_matrix</code></a></td><td>构造 <code>[s, s·r̂]</code> 环境几何通道。</td><td><code>DP_TILELANG_ENV_SEED_MATRIX</code></td></tr>
-            <tr data-op="env_seed_scatter"><td><a href="../python/kernels/tilelang_ops/env_seed_scatter.py"><code>env_seed_scatter</code></a></td><td>环境 seed 外积特征的 scatter 聚合。</td><td><code>DP_TILELANG_ENV_SEED_SCATTER</code></td></tr>
-            <tr data-op="env_seed_gram"><td><a href="../python/kernels/tilelang_ops/env_seed_gram.py"><code>env_seed_gram</code></a></td><td>聚合环境矩阵的不变量 Gram 投影。</td><td><code>DP_TILELANG_ENV_SEED_GRAM</code></td></tr>
+            <tr class="group-row"><th colspan="2">方向表示与环境嵌入</th></tr>
+            <tr data-op="wigner_l1"><td><a href="../python/kernels/tilelang_ops/wigner_l1.py"><code>wigner_l1</code></a></td><td>打包 l=0/l=1 Wigner-D 与转置。</td></tr>
+            <tr data-op="zonal_scatter"><td><a href="../python/kernels/tilelang_ops/zonal_scatter.py"><code>zonal_scatter</code></a></td><td>几何初始嵌入的 destination scatter。</td></tr>
+            <tr data-op="environment_matrix"><td><a href="../python/kernels/tilelang_ops/environment_matrix.py"><code>environment_matrix</code></a></td><td>构造 <code>[s, s·r̂]</code> 环境几何通道。</td></tr>
+            <tr data-op="env_seed_scatter"><td><a href="../python/kernels/tilelang_ops/env_seed_scatter.py"><code>env_seed_scatter</code></a></td><td>环境 seed 外积特征的 scatter 聚合。</td></tr>
+            <tr data-op="env_seed_gram"><td><a href="../python/kernels/tilelang_ops/env_seed_gram.py"><code>env_seed_gram</code></a></td><td>聚合环境矩阵的不变量 Gram 投影。</td></tr>
 
-            <tr class="group-row"><th colspan="3">SO(2) 局部坐标运算</th></tr>
-            <tr data-op="so2_rotate_to_local_l1"><td><a href="../python/kernels/tilelang_ops/so2_rotate_to_local_l1.py"><code>so2_rotate_to_local_l1</code></a></td><td>收集源节点特征并投影到局部 frame。</td><td><code>DP_TILELANG_SO2_ROTATION_L1</code></td></tr>
-            <tr data-op="so2_radial_scale"><td><a href="../python/kernels/tilelang_ops/so2_radial_scale.py"><code>so2_radial_scale</code></a></td><td>按 degree 调制局部径向特征。</td><td><code>DP_TILELANG_SO2_RADIAL_SCALE</code></td></tr>
-            <tr data-op="so2_linear_l1"><td><a href="../python/kernels/tilelang_ops/so2_linear_l1.py"><code>so2_linear_l1</code></a></td><td>lmax=mmax=1 的 block-diagonal SO2Linear。</td><td><code>DP_TILELANG_SO2_LINEAR_L1</code></td></tr>
-            <tr data-op="so2_rotate_back_l1"><td><a href="../python/kernels/tilelang_ops/so2_rotate_back_l1.py"><code>so2_rotate_back_l1</code></a></td><td>将局部特征投影回全局坐标系。</td><td><code>DP_TILELANG_SO2_ROTATION_L1</code></td></tr>
+            <tr class="group-row"><th colspan="2">SO(2) 局部坐标运算</th></tr>
+            <tr data-op="so2_rotate_to_local_l1"><td><a href="../python/kernels/tilelang_ops/so2_rotate_to_local_l1.py"><code>so2_rotate_to_local_l1</code></a></td><td>收集源节点特征并投影到局部 frame。</td></tr>
+            <tr data-op="so2_radial_scale"><td><a href="../python/kernels/tilelang_ops/so2_radial_scale.py"><code>so2_radial_scale</code></a></td><td>按 degree 调制局部径向特征。</td></tr>
+            <tr data-op="so2_linear_l1"><td><a href="../python/kernels/tilelang_ops/so2_linear_l1.py"><code>so2_linear_l1</code></a></td><td>lmax=mmax=1 的 block-diagonal SO2Linear。</td></tr>
+            <tr data-op="so2_rotate_back_l1"><td><a href="../python/kernels/tilelang_ops/so2_rotate_back_l1.py"><code>so2_rotate_back_l1</code></a></td><td>将局部特征投影回全局坐标系。</td></tr>
 
-            <tr class="group-row"><th colspan="3">注意力与网格交互</th></tr>
-            <tr data-op="segment_softmax"><td><a href="../python/kernels/tilelang_ops/segment_softmax.py"><code>segment_softmax</code></a></td><td>带 envelope gate 的 destination segment softmax。</td><td><code>DP_TILELANG_ATTENTION_SOFTMAX</code></td></tr>
-            <tr data-op="attention_aggregate"><td><a href="../python/kernels/tilelang_ops/attention_aggregate.py"><code>attention_aggregate</code></a></td><td>按注意力权重聚合目标节点特征。</td><td><code>DP_TILELANG_ATTENTION_AGGREGATE</code></td></tr>
-            <tr data-op="grid_product"><td><a href="../python/kernels/tilelang_ops/grid_product.py"><code>grid_product</code></a></td><td>两个 S2 投影网格场的逐点乘积。</td><td><code>DP_TILELANG_GRID_PRODUCT</code></td></tr>
+            <tr class="group-row"><th colspan="2">注意力与网格交互</th></tr>
+            <tr data-op="segment_softmax"><td><a href="../python/kernels/tilelang_ops/segment_softmax.py"><code>segment_softmax</code></a></td><td>带 envelope gate 的 destination segment softmax。</td></tr>
+            <tr data-op="attention_aggregate"><td><a href="../python/kernels/tilelang_ops/attention_aggregate.py"><code>attention_aggregate</code></a></td><td>按注意力权重聚合目标节点特征。</td></tr>
+            <tr data-op="grid_product"><td><a href="../python/kernels/tilelang_ops/grid_product.py"><code>grid_product</code></a></td><td>两个 S2 投影网格场的逐点乘积。</td></tr>
           </tbody>
         </table>
       </div>
-      <div class="selector-note">
-        <p><code>DP_TILELANG_DPA4=1</code> 是总开关，仅适用于文档支持的 water 推理配置；也可按模块单独选择。</p>
-        <p>别名：<code>cutoff_envelope</code> 使用 <code>c3_envelope</code>/<code>c3_cutoff_envelope</code>；<code>environment_matrix</code> 使用 <code>env_seed_matrix</code>/<code>environment_matrix</code>；两种 SO(2) rotation 共用 <code>so2_rotation_l1</code>。类型嵌入 gather 是 forward-only；当前 SO(2) TileLang 路径限定 <code>lmax=mmax=1</code>。</p>
+      <div class="scope-note">
+        <p>这些文件可通过各自的 Python API 独立调用；历史环境 gate 不再连接 DeepMD DPA4 wrapper。</p>
+        <p>这份算子目录不表示完整模型支持或自动融合。SO(2) 相关 primitive 的布局限制和梯度范围请以各模块 README、reference 与单元测试为准。</p>
       </div>
       <p class="source-links"><a href="../python/kernels/tilelang_ops/README.md">算子范围与验证说明</a></p>
     </section>
@@ -219,7 +219,7 @@
       <div class="section-head">
         <p class="section-id">DeepMD pt_expt</p>
         <h2>接入 DPA4 模型</h2>
-        <p class="lead"><code>DPA4Model</code> 是 DeepMD <code>DeepPot</code> 的薄适配层，不复制模型图。选择的环境 gate 在 DeepMD 构建 descriptor 时生效。</p>
+        <p class="lead"><code>DPA4Model</code> 是 DeepMD <code>DeepPot</code> 的薄适配层，不复制模型图。默认在 eager <code>pt_expt</code> 模型构造后 patch 当前模型实例的 GIE 与 RMSNorm；适配器不调用 TileLang，也不修改相关环境变量。</p>
       </div>
       <div class="columns">
         <article class="panel">
@@ -227,19 +227,21 @@
           <div class="code-wrap">
             <pre><code>from model import DPA4Model
 
-with DPA4Model(
-    "water_pt_expt.pt",
-    tilelang_ops=("radial_basis", "edge_geometry"),
-) as model:
-    energy, force, virial = model.eval(coords, cells, atom_types)</code></pre>
+# Default: native HIP/DCU GIE + RMSNorm patches.
+with DPA4Model("water_pt_expt.pt") as model:
+    energy, force, virial = model.eval(coords, cells, atom_types)
+
+# Explicit DeepMD baseline:
+with DPA4Model("water_pt_expt.pt", native_ops=()) as baseline:
+    energy, force, virial = baseline.eval(coords, cells, atom_types)</code></pre>
           </div>
-          <p>先安装 DeepMD-kit，并让项目的 <code>python/</code> 目录可导入。显式 selector 会映射为 <code>DP_TILELANG_*</code> gate，只在模型构建期间设置，随后恢复原环境。</p>
+          <p>先安装 DeepMD-kit，并让项目的 <code>python/</code> 目录可导入。原生 patch 要求 HIP 扩展和受支持的 DCU，以及可访问 <code>deep_eval._dpmodel</code> 的 eager <code>pt_expt</code> <code>.pt</code> 模型；其他模型需显式传 <code>native_ops=()</code> 使用 DeepMD baseline。</p>
         </article>
         <article class="panel">
           <h3>选择规则</h3>
-          <p><code>tilelang_ops=None</code> 保留调用者现有环境；<code>tilelang_ops=()</code> 强制 DeepMD baseline；传入别名则只开启对应算子。</p>
-          <p>运行时 TileLang dispatch 要求 eager <code>pt_expt</code> 后端。旧 <code>pt</code> checkpoint 可运行 baseline，但不支持这些 TileLang dispatch。<code>.pt2</code>/<code>.pte</code> 的算子选择已在导出时固定，不能加载后再切换。</p>
-          <p>未选择的图构建、通用线性层、拟合等仍由 DeepMD/PyTorch 执行；被选算子遇到不支持的模式或设备会报错，不静默回退。该 opt-in 路径面向 float32 HIP/DCU 推理；训练、MPI exchange、spin/bridging 和 stress/virial 不在当前 TileLang 范围内。</p>
+          <p><code>native_ops=None</code> 默认选择 <code>("gie", "rmsnorm")</code>；传入 <code>native_ops=()</code> 明确运行 DeepMD baseline，也可只选择一个原生算子。旧 <code>tilelang_ops</code> 参数仅为兼容保留，非空值会被拒绝；DPA4 TileLang dispatch 已从对应 DeepMD-kit checkout 移除。</p>
+          <p>原生 patch 需要 eager <code>pt_expt</code> <code>.pt</code> 模型和受支持的 HIP/DCU。缺失扩展、后端或目标模块会报错并关闭已加载模型；单次输入不满足原生算子条件时则调用原始 DeepMD 方法。旧 <code>pt</code>、导出的 <code>.pt2</code>/<code>.pte</code> 不支持加载后 patch；导出 artifact 已固定的算子图也不会被 <code>native_ops=()</code> 改写。独立 TileLang 算子仍保留在项目中，不由此适配器调用。</p>
+          <p>只替换 plain RMSNorm 和受支持的 GIE scatter 阶段；其余图构建、通用线性层、拟合等仍由 DeepMD/PyTorch 执行。当前 native wrapper 面向 float32 HIP/DCU 推理。</p>
         </article>
       </div>
       <div class="source-links">

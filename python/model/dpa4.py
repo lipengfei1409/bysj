@@ -1,84 +1,44 @@
-"""DeepMD-backed inference adapter with opt-in project operators.
+"""DeepMD-backed inference adapter using native GIE and RMSNorm by default.
 
-This module deliberately delegates DPA4 architecture, checkpoint loading,
-neighbor-list handling, and force/virial evaluation to DeepMD-kit. Selected
-TileLang operators dispatch during model construction via DeepMD's existing
-``DP_TILELANG_*`` gates. The standalone HIP GIE and RMSNorm operators can be
-attached per-instance to matching eager ``pt_expt`` modules with ``native_ops``.
+This module delegates DPA4 architecture, checkpoint loading, neighbor-list
+handling, and force/virial evaluation to DeepMD-kit. It patches matching GIE
+and RMSNorm modules per-instance with this project's HIP/DCU operators. The
+adapter does not dispatch TileLang operators or mutate their legacy environment
+variables.
 """
 
 from __future__ import annotations
 
-import importlib
 import os
-from contextlib import contextmanager
 from pathlib import Path
-from threading import RLock
 from types import MethodType
-from typing import Any, Callable, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Optional
 
-_TRUE = frozenset(("1", "true", "yes", "on"))
-_TILELANG_ENV_LOCK = RLock()
-
-_TILELANG_ALIASES = {
-    "dpa4": "DP_TILELANG_DPA4",
-    "radial_basis": "DP_TILELANG_RADIAL_BASIS",
-    "c3_envelope": "DP_TILELANG_C3_ENVELOPE",
-    "c3_cutoff_envelope": "DP_TILELANG_C3_ENVELOPE",
-    "edge_geometry": "DP_TILELANG_EDGE_GEOMETRY",
-    "edge_degree": "DP_TILELANG_EDGE_DEGREE",
-    "edge_quaternion": "DP_TILELANG_EDGE_QUATERNION",
-    "edge_type_features": "DP_TILELANG_EDGE_TYPE_FEATURES",
-    "wigner_l1": "DP_TILELANG_WIGNER_L1",
-    "zonal_scatter": "DP_TILELANG_ZONAL_SCATTER",
-    "env_seed_matrix": "DP_TILELANG_ENV_SEED_MATRIX",
-    "environment_matrix": "DP_TILELANG_ENV_SEED_MATRIX",
-    "env_seed_scatter": "DP_TILELANG_ENV_SEED_SCATTER",
-    "env_seed_gram": "DP_TILELANG_ENV_SEED_GRAM",
-    "so2_rotation_l1": "DP_TILELANG_SO2_ROTATION_L1",
-    "so2_radial_scale": "DP_TILELANG_SO2_RADIAL_SCALE",
-    "so2_linear_l1": "DP_TILELANG_SO2_LINEAR_L1",
-    "attention_softmax": "DP_TILELANG_ATTENTION_SOFTMAX",
-    "attention_aggregate": "DP_TILELANG_ATTENTION_AGGREGATE",
-    "grid_product": "DP_TILELANG_GRID_PRODUCT",
-}
-_TILELANG_FLAGS = tuple(dict.fromkeys(_TILELANG_ALIASES.values()))
-_FLAG_ALIASES = {flag.lower(): flag for flag in _TILELANG_FLAGS}
 _NATIVE_OPS = frozenset(("gie", "rmsnorm"))
 
 
 def _normalize_tilelang_ops(
     tilelang_ops: Optional[Iterable[str]],
-) -> Optional[tuple[str, ...]]:
-    """Normalize operator aliases to their DeepMD environment flag names.
-
-    ``None`` preserves the caller's existing environment. An empty iterable
-    explicitly disables every known TileLang DPA4 selector for this model.
-    """
+) -> tuple[str, ...]:
+    """Reject non-empty legacy selections while preserving the old keyword."""
     if tilelang_ops is None:
-        return None
+        return ()
     values = (tilelang_ops,) if isinstance(tilelang_ops, str) else tilelang_ops
-    flags = set()
     for value in values:
         if not isinstance(value, str):
             raise TypeError("tilelang_ops entries must be strings")
-        key = value.strip().lower()
-        if key in _TILELANG_ALIASES:
-            flags.add(_TILELANG_ALIASES[key])
-        elif key in _FLAG_ALIASES:
-            flags.add(_FLAG_ALIASES[key])
-        else:
-            choices = ", ".join(sorted(_TILELANG_ALIASES))
-            raise ValueError(
-                f"unknown TileLang DPA4 operator {value!r}; choose from: {choices}"
+        if value.strip():
+            raise RuntimeError(
+                "TileLang operators are disabled in DPA4Model; use the existing "
+                "native GIE/RMSNorm operators or pass tilelang_ops=()"
             )
-    return tuple(sorted(flags))
+    return ()
 
 
 def _normalize_native_ops(native_ops: Optional[Iterable[str]]) -> tuple[str, ...]:
     """Normalize the explicitly selected native DPA4 operator names."""
     if native_ops is None:
-        return ()
+        return ("gie", "rmsnorm")
     values = (native_ops,) if isinstance(native_ops, str) else native_ops
     selected = []
     for value in values:
@@ -93,57 +53,6 @@ def _normalize_native_ops(native_ops: Optional[Iterable[str]]) -> tuple[str, ...
         if name not in selected:
             selected.append(name)
     return tuple(selected)
-
-
-def _active_tilelang_flags() -> tuple[str, ...]:
-    return tuple(
-        flag
-        for flag in _TILELANG_FLAGS
-        if os.environ.get(flag, "0").strip().lower() in _TRUE
-    )
-
-
-@contextmanager
-def _tilelang_environment(
-    selected_flags: Optional[Iterable[str]],
-) -> Iterator[tuple[str, ...]]:
-    """Lock and scope TileLang selectors while DeepPot captures them."""
-    with _TILELANG_ENV_LOCK:
-        previous = {flag: os.environ.get(flag) for flag in _TILELANG_FLAGS}
-        try:
-            if selected_flags is not None:
-                selected = set(selected_flags)
-                for flag in _TILELANG_FLAGS:
-                    os.environ[flag] = "1" if flag in selected else "0"
-            yield _active_tilelang_flags()
-        finally:
-            for flag, value in previous.items():
-                if value is None:
-                    os.environ.pop(flag, None)
-                else:
-                    os.environ[flag] = value
-
-
-def _ensure_project_tilelang_ops() -> None:
-    """Ensure DeepMD's lazy ``kernels.tilelang_ops`` import resolves here."""
-    try:
-        module = importlib.import_module("kernels.tilelang_ops")
-    except (ImportError, OSError) as error:
-        raise RuntimeError(
-            "TileLang operators were requested, but this project's "
-            "kernels.tilelang_ops package is not importable. Install myproject "
-            "with `pip install -e .` or put its python/ directory first on "
-            "PYTHONPATH."
-        ) from error
-
-    expected = Path(__file__).resolve().parents[1] / "kernels" / "tilelang_ops"
-    actual_file = getattr(module, "__file__", None)
-    if actual_file is None or Path(actual_file).resolve().parent != expected.resolve():
-        raise RuntimeError(
-            "DeepMD's `kernels.tilelang_ops` import does not resolve to this "
-            f"project (expected {expected}, got {actual_file!r}); install or "
-            "reorder myproject/python on PYTHONPATH."
-        )
 
 
 def _create_deep_pot(model_file: str, **kwargs: Any) -> Any:
@@ -385,15 +294,6 @@ def _install_native_ops(deep_pot: Any, native_ops: tuple[str, ...]) -> dict[str,
                 f"native DPA4 operator {name!r} was requested, but no supported "
                 "module instance was found in the loaded model"
             )
-    if "gie" in native_ops and any(
-        bool(getattr(module, "_tilelang_scatter_enabled", False))
-        for module in targets["gie"]
-    ):
-        raise RuntimeError(
-            "native GIE and DP_TILELANG_ZONAL_SCATTER cannot be selected for "
-            "the same model"
-        )
-
     implementations: dict[str, Callable[..., Any]] = {}
     for name in native_ops:
         try:
@@ -437,46 +337,43 @@ def _install_native_ops(deep_pot: Any, native_ops: tuple[str, ...]) -> dict[str,
 
 
 class DPA4Model:
-    """DeepMD DPA4/SeZM inference facade.
+    """DeepMD DPA4/SeZM inference facade with native GIE and RMSNorm patches.
 
-    DeepMD-kit remains responsible for loading the selected DPA4 model
-    scenario and evaluating its energy, force, and virial. Set ``tilelang_ops``
-    to a sequence of operator aliases to route just those stages through this
-    project's TileLang kernels. Use ``"dpa4"`` only for DeepMD's guarded
-    single-focus water fast path. An empty sequence forces the PyTorch baseline;
-    ``None`` leaves existing ``DP_TILELANG_*`` environment settings unchanged.
-    Set ``native_ops`` to ``("gie", "rmsnorm")`` to patch the matching eager
-    ``pt_expt`` modules with this project's HIP/DCU operators. Native patches
-    are disabled by default and are applied only to that loaded model instance.
+    DeepMD-kit owns model loading, neighbor-list handling, energy, force, and
+    virial evaluation. By default, the matching GIE and plain RMSNorm modules
+    in an eager ``pt_expt`` ``.pt`` model are patched per instance to use this
+    project's HIP/DCU operators. Pass ``native_ops=()`` to run the DeepMD
+    baseline, or select one native operator explicitly. Unsupported individual
+    calls continue through the original DeepMD implementation.
+
+    ``tilelang_ops`` remains as a deprecated compatibility guard: ``None`` or
+    an empty iterable is accepted, while non-empty selections raise. The
+    adapter does not mutate environment variables; standalone TileLang
+    operators remain independent of this model adapter.
 
     Parameters
     ----------
     model_file
-        Any model artifact supported by ``deepmd.infer.DeepPot``.
+        A model artifact supported by ``deepmd.infer.DeepPot``. Native patches
+        require an eager ``pt_expt`` checkpoint ending in ``.pt``.
     tilelang_ops
-        Optional aliases such as ``"radial_basis"`` and ``"edge_geometry"``.
-        Individual operators can be selected for non-water DPA4 configurations;
-        DeepMD raises its normal error if a selected operator does not support a
-        model's configuration.
+        Deprecated compatibility guard. Only ``None`` and an empty iterable
+        are accepted; this adapter never dispatches TileLang operators.
     native_ops
-        Optional project HIP/DCU operators to patch into an eager ``pt_expt``
-        checkpoint: ``"gie"`` and/or ``"rmsnorm"``. Defaults to no native
-        patches. The project extension must be built and a supported DCU visible.
+        Project HIP/DCU operators to patch. Defaults to ``("gie", "rmsnorm")``;
+        pass an empty iterable to opt out, or select one operator. The project
+        HIP extension and a supported DCU must be available when non-empty.
     **deepmd_kwargs
         Keyword arguments forwarded to :class:`deepmd.infer.DeepPot`.
 
     Notes
     -----
-    Runtime TileLang dispatch is available while DeepMD constructs an eager
-    ``pt_expt`` model, normally from a ``pt_expt`` training checkpoint ending
-    in ``.pt``. A regular legacy ``pt`` checkpoint can still be evaluated by
-    DeepPot, but requesting TileLang for it raises instead of silently running
-    the non-TileLang backend. Exported ``.pt2``/``.pte`` archives can be
-    evaluated normally, but their operator choices were fixed at export time;
-    pass no TileLang selectors when loading them. Native patches likewise
-    require an eager ``pt_expt`` ``.pt`` model because they attach to DeepMD's
-    live private ``_dpmodel`` tree; unsupported inputs continue through the
-    original DeepMD call.
+    This project's "CUDA" tensors use PyTorch's ``device="cuda"`` API on a
+    HIP/DCU backend; the operators are not NVIDIA CUDA kernels. Native patching
+    attaches to DeepMD's live private ``_dpmodel`` tree and therefore cannot
+    target legacy ``pt`` models or exported ``.pt2``/``.pte`` artifacts. An
+    explicit baseline selection does not rewrite operators already baked into
+    an exported graph.
     """
 
     def __init__(
@@ -488,7 +385,7 @@ class DPA4Model:
         **deepmd_kwargs: Any,
     ) -> None:
         self.model_file = str(Path(model_file).expanduser())
-        selected = _normalize_tilelang_ops(tilelang_ops)
+        _normalize_tilelang_ops(tilelang_ops)
         selected_native = _normalize_native_ops(native_ops)
         artifact_suffix = Path(self.model_file).suffix.lower()
         if selected_native and artifact_suffix != ".pt":
@@ -498,36 +395,14 @@ class DPA4Model:
                 "after export"
             )
 
-        # DeepMD captures selectors while constructing the descriptor. Keep
-        # construction serialized against other DPA4Model instances that may
-        # select a different operator set in this process.
-        with _tilelang_environment(selected) as active_flags:
-            if active_flags and artifact_suffix in (".pt2", ".pte"):
-                raise RuntimeError(
-                    f"TileLang selectors cannot be changed while loading an exported "
-                    f"{artifact_suffix} artifact; its kernels were fixed at export "
-                    "time. Use an eager pt_expt training checkpoint to select "
-                    "operators at load time, or clear tilelang_ops for this artifact."
-                )
-            if active_flags:
-                _ensure_project_tilelang_ops()
-            self._deep_pot = _create_deep_pot(self.model_file, **deepmd_kwargs)
+        self._deep_pot = _create_deep_pot(self.model_file, **deepmd_kwargs)
 
         self.backend = _backend_name(self._deep_pot)
-        self.tilelang_ops = tuple(active_flags)
-        self.uses_tilelang = bool(active_flags)
+        self.tilelang_ops = ()
+        self.uses_tilelang = False
         self.native_ops = selected_native
         self.uses_native_ops = bool(selected_native)
         self.native_ops_patched: dict[str, int] = {}
-        if self.uses_tilelang and self.backend != "pt_expt":
-            self.close()
-            raise RuntimeError(
-                "TileLang DPA4 operators require DeepMD's `pt_expt` backend, "
-                f"but this model loaded with backend {self.backend!r}. The "
-                "regular `pt` checkpoint backend does not dispatch this "
-                "project's TileLang ops; use a pt_expt-compatible checkpoint "
-                "or pass tilelang_ops=() for the DeepMD baseline."
-            )
         if self.uses_native_ops:
             try:
                 self.native_ops_patched = _install_native_ops(

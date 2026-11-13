@@ -76,7 +76,6 @@ class _FakeGIE(torch.nn.Module):
         self.lmax = 1
         self.channels = 2
         self.radial_slot_index_for_row = np.array([0, 0, 0], dtype=np.int64)
-        self._tilelang_scatter_enabled = False
         self.training = False
         self.original_calls = 0
 
@@ -114,60 +113,56 @@ _FakeRMSNorm.__name__ = "RMSNorm"
 
 
 class DPA4ModelAdapterTests(unittest.TestCase):
-    def test_project_tilelang_package_resolves_without_importing_tilelang(self):
-        dpa4._ensure_project_tilelang_ops()
+    def test_nonempty_tilelang_selector_is_rejected_before_loading(self):
+        with mock.patch.object(dpa4, "_create_deep_pot") as create:
+            with self.assertRaisesRegex(RuntimeError, "TileLang operators are disabled"):
+                DPA4Model("water.pt", tilelang_ops=("radial_basis",))
+        create.assert_not_called()
 
-    def test_selected_ops_are_scoped_to_model_construction(self):
-        previous = {
-            "DP_TILELANG_DPA4": "caller-global",
-            "DP_TILELANG_RADIAL_BASIS": "caller-radial",
-            "DP_TILELANG_EDGE_GEOMETRY": "caller-edge",
-        }
+    def test_native_default_patches_both_without_mutating_legacy_flags(self):
+        gie = _FakeGIE()
+        rmsnorm = _FakeRMSNorm()
+        fake_model = _FakeDeepPot(model_tree=_FakeModelTree(gie, rmsnorm))
         seen = {}
-        fake_model = _FakeDeepPot()
+        legacy_flags = ("DP_TILELANG_DPA4", "DP_TILELANG_RADIAL_BASIS")
 
         def create_deep_pot(model_file, **kwargs):
-            seen["flags"] = {
-                name: os.environ.get(name)
-                for name in (
-                    "DP_TILELANG_DPA4",
-                    "DP_TILELANG_RADIAL_BASIS",
-                    "DP_TILELANG_EDGE_GEOMETRY",
-                    "DP_TILELANG_GRID_PRODUCT",
-                )
-            }
+            seen["flags"] = {name: os.environ.get(name) for name in legacy_flags}
             seen["model_file"] = model_file
             seen["kwargs"] = kwargs
             return fake_model
 
+        def load_native(name):
+            return (lambda: True), mock.Mock(name=f"native_{name}")
+
+        previous = {name: "caller-enabled" for name in legacy_flags}
         with mock.patch.dict(os.environ, previous, clear=False):
             with mock.patch.object(
                 dpa4, "_create_deep_pot", side_effect=create_deep_pot
-            ):
+            ), mock.patch.object(
+                dpa4, "_load_native_operator", side_effect=load_native
+            ) as load_native_mock:
                 model = DPA4Model(
                     "water_pt_expt.pt",
-                    tilelang_ops=("radial_basis", "edge_geometry"),
                     nlist_backend="native",
                 )
-            self.assertEqual(os.environ.get("DP_TILELANG_DPA4"), "caller-global")
             self.assertEqual(
-                os.environ.get("DP_TILELANG_RADIAL_BASIS"), "caller-radial"
+                {name: os.environ.get(name) for name in legacy_flags}, previous
             )
-            self.assertEqual(os.environ.get("DP_TILELANG_EDGE_GEOMETRY"), "caller-edge")
 
-        self.assertEqual(
-            seen["flags"],
-            {
-                "DP_TILELANG_DPA4": "0",
-                "DP_TILELANG_RADIAL_BASIS": "1",
-                "DP_TILELANG_EDGE_GEOMETRY": "1",
-                "DP_TILELANG_GRID_PRODUCT": "0",
-            },
-        )
+        self.assertEqual(seen["flags"], previous)
         self.assertEqual(seen["model_file"], "water_pt_expt.pt")
         self.assertEqual(seen["kwargs"], {"nlist_backend": "native"})
+        self.assertEqual(model.native_ops, ("gie", "rmsnorm"))
+        self.assertTrue(model.uses_native_ops)
+        self.assertEqual(model.native_ops_patched, {"gie": 1, "rmsnorm": 1})
+        self.assertEqual(model.tilelang_ops, ())
+        self.assertFalse(model.uses_tilelang)
+        self.assertEqual(
+            [call.args[0] for call in load_native_mock.call_args_list],
+            ["gie", "rmsnorm"],
+        )
         self.assertEqual(model.backend, "pt_expt")
-        self.assertTrue(model.uses_tilelang)
         self.assertEqual(model.get_rcut(), 6.0)
         self.assertEqual(model.get_type_map(), ["O", "H"])
         coords = np.zeros((1, 2, 3), dtype=np.float32)
@@ -178,70 +173,15 @@ class DPA4ModelAdapterTests(unittest.TestCase):
         model.close()
         self.assertTrue(fake_model.closed)
 
-    def test_none_preserves_caller_tilelang_environment(self):
-        fake_model = _FakeDeepPot()
-        seen = {}
-
-        def create_deep_pot(model_file, **kwargs):
-            seen["radial"] = os.environ.get("DP_TILELANG_RADIAL_BASIS")
-            seen["global"] = os.environ.get("DP_TILELANG_DPA4")
-            return fake_model
-
-        with mock.patch.dict(
-            os.environ,
-            {"DP_TILELANG_DPA4": "0", "DP_TILELANG_RADIAL_BASIS": "1"},
-            clear=False,
-        ):
-            with mock.patch.object(
-                dpa4, "_create_deep_pot", side_effect=create_deep_pot
-            ):
-                model = DPA4Model("water_pt_expt.pt")
-        self.assertEqual(seen, {"radial": "1", "global": "0"})
-        self.assertEqual(model.tilelang_ops, ("DP_TILELANG_RADIAL_BASIS",))
-        self.assertTrue(model.uses_tilelang)
-
-    def test_empty_selection_forces_baseline_and_restores_environment(self):
-        fake_model = _FakeDeepPot(backend_type=_FakePtBackend)
-        seen = {}
-
-        def create_deep_pot(model_file, **kwargs):
-            seen["global"] = os.environ.get("DP_TILELANG_DPA4")
-            seen["radial"] = os.environ.get("DP_TILELANG_RADIAL_BASIS")
-            return fake_model
-
-        with mock.patch.dict(
-            os.environ,
-            {"DP_TILELANG_DPA4": "1", "DP_TILELANG_RADIAL_BASIS": "1"},
-            clear=False,
-        ):
-            with mock.patch.object(
-                dpa4, "_create_deep_pot", side_effect=create_deep_pot
-            ):
-                model = DPA4Model("legacy.pt", tilelang_ops=())
-            self.assertEqual(os.environ["DP_TILELANG_DPA4"], "1")
-            self.assertEqual(os.environ["DP_TILELANG_RADIAL_BASIS"], "1")
-        self.assertEqual(seen, {"global": "0", "radial": "0"})
-        self.assertEqual(model.backend, "pt")
-        self.assertFalse(model.uses_tilelang)
-
-    def test_rejects_selector_changes_for_exported_artifacts(self):
-        with mock.patch.object(dpa4, "_create_deep_pot") as create:
-            with self.assertRaisesRegex(RuntimeError, "fixed at export time"):
-                DPA4Model("water.pt2", tilelang_ops=("radial_basis",))
-        create.assert_not_called()
-
-    def test_rejects_tilelang_for_legacy_pt_backend(self):
+    def test_empty_native_selection_forces_baseline(self):
         fake_model = _FakeDeepPot(backend_type=_FakePtBackend)
         with mock.patch.object(dpa4, "_create_deep_pot", return_value=fake_model):
-            with self.assertRaisesRegex(RuntimeError, "pt_expt.*backend"):
-                DPA4Model("legacy.pt", tilelang_ops=("radial_basis",))
-        self.assertTrue(fake_model.closed)
-
-    def test_unknown_operator_is_rejected_before_loading(self):
-        with mock.patch.object(dpa4, "_create_deep_pot") as create:
-            with self.assertRaisesRegex(ValueError, "unknown TileLang DPA4 operator"):
-                DPA4Model("water.pt2", tilelang_ops=("not-an-op",))
-        create.assert_not_called()
+            model = DPA4Model("legacy.pt", native_ops=())
+        self.assertEqual(model.backend, "pt")
+        self.assertEqual(model.native_ops, ())
+        self.assertFalse(model.uses_native_ops)
+        self.assertFalse(model.uses_tilelang)
+        self.assertEqual(model.tilelang_ops, ())
 
     def test_native_selector_is_validated_before_loading(self):
         with mock.patch.object(dpa4, "_create_deep_pot") as create:
@@ -261,29 +201,36 @@ class DPA4ModelAdapterTests(unittest.TestCase):
                 DPA4Model("legacy.pt", native_ops=("gie",))
         self.assertTrue(fake_model.closed)
 
-    def test_native_ops_are_disabled_by_default(self):
+    def test_missing_native_target_closes_loaded_model(self):
+        fake_model = _FakeDeepPot(model_tree=_FakeModelTree())
+        with mock.patch.object(dpa4, "_create_deep_pot", return_value=fake_model):
+            with self.assertRaisesRegex(RuntimeError, "no supported module instance"):
+                DPA4Model("model.pt", native_ops=("gie",))
+        self.assertTrue(fake_model.closed)
+
+    def test_unavailable_native_extension_closes_loaded_model(self):
+        fake_model = _FakeDeepPot(model_tree=_FakeModelTree(_FakeGIE(), _FakeRMSNorm()))
+        with mock.patch.object(
+            dpa4, "_create_deep_pot", return_value=fake_model
+        ), mock.patch.object(
+            dpa4,
+            "_load_native_operator",
+            return_value=(lambda: False, mock.Mock()),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "is unavailable"):
+                DPA4Model("model.pt")
+        self.assertTrue(fake_model.closed)
+
+    def test_explicit_empty_native_selection_skips_native_loading(self):
         fake_model = _FakeDeepPot()
         with mock.patch.object(
             dpa4, "_create_deep_pot", return_value=fake_model
         ), mock.patch.object(dpa4, "_load_native_operator") as load_native:
-            model = DPA4Model("baseline.pt")
+            model = DPA4Model("baseline.pt", native_ops=())
         self.assertEqual(model.native_ops, ())
         self.assertFalse(model.uses_native_ops)
         self.assertEqual(model.native_ops_patched, {})
         load_native.assert_not_called()
-
-    def test_native_gie_conflicts_with_selected_tilelang_scatter(self):
-        gie = _FakeGIE()
-        gie._tilelang_scatter_enabled = True
-        fake_model = _FakeDeepPot(model_tree=_FakeModelTree(gie))
-        with mock.patch.object(dpa4, "_create_deep_pot", return_value=fake_model):
-            with self.assertRaisesRegex(RuntimeError, "cannot be selected"):
-                DPA4Model(
-                    "native.pt",
-                    tilelang_ops=(),
-                    native_ops=("gie",),
-                )
-        self.assertTrue(fake_model.closed)
 
     def test_native_dispatch_is_instance_local_and_preserves_gradients(self):
         gie = _FakeGIE()
@@ -324,7 +271,7 @@ class DPA4ModelAdapterTests(unittest.TestCase):
             dpa4, "_is_fp32_compute_precision", return_value=True
         ):
             model = DPA4Model("native.pt", native_ops=("gie", "rmsnorm"))
-            baseline_model = DPA4Model("baseline.pt")
+            baseline_model = DPA4Model("baseline.pt", native_ops=())
 
             self.assertEqual(model.native_ops_patched, {"gie": 1, "rmsnorm": 1})
             self.assertFalse(baseline_model.uses_native_ops)
@@ -459,11 +406,11 @@ class DPA4ModelIntegrationTests(unittest.TestCase):
             coords = sample["coords"]
             atom_types = sample["atom_types"]
             cells = sample["cells"] if "cells" in sample else None
-        raw_ops = os.environ.get("DP_DPA4_MODEL_TILELANG_OPS")
-        ops = () if raw_ops is None else tuple(
+        raw_ops = os.environ.get("DP_DPA4_MODEL_NATIVE_OPS")
+        ops = None if raw_ops is None else tuple(
             item.strip() for item in raw_ops.split(",") if item.strip()
         )
-        with DPA4Model(model_path, tilelang_ops=ops) as model:
+        with DPA4Model(model_path, native_ops=ops) as model:
             outputs = model.eval(coords, cells, atom_types)
 
         if isinstance(outputs, dict):
@@ -521,7 +468,6 @@ class DPA4ModelIntegrationTests(unittest.TestCase):
             ):
                 with DPA4Model(
                     model_path,
-                    tilelang_ops=(),
                     native_ops=native_ops,
                 ) as model:
                     self.assertEqual(set(model.native_ops_patched), set(native_ops))
