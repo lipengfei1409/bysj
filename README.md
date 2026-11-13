@@ -111,6 +111,9 @@ Native tests require a supported DCU; a non-DCU environment can run the Python o
 
 The three supported scenarios (single-card DeepMD inference, single-card LAMMPS,
 and single-host multi-card LAMMPS) live in [tests/deepmd/profile](tests/deepmd/profile/README.md).
-Direct inference defaults to periodic scaling within 70% of available device
+These profiles use original DeepMD operators. Direct inference calls
+`deepmd.infer.DeepPot` without the project adapter or native HIP patches, and
+remaps the bundled water types using the model type map. It defaults to
+periodic scaling within 70% of available device
 memory and five warmup calls. Multi-card LAMMPS accepts `--world-size` matching
 `--gpu-ids`; its finite Kineto window requires the updated DeepMD PTExpt backend.

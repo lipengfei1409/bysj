@@ -65,8 +65,7 @@ __global__ void gie_zonal_scatter_forward_kernel(
     const int64_t* radial_slot, const float* inv_sqrt_deg, float* output,
     int64_t n_edges, int64_t n_rows, int64_t n_radial, int64_t channels,
     int64_t work_items) {
-  const int64_t first = static_cast<int64_t>(blockIdx.x) * blockDim.x +
-      threadIdx.x;
+  const int64_t first = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
   for (int64_t index = first; index < work_items; index += stride) {
     const int64_t channel = index % channels;
@@ -89,8 +88,7 @@ __global__ void gie_zonal_scatter_backward_kernel(
     const float* inv_sqrt_deg, float* grad_zonal, float* grad_radial,
     float* grad_inv_sqrt_deg, int64_t n_edges, int64_t n_rows,
     int64_t n_radial, int64_t channels, int64_t work_items) {
-  const int64_t first = static_cast<int64_t>(blockIdx.x) * blockDim.x +
-      threadIdx.x;
+  const int64_t first = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
   for (int64_t index = first; index < work_items; index += stride) {
     const int64_t channel = index % channels;
@@ -98,10 +96,8 @@ __global__ void gie_zonal_scatter_backward_kernel(
     const int64_t edge = index / (channels * n_rows);
     const int64_t node = dst[edge];
     const int64_t slot = radial_slot[row];
-    const int64_t radial_index =
-        (edge * n_radial + slot) * channels + channel;
-    const int64_t output_index =
-        (node * (n_rows + 1) + row + 1) * channels + channel;
+    const int64_t radial_index = (edge * n_radial + slot) * channels + channel;
+    const int64_t output_index = (node * (n_rows + 1) + row + 1) * channels + channel;
     const float upstream = grad_output[output_index];
     const float zonal_value = zonal[edge * n_rows + row];
     const float radial_value = radial[radial_index];
@@ -117,9 +113,7 @@ __global__ void gie_zonal_scatter_backward_kernel(
 }
 } // namespace
 
-Tensor gie_zonal_scatter_forward_hip(
-    Tensor zonal, Tensor radial, Tensor dst, Tensor radial_slot,
-    Tensor inv_sqrt_deg) {
+Tensor gie_zonal_scatter_forward_hip(Tensor zonal, Tensor radial, Tensor dst, Tensor radial_slot, Tensor inv_sqrt_deg) {
   check_gie_inputs(zonal, radial, dst, radial_slot, inv_sqrt_deg);
   const int64_t n_edges = zonal.size(0);
   const int64_t n_rows = zonal.size(1);

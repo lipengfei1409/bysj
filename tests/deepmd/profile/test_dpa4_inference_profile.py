@@ -1,9 +1,10 @@
-"""Three hotspot profiles: single-card DPA4 eval, single-/multi-card LAMMPS.
+"""Three original-DeepMD hotspot profiles: single-card eval and LAMMPS on one/multiple GPUs.
 
 See README.md beside this script for commands, prerequisites and interpretation.
 Direct inference defaults to memory-based periodic replication (70% of available
 memory), followed by 5 same-size warmup calls and exactly one recorded eval.
-Use --fixed-input to disable scaling. Model, type map and input must agree.
+Use --fixed-input to disable scaling. The direct path calls deepmd.infer.DeepPot
+without importing this project's model adapter or installing native patches.
 LAMMPS runs real MD for 20 steps by default and requires the PTExpt backend's
 DP_PROFILER window support: skip 5 model calls, then capture 10. One rank uses
 one GPU; multiple ranks require MPI and a with-comm .pt2 model. --world-size
@@ -32,7 +33,6 @@ import numpy as np
 import torch
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_PROJECT_ROOT / "python"))
 _MIN_BYTES_PER_ATOM = 64 * 1024
 _MAX_SIZING_PROBES = 6
 
@@ -227,7 +227,7 @@ def generate_test_data(source_system, factors: tuple[int, int, int]):
     return _replicate_system((coords, atom_types, cells), factors)
 
 
-def _write_generated_npz(output_path: Path, system) -> Path:
+def _write_generated_npz(output_path: Path, system, type_map=None) -> Path:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     coords, atom_types, cells = system
@@ -242,6 +242,7 @@ def _write_generated_npz(output_path: Path, system) -> Path:
                 coords=coords,
                 atom_types=atom_types,
                 cells=cells,
+                **({"type_map": np.asarray(type_map, dtype=np.str_)} if type_map is not None else {}),
             )
     except BaseException:
         output_path.unlink(missing_ok=True)
@@ -432,14 +433,7 @@ def _warmup_model(model, system, device, calls):
     torch.cuda.synchronize(device)
 
 
-_NATIVE_KERNELS = {
-    "gie": ("gie_zonal_scatter_",),
-    "rmsnorm": ("rmsnorm_forward_kernel", "rmsnorm_backward_kernel"),
-    "so2_envelope_reduce": ("so2_reduce_",),
-}
-
-
-def _summarize_trace(path, native_ops=()):
+def _summarize_trace(path):
     payload = json.loads(Path(path).read_text())
     events = payload.get("traceEvents", []) if isinstance(payload, dict) else payload
     groups = {"device": {}, "cpu": {}, "communication": {}}
@@ -460,17 +454,11 @@ def _summarize_trace(path, native_ops=()):
         raise RuntimeError(f"trace has no device kernel events: {path}")
     def top(kind):
         return sorted(groups[kind].values(), key=lambda row: row["duration_us"], reverse=True)[:40]
-    native = {}
-    for op in native_ops:
-        matched = [name for name in groups["device"] if any(
-            token in name for token in _NATIVE_KERNELS.get(op, ())
-        )]
-        native[op] = {"status": "observed" if matched else "unconfirmed", "kernel_names": matched}
     return {
         "trace_file": str(path),
         "device_kernel_calls": sum(row["calls"] for row in groups["device"].values()),
         "top_device_kernels": top("device"), "top_cpu_ops": top("cpu"),
-        "communication_events": top("communication"), "native_execution": native,
+        "communication_events": top("communication"),
         "duration_note": "Summed event durations can overlap; they are not inference latency. Communication names are heuristic; absence does not prove no communication.",
     }
 
@@ -529,10 +517,68 @@ def _profile_events(profiler) -> tuple[str, list[dict[str, Any]]]:
     return sort_key, rows
 
 
-def _parse_native_ops(raw: str | None):
-    if raw is None:
-        return None
-    return tuple(item.strip() for item in raw.split(",") if item.strip())
+def _deepmd_backend_name(model):
+    module_name = type(getattr(model, "deep_eval", None)).__module__
+    parts = module_name.split(".")
+    return parts[1] if len(parts) >= 2 and parts[0] == "deepmd" else "unknown"
+
+
+def _input_type_map(args):
+    """Read source labels once for both profiling and offline replication."""
+    source = "model type indices"
+    input_type_map = None
+    explicit = getattr(args, "input_type_map", None)
+    if explicit is not None:
+        input_type_map = [name.strip() for name in explicit.split(",")]
+        source = "--input-type-map"
+    elif args.input_npz:
+        with np.load(args.input_npz) as sample:
+            if "type_map" in sample.files:
+                input_type_map = sample["type_map"].tolist()
+                source = "NPZ type_map"
+        if input_type_map is None:
+            metadata_path = Path(args.input_npz).with_suffix(".metadata.json")
+            if metadata_path.is_file():
+                input_type_map = json.loads(metadata_path.read_text()).get("type_map")
+                if input_type_map is not None:
+                    source = str(metadata_path.resolve())
+    if input_type_map is not None and (
+        not isinstance(input_type_map, list) or not input_type_map
+        or any(not isinstance(name, str) or not name for name in input_type_map)
+        or len(set(input_type_map)) != len(input_type_map)
+    ):
+        raise ValueError("input type_map must be a nonempty list of unique element names")
+    return input_type_map, source
+
+
+def _remap_input_types(model, system, args):
+    """Interpret source labels explicitly, including the bundled water metadata."""
+    model_type_map = list(model.get_type_map())
+    input_type_map, source = _input_type_map(args)
+    coords, atom_types, cells = system
+    used_indices = np.unique(atom_types)
+    if not model_type_map or len(set(model_type_map)) != len(model_type_map):
+        raise ValueError("model type_map must contain unique element names")
+    if input_type_map is None:
+        if np.any(used_indices < 0) or np.any(used_indices >= len(model_type_map)):
+            raise ValueError("input type indices are outside the model type_map")
+        mapping = {str(int(index)): int(index) for index in used_indices}
+        remapped = atom_types
+    else:
+        if np.any(used_indices < 0) or np.any(used_indices >= len(input_type_map)):
+            raise ValueError("input type indices are outside the input type_map")
+        lookup = np.zeros(len(input_type_map), dtype=np.int32)
+        for index in used_indices:
+            name = input_type_map[index]
+            if name not in model_type_map:
+                raise ValueError(f"input element {name!r} is absent from model type_map")
+            lookup[index] = model_type_map.index(name)
+        remapped = lookup[atom_types]
+        mapping = {str(int(index)): int(lookup[index]) for index in used_indices}
+    return (coords, remapped, cells), {
+        "source": source, "input_type_map": input_type_map,
+        "model_type_map": model_type_map, "index_mapping": mapping,
+    }
 
 
 def _loaded_deepmd_device_modules():
@@ -543,7 +589,7 @@ def _loaded_deepmd_device_modules():
     ]
 
 
-def _construct_dpa4_model(args):
+def _construct_deepmd_model(args):
     rank = int(args.device.split(":", 1)[1]) if ":" in args.device else 0
     initialized_modules = _loaded_deepmd_device_modules()
     for module in initialized_modules:
@@ -557,13 +603,11 @@ def _construct_dpa4_model(args):
         os.environ["DEVICE"] = "cuda"
         os.environ["LOCAL_RANK"] = str(rank)
     try:
-        from model import DPA4Model
-
-        return DPA4Model(
-            args.model_file,
-            native_ops=_parse_native_ops(args.native_ops),
-            auto_batch_size=False,
-        )
+        try:
+            from deepmd.infer import DeepPot
+        except ImportError as error:
+            raise RuntimeError("profiling requires an installed DeepMD-kit") from error
+        return DeepPot(str(args.model_file), auto_batch_size=False)
     finally:
         if not initialized_modules:
             if prior_device is None:
@@ -615,8 +659,10 @@ def _run_dpa4(args) -> int:
     summary_path = output_dir / "dpa4_inference_profile_summary.json"
     torch.cuda.set_device(device)
     args.device = str(device)
-    model = _construct_dpa4_model(args)
+    model = _construct_deepmd_model(args)
     try:
+        source_system, type_mapping = _remap_input_types(model, source_system, args)
+        print("DeepMD input types: " + json.dumps(type_mapping), flush=True)
         selected_system, replicas, sizing = _prepare_direct_system(model, source_system, args)
         _warmup_model(model, selected_system, device, args.warmup)
         coords, atom_types, cells = selected_system
@@ -654,11 +700,11 @@ def _run_dpa4(args) -> int:
             "mode": "direct_dpa4_single_card",
             "model_file": str(Path(args.model_file).resolve()),
             "input_source": input_source,
-            "backend": str(getattr(model, "backend", "unknown")),
-            "execution_kind": "eager_checkpoint" if Path(args.model_file).suffix == ".pt" else "exported_artifact",
-            "native_patch_applicable": Path(args.model_file).suffix == ".pt",
-            "native_ops": list(getattr(model, "native_ops", ())),
-            "native_ops_patched": dict(getattr(model, "native_ops_patched", {})),
+            "backend": _deepmd_backend_name(model),
+            "model_format": Path(args.model_file).suffix.lower(),
+            "model_implementation": "deepmd.infer.DeepPot",
+            "operator_source": "original DeepMD",
+            "type_mapping": type_mapping,
             "device": str(device),
             "device_name": device_name,
             "ranks": 1,
@@ -692,14 +738,16 @@ def _run_dpa4(args) -> int:
             "trace_file": str(trace_path),
         }
         profiler.export_chrome_trace(str(trace_path))
-        report["trace_analysis"] = _summarize_trace(trace_path, report["native_ops"])
+        report["trace_analysis"] = _summarize_trace(trace_path)
         summary_path.write_text(json.dumps(report, indent=2) + "\n")
         print(f"DPA4 trace: {trace_path}", flush=True)
         print(f"DPA4 summary: {summary_path}", flush=True)
         print(json.dumps(report, sort_keys=True), flush=True)
         return 0
     finally:
-        model.close()
+        close = getattr(model, "close", None)
+        if callable(close):
+            close()
 
 
 def _run_generate_data(args) -> int:
@@ -714,7 +762,10 @@ def _run_generate_data(args) -> int:
         else _read_lammps_system(source_path)
     )
     generated_system = generate_test_data(source_system, args.replicate)
-    output_path = _write_generated_npz(args.output_npz, generated_system)
+    input_type_map, _ = _input_type_map(args)
+    if input_type_map is not None and np.any(generated_system[1] >= len(input_type_map)):
+        raise ValueError("input type indices are outside the input type_map")
+    output_path = _write_generated_npz(args.output_npz, generated_system, input_type_map)
     summary = {
         "source": str(source_path.resolve()),
         "output_npz": str(output_path.resolve()),
@@ -722,6 +773,7 @@ def _run_generate_data(args) -> int:
         "generated_atoms": int(generated_system[0].shape[1]),
         "replication_factors": list(args.replicate),
         "atom_types_preserved": True,
+        "type_map": input_type_map,
     }
     print(json.dumps(summary, sort_keys=True), flush=True)
     return 0
@@ -1033,7 +1085,7 @@ def _run_lammps(args) -> int:
         "ranks": ranks,
         "world_size": ranks,
         "analysis_goal": "hotspots",
-        "operator_source": "exported artifact; no Python DPA4Model patches",
+        "operator_source": "original DeepMD exported artifact",
         "profile_window": {"skip_model_calls": args.profile_skip, "active_model_calls": args.profile_calls},
         "gpu_ids": list(gpu_ids),
         "child_visible_devices": visible,
@@ -1115,7 +1167,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
     dpa4 = subparsers.add_parser(
-        "dpa4", help="profile one direct single-card DPA4Model.eval call"
+        "dpa4", help="profile one original DeepMD DeepPot.eval call on a single card"
     )
     dpa4.add_argument("--model-file", type=Path, required=True)
     source = dpa4.add_mutually_exclusive_group(required=True)
@@ -1135,13 +1187,8 @@ def build_parser() -> argparse.ArgumentParser:
     dpa4.add_argument("--warmup", type=int, default=5,
                       help="same-size inference calls before capture (default 5)")
     dpa4.add_argument(
-        "--native-ops",
-        default=None,
-        help=(
-            "comma-separated native operators (gie,rmsnorm by default; "
-            "so2_envelope_reduce is opt-in for attention-free SO2Convolution); "
-            "pass an empty string to run the DeepMD baseline"
-        ),
+        "--input-type-map", default=None,
+        help="comma-separated source element order, e.g. O,H; defaults to embedded NPZ type_map, then sidecar metadata, otherwise model indices",
     )
 
     lammps_single = subparsers.add_parser(
@@ -1181,6 +1228,8 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="periodic replication factors x,y,z (each must be positive)",
     )
+    generate.add_argument("--input-type-map", default=None,
+                          help="source element order to embed in the generated NPZ, e.g. O,H")
     generate.add_argument("--output-npz", type=Path, required=True)
     return parser
 
@@ -1229,21 +1278,7 @@ class DPA4ProfilerCLITests(unittest.TestCase):
         )
         self.assertEqual(direct.mode, "dpa4")
         self.assertEqual(direct.model_file, Path("model.pt"))
-        self.assertIsNone(_parse_native_ops(direct.native_ops))
-        self.assertEqual(_parse_native_ops(""), ())
-        self.assertEqual(_parse_native_ops("gie,rmsnorm"), ("gie", "rmsnorm"))
-        direct_native = parser.parse_args(
-            [
-                "dpa4",
-                "--model-file", "model.pt",
-                "--input-npz", "system.npz",
-                "--output-dir", "out/native",
-                "--native-ops", "gie,rmsnorm",
-            ]
-        )
-        self.assertEqual(
-            _parse_native_ops(direct_native.native_ops), ("gie", "rmsnorm")
-        )
+        self.assertFalse(hasattr(direct, "native_ops"))
 
         mpi = parser.parse_args(
             [

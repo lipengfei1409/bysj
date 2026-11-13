@@ -3,6 +3,8 @@ import importlib.util
 import json
 import tempfile
 import unittest
+import sys
+from types import ModuleType
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -54,14 +56,13 @@ class ProfileContracts(unittest.TestCase):
             trace = Path(tmp) / "rank0.json"
             trace.write_text(json.dumps({"traceEvents": [
                 {"ph": "X", "cat": "cpu_op", "name": "aten::mul", "dur": 20},
-                {"ph": "X", "cat": "kernel", "name": "gie_zonal_scatter_forward_kernel", "dur": 4},
-                {"ph": "X", "cat": "kernel", "name": "gie_zonal_scatter_forward_kernel", "dur": 6},
+                {"ph": "X", "cat": "kernel", "name": "original_deepmd_kernel", "dur": 4},
+                {"ph": "X", "cat": "kernel", "name": "original_deepmd_kernel", "dur": 6},
             ]}))
-            result = cli._summarize_trace(trace, ("gie", "rmsnorm"))
+            result = cli._summarize_trace(trace)
             self.assertEqual(result["device_kernel_calls"], 2)
             self.assertEqual(result["top_device_kernels"][0]["duration_us"], 10)
-            self.assertEqual(result["native_execution"]["gie"]["status"], "observed")
-            self.assertEqual(result["native_execution"]["rmsnorm"]["status"], "unconfirmed")
+            self.assertNotIn("native_execution", result)
             trace.write_text('{"traceEvents": []}')
             with self.assertRaisesRegex(RuntimeError, "device kernel"):
                 cli._summarize_trace(trace)
@@ -155,3 +156,85 @@ class ProfileContracts(unittest.TestCase):
              patch.object(cli, "_memory_delta_for_inference", side_effect=[65536, ValueError("operator bug")]):
             with self.assertRaisesRegex(ValueError, "operator bug"):
                 cli._choose_large_system(Mock(), source, args)
+
+    def test_direct_constructor_uses_original_deepmd_for_both_backends(self):
+        args = SimpleNamespace(device="cuda:1", model_file=Path("model.pt"))
+        for backend in ("pt", "pt_expt"):
+            with self.subTest(backend=backend):
+                backend_type = type("DeepEval", (), {"__module__": f"deepmd.{backend}.infer.deep_eval"})
+                expected = SimpleNamespace(deep_eval=backend_type())
+                def create(path, **kwargs):
+                    self.assertEqual(path, "model.pt")
+                    self.assertEqual(kwargs, {"auto_batch_size": False})
+                    self.assertEqual(cli.os.environ["DEVICE"], "cuda")
+                    self.assertEqual(cli.os.environ["LOCAL_RANK"], "1")
+                    return expected
+                package = ModuleType("deepmd")
+                infer = ModuleType("deepmd.infer")
+                infer.DeepPot = Mock(side_effect=create)
+                with patch.dict(sys.modules, {"deepmd": package, "deepmd.infer": infer}), \
+                     patch.object(cli, "_loaded_deepmd_device_modules", return_value=[]), \
+                     patch.dict(cli.os.environ, {"DEVICE": "cpu", "LOCAL_RANK": "7"}):
+                    actual = cli._construct_deepmd_model(args)
+                    self.assertIs(actual, expected)
+                    self.assertEqual(cli._deepmd_backend_name(actual), backend)
+                    self.assertEqual(cli.os.environ["DEVICE"], "cpu")
+                    self.assertEqual(cli.os.environ["LOCAL_RANK"], "7")
+                infer.DeepPot.assert_called_once()
+
+    def test_direct_cli_does_not_offer_native_patches(self):
+        args = cli.build_parser().parse_args([
+            "dpa4", "--model-file", "m.pt", "--input-npz", "s.npz",
+            "--output-dir", "out",
+        ])
+        self.assertFalse(hasattr(args, "native_ops"))
+
+    def test_water_metadata_remaps_types_for_multi_element_model(self):
+        model = Mock()
+        model.get_type_map.return_value = ["H", "C", "N", "O"]
+        source = (np.zeros((1, 3, 3)), np.asarray([[0, 1, 1]], dtype=np.int32), np.eye(3).reshape(1, 9))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "water.npz"
+            np.savez(path, coords=source[0], atom_types=source[1], cells=source[2])
+            path.with_suffix(".metadata.json").write_text('{"type_map": ["O", "H"]}')
+            args = SimpleNamespace(input_npz=path, input_type_map=None)
+            result, report = cli._remap_input_types(model, source, args)
+            np.testing.assert_array_equal(result[1], [[3, 0, 0]])
+            np.testing.assert_array_equal(source[1], [[0, 1, 1]])
+            self.assertEqual(report["input_type_map"], ["O", "H"])
+            self.assertEqual(report["model_type_map"], ["H", "C", "N", "O"])
+            model.get_type_map.return_value = ["H", "C"]
+            with self.assertRaisesRegex(ValueError, "O"):
+                cli._remap_input_types(model, source, args)
+
+    def test_explicit_input_types_override_metadata_and_check_indices(self):
+        model = Mock()
+        model.get_type_map.return_value = ["H", "O"]
+        source = (np.zeros((1, 2, 3)), np.asarray([[0, 1]], dtype=np.int32), None)
+        args = SimpleNamespace(input_npz=None, input_type_map="O,H")
+        result, _ = cli._remap_input_types(model, source, args)
+        np.testing.assert_array_equal(result[1], [[1, 0]])
+        args.input_type_map = None
+        result, report = cli._remap_input_types(model, source, args)
+        np.testing.assert_array_equal(result[1], source[1])
+        self.assertEqual(report["source"], "model type indices")
+        source[1][0, 0] = 2
+        with self.assertRaisesRegex(ValueError, "type indices"):
+            cli._remap_input_types(model, source, args)
+
+    def test_generate_data_preserves_water_element_labels_for_profiling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "expanded.npz"
+            self.assertEqual(cli.main([
+                "generate-data", "--input-npz", str(Path(__file__).with_name("water_spce_4500.npz")),
+                "--replicate", "2,1,1", "--output-npz", str(path),
+            ]), 0)
+            with np.load(path) as sample:
+                self.assertIn("type_map", sample.files)
+                np.testing.assert_array_equal(sample["type_map"], ["O", "H"])
+            model = Mock()
+            model.get_type_map.return_value = ["H", "C", "N", "O"]
+            remapped, report = cli._remap_input_types(model, cli._load_npz_system(path), SimpleNamespace(input_npz=path, input_type_map=None))
+            self.assertEqual(np.count_nonzero(remapped[1] == 3), 3000)
+            self.assertEqual(np.count_nonzero(remapped[1] == 0), 6000)
+            self.assertEqual(report["input_type_map"], ["O", "H"])

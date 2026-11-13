@@ -4,7 +4,6 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <hip/hip_runtime.h>
 #include <cstdint>
-#include <limits>
 #include <tuple>
 
 namespace {

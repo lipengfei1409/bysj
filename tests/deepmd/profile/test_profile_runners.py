@@ -32,10 +32,13 @@ class ProfileRunners(unittest.TestCase):
             np.savez(root / "system.npz", coords=np.zeros((2, 3)), atom_types=np.zeros(2, dtype=np.int32))
             args = cli.build_parser().parse_args([
                 "dpa4", "--model-file", str(model_path), "--input-npz", str(root / "system.npz"),
-                "--output-dir", str(root / "out"), "--fixed-input", "--native-ops", "",
+                "--output-dir", str(root / "out"), "--fixed-input",
             ])
             args.cli_command = ["test"]
-            model = Mock(native_ops=(), native_ops_patched={}, backend="pt_expt")
+            model = Mock()
+            backend_type = type("DeepEval", (), {"__module__": "deepmd.pt.infer.deep_eval"})
+            model.deep_eval = backend_type()
+            model.get_type_map.return_value = ["O", "H"]
             model.eval.return_value = (np.zeros(1), np.zeros((2, 3)), np.zeros(9))
             profiler = MagicMock()
             profiler.__enter__.return_value = profiler
@@ -44,7 +47,7 @@ class ProfileRunners(unittest.TestCase):
                 self_cpu_time_total=10, cpu_time_total=10,
             )]
             profiler.export_chrome_trace.side_effect = write_trace
-            stack.enter_context(patch.object(cli, "_construct_dpa4_model", return_value=model))
+            stack.enter_context(patch.object(cli, "_construct_deepmd_model", return_value=model))
             stack.enter_context(patch.object(cli.torch.profiler, "profile", return_value=profiler))
             stack.enter_context(patch.object(cli.torch.version, "hip", "test"))
             for method, value in {"is_available": True, "device_count": 1, "get_device_name": "K500SM_AI", "memory_allocated": 0, "max_memory_allocated": 1024}.items():
@@ -56,6 +59,9 @@ class ProfileRunners(unittest.TestCase):
             self.assertEqual(model.eval.call_count, 6)
             model.close.assert_called_once()
             report = json.loads(next((root / "out").rglob("*summary.json")).read_text())
+            self.assertEqual(report["backend"], "pt")
+            self.assertEqual(report["operator_source"], "original DeepMD")
+            self.assertNotIn("native_ops", report)
             self.assertEqual(report["profiled_inference_calls"], 1)
             self.assertEqual(report["warmup_calls"], 5)
             self.assertEqual(report["atom_count"], 2)
