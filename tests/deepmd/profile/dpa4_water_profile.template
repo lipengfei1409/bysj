@@ -14,4 +14,13 @@ bond_coeff 1 1000.00 1.000
 angle_coeff 1 100.0 109.47
 pair_style deepmd ${model}
 pair_coeff * * O H
+# Includes SPC/E harmonic bond and angle terms in addition to the DeepMD pair.
+velocity all create 300.0 20261113 mom yes rot yes dist gaussian
+timestep 0.25
+fix integrate all nve
+thermo 1
+thermo_style custom step atoms temp pe ke etotal
+# A trajectory supports checking that this is real MD, rather than run 0.
+dump trajectory all custom 1 trajectory.lammpstrj id type x y z
+dump_modify trajectory sort id
 run ${steps}

@@ -128,11 +128,11 @@
           <p class="tag">Direct · one HCU</p>
           <h3>独立测试 DPA4Model</h3>
           <p class="flow">NPZ / geometry → DPA4Model.eval → torch.profiler</p>
-          <p class="muted">不启动 LAMMPS。输入是 NPZ（coords、atom_types、cells）或当前几何读取器支持的正交盒几何；模型由 DeepMD 加载。可用 <code>generate-data</code> 从真实周期结构扩胞后生成可复用 NPZ。</p>
-          <div class="code-wrap"><pre><code>python tests/deepmd/test_dpa4_inference_profile.py dpa4 \
+          <p class="muted">不启动 LAMMPS。已附带 4,500 原子的 <a href="../tests/deepmd/profile/water_spce_4500.npz">water_spce_4500.npz</a>（O=0，H=1）。输入是 NPZ（coords、atom_types、cells）或当前几何读取器支持的正交盒几何；模型由 DeepMD 加载。可用 <code>generate-data</code> 从真实周期结构扩胞后生成可复用 NPZ。</p>
+          <div class="code-wrap"><pre><code>python tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
   --model-file /models/water_pt_expt.pt \
-  --input-npz /systems/water.npz \
-  --device cuda:0 --max-atoms 8192 \
+  --input-npz tests/deepmd/profile/water_spce_4500.npz \
+  --device cuda:0 --memory-fraction 0.70 \
   --output-dir /tmp/profile-native</code></pre></div>
           <p class="muted">未传 <code>--native-ops</code> 时默认启用 GIE 与 RMSNorm；可用 <code>--native-ops so2_envelope_reduce</code> 单独测 attention-free SO2Convolution 的 destination reduction；比较 DeepMD baseline 时传 <code>--native-ops ""</code>。输出包含 Chrome trace 和 JSON summary；<code>--max-atoms</code> 是上限，需检查 summary 的实际 <code>atom_count</code>。</p>
         </article>
@@ -140,15 +140,15 @@
           <p class="tag">LAMMPS · one rank per HCU</p>
           <h3>使用 LAMMPS 模拟</h3>
           <p class="flow">LAMMPS data + input template + .pt2 → lmp / MPI</p>
-          <p class="muted">此路径传入原生 LAMMPS data 文件和模板。<code>--gpu-ids</code> 中每个 ID 对应一个单机 rank；多个 ID 需 MPI 和 with-comm 模型。仓库模板 <code>tests/deepmd/dpa4_water_profile.template</code> 对应水样例 O,H 类型顺序。</p>
-          <div class="code-wrap"><pre><code>python tests/deepmd/test_dpa4_inference_profile.py lammps \
+          <p class="muted">此路径传入原生 LAMMPS data 文件和模板。<code>--gpu-ids</code> 中每个 ID 对应一个单机 rank；多个 ID 需 MPI 和 with-comm 模型。仓库模板 <code>tests/deepmd/profile/dpa4_water_profile.template</code> 对应水样例 O,H 类型顺序。</p>
+          <div class="code-wrap"><pre><code>python tests/deepmd/profile/test_dpa4_inference_profile.py lammps \
   --model-file /models/water-with-comm.pt2 \
-  --data-file /path/to/lammps/examples/rdf-adf/data.spce \
-  --lammps-input tests/deepmd/dpa4_water_profile.template \
+  --data-file ../lammps/examples/rdf-adf/data.spce \
+  --lammps-input tests/deepmd/profile/dpa4_water_profile.template \
   --lammps-exe /opt/dtk/bin/lmp --mpi-exe mpirun \
-  --gpu-ids 0,1,2 --replicate 2,2,2 --steps 0 \
+  --gpu-ids 0,1,2 --world-size 3 --replicate 2,2,2 --steps 20 \
   --output-dir /tmp/profile-lammps</code></pre></div>
-          <p class="muted">3 个 GPU ID 会启动 3 个 MPI rank；<code>2,2,2</code> 将 4,500 原子的样例扩为 36,000 原子。默认 <code>--steps 0</code>；增加 steps 时模板还会计算 SPC/E bond/angle 项。该样例 data 是 full-style LAMMPS 输入，应通过 <code>--data-file</code> 使用，不要当作直接路径的 <code>--geometry</code>。</p>
+          <p class="muted">3 个 GPU ID 会启动 3 个 MPI rank；<code>2,2,2</code> 将 4,500 原子的样例扩为 36,000 原子。默认真实 MD 运行 20 步，跳过前 5 次模型调用后采集 10 次。水模板使用 300 K 初速、0.25 fs、NVE，并保留 SPC/E bond/angle 项。该样例 data 是 full-style LAMMPS 输入，应通过 <code>--data-file</code> 使用，不要当作直接路径的 <code>--geometry</code>。</p>
         </article>
       </div>
     </section>
@@ -162,11 +162,12 @@
         <table>
           <thead><tr><th>路径</th><th>必需输入</th><th>扩胞方式</th><th>profile 产物</th></tr></thead>
           <tbody>
-            <tr><td>直接 <code>dpa4</code></td><td>eager DeepMD model + NPZ/支持的 geometry</td><td>profile 根据可用显存估算；<code>generate-data</code> 可离线扩 NPZ</td><td>单次 eval 的 Chrome trace + JSON summary</td></tr>
-            <tr><td><code>lammps</code></td><td>frozen <code>.pt2</code> + LAMMPS data + template + lmp；多卡另需 MPI</td><td>模板内 <code>replicate ${rx} ${ry} ${rz}</code></td><td>DeepMD DP_PROFILER trace、rank logs、JSON summary</td></tr>
+            <tr><td>直接 <code>dpa4</code></td><td>eager DeepMD model + NPZ/支持的 geometry</td><td>默认按 70% 可用显存预算扩胞，预热 5 次；<code>--fixed-input</code> 关闭扩容；<code>generate-data</code> 可离线扩 NPZ</td><td>单次 eval 的 Chrome trace + JSON summary</td></tr>
+            <tr><td><code>lammps</code></td><td>frozen <code>.pt2</code> + LAMMPS data + template + lmp；多卡另需 MPI</td><td>模板内 <code>replicate ${rx} ${ry} ${rz}</code></td><td>逐 rank PTExpt Kineto trace、窗口状态、rank logs、热点 summary</td></tr>
           </tbody>
         </table>
       </div>
+      <p class="callout">必须重编译 DeepMD PTExpt 后端的有限窗口 profiler 支持，并由 LAMMPS 加载新库；旧版 TorchScript 的 DP_PROFILER 不适用。完整命令与验收见 <a href="../tests/deepmd/profile/README.md">profile README</a>。</p>
       <p class="callout">直接推理的 <code>generate-data</code> 输出是 NPZ，不是 LAMMPS <code>read_data</code> 文件。多卡 LAMMPS 运行要求单机每 rank 一个可见 GPU 和包含 with-comm 路径的模型；水样例要求 model type map 为 O,H。</p>
     </section>
 
@@ -179,13 +180,13 @@
       <div class="panel steps">
         <div class="step"><p><strong>单算子 parity。</strong> 在支持的 DCU 上运行 GIE 与 RMSNorm 原生算子测试，对照 PyTorch/reference 输出，并检查反向梯度。</p></div>
         <div class="step"><p><strong>完整 DPA4 correctness。</strong> 对相同 NPZ 和 eager <code>pt_expt</code> <code>.pt</code> 模型，比较 <code>native_ops=()</code> baseline、GIE-only、RMSNorm-only 与默认组合的 energy、force、virial；只有 attention-free 模型才会使用可选的 SO(2) envelope reduction。</p></div>
-        <div class="step"><p><strong>直接 profile 对照。</strong> 使用相同 <code>--input-npz</code>、<code>--max-atoms</code>、设备和内存参数；检查 JSON summary 中的 <code>native_ops</code> 与 <code>native_ops_patched</code>，再比较 device time、总 wall time 和显存。模型需是 eager <code>pt_expt</code>，并多次运行报告中位数。</p></div>
+        <div class="step"><p><strong>直接 profile 对照。</strong> 选定体系后预热 5 次，采集一次完整 eval。检查 summary 中的 kernel 热点与 <code>native_execution</code>；补丁数量不能证明实际执行。采集 wall time 包含 profiler 开销，不用于计算加速比。</p></div>
         <div class="step"><p><strong>LAMMPS 路径。</strong> 原生补丁只能在 eager DeepMD 模型加载后安装；已导出的 <code>.pt2/.pte</code> 无法加载后 patch。LAMMPS profile 路径继续使用 DeepMD 导出 artifact，不代表 DPA4Model 的 native patch 路径。</p></div>
       </div>
       <p class="callout">适配器默认只替换 plain RMSNorm 与受支持的 GIE scatter；`so2_envelope_reduce` 仅替换 attention-free SO2Convolution 的 destination reduction，不是完整 SO(2) convolution。缺少 HIP/DCU 扩展、受支持设备或目标模块会明确失败。传 <code>native_ops=()</code> 才会运行 DeepMD baseline。TileLang 算子包仍可独立使用，但此适配器不启用它。</p>
       <div class="link-row">
-        <a href="../tests/deepmd/test_dpa4_inference_profile.py">Profile CLI</a>
-        <a href="../tests/deepmd/dpa4_water_profile.template">Water LAMMPS template</a>
+        <a href="../tests/deepmd/profile/test_dpa4_inference_profile.py">Profile CLI</a>
+        <a href="../tests/deepmd/profile/dpa4_water_profile.template">Water LAMMPS template</a>
         <a href="../python/model/dpa4.py">DPA4Model adapter</a>
         <a href="kernel-model.html">Kernel design</a>
       </div>

@@ -1,0 +1,64 @@
+{
+  "source": "lammps/examples/rdf-adf/data.spce",
+  "source_local_path": "/Users/lipengfei/Desktop/work/bysj/lammps/examples/rdf-adf/data.spce",
+  "source_sha256": "8d29107350821ecd7813eecf35882f2de239013e39524cde054048f755490101",
+  "npz_sha256": "f703c41f329fd1fcd42c39a7ac5a28cdaf4a5752e9b3863903a7d34cdeca0f9d",
+  "atom_count": 4500,
+  "water_molecules": 1500,
+  "type_map": [
+    "O",
+    "H"
+  ],
+  "type_counts": {
+    "O": 1500,
+    "H": 3000
+  },
+  "units": {
+    "coords": "angstrom",
+    "cells": "angstrom"
+  },
+  "arrays": {
+    "coords": {
+      "shape": [
+        1,
+        4500,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "atom_types": {
+      "shape": [
+        1,
+        4500
+      ],
+      "dtype": "int32"
+    },
+    "cells": {
+      "shape": [
+        1,
+        9
+      ],
+      "dtype": "float64"
+    }
+  },
+  "cell_lengths_angstrom": [
+    35.506350000000005,
+    35.506350000000005,
+    35.44719
+  ],
+  "original_box_origin_angstrom": [
+    0.02645,
+    0.02645,
+    0.02641
+  ],
+  "conversion": [
+    "Read full-style Atoms rows in ascending atom ID; xyz are columns 5-7 (1-based), not the trailing image flags.",
+    "Convert LAMMPS types 1,2 to DeepMD indices 0,1 corresponding to O,H.",
+    "Subtract original box origin and wrap coordinates modulo orthorhombic cell lengths.",
+    "Write one frame without replication; direct profiling may expand it automatically."
+  ],
+  "minimum_image_oh_length_angstrom": {
+    "min": 0.999924529852127,
+    "max": 1.000017332299796
+  }
+}

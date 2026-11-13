@@ -9,15 +9,12 @@ inline void f32(const Tensor& tensor) {
               "expected contiguous DCU float32 tensor");
 }
 
-inline void same_device(const Tensor& tensor,
-                        std::initializer_list<Tensor> others) {
+inline void same_device(const Tensor& tensor, std::initializer_list<Tensor> others) {
   for (const auto& other : others)
-    TORCH_CHECK(other.device() == tensor.device(),
-                "all tensors must share a device");
+    TORCH_CHECK(other.device() == tensor.device(), "all tensors must share a device");
 }
 
 inline void launch_check() {
   const auto status = hipGetLastError();
-  TORCH_CHECK(status == hipSuccess, "HIP kernel launch failed: ",
-              hipGetErrorString(status));
+  TORCH_CHECK(status == hipSuccess, "HIP kernel launch failed: ", hipGetErrorString(status));
 }

@@ -106,3 +106,11 @@ python -m unittest discover -s tests/csrc -v
 ```
 
 Native tests require a supported DCU; a non-DCU environment can run the Python oracle and host header tests but cannot verify the kernels.
+
+## DPA4 hotspot profiling
+
+The three supported scenarios (single-card DeepMD inference, single-card LAMMPS,
+and single-host multi-card LAMMPS) live in [tests/deepmd/profile](tests/deepmd/profile/README.md).
+Direct inference defaults to periodic scaling within 70% of available device
+memory and five warmup calls. Multi-card LAMMPS accepts `--world-size` matching
+`--gpu-ids`; its finite Kineto window requires the updated DeepMD PTExpt backend.

@@ -1,59 +1,14 @@
-"""DPA4 profiling and periodic test-data generation CLI.
+"""Three hotspot profiles: single-card DPA4 eval, single-/multi-card LAMMPS.
 
-Every model, input, executable, and output path is passed as a CLI argument.
-The profiling modes are distinct:
-
-1. ``dpa4`` profiles exactly one direct ``DPA4Model.eval`` on one HCU. It
-   estimates a large periodic system from available memory, then records one
-   successful call; sizing probes occur outside the trace.
-2. ``lammps`` runs one simulation on a single host using one rank per ID in
-   ``--gpu-ids``. One ID runs directly; multiple IDs launch that many MPI ranks
-   and require a DPA4 frozen model with the with-comm artifact. This is one
-   distributed simulation, not independent Python inference processes. The
-   fixed ``lammps-single`` and ``lammps-mpi4`` command names remain available.
-
-Examples::
-
-    python3 tests/deepmd/test_dpa4_inference_profile.py dpa4 \
-        --model-file /models/dpa4.pt --input-npz /systems/water.npz \
-        --output-dir /tmp/dpa4-direct
-
-    python3 tests/deepmd/test_dpa4_inference_profile.py lammps-single \
-        --model-file /models/dpa4.pt2 --data-file /systems/water.data \
-        --lammps-input /inputs/profile.template --lammps-exe /opt/dtk/bin/lmp \
-        --gpu-ids 0 --output-dir /tmp/dpa4-lmp-one
-
-    python3 tests/deepmd/test_dpa4_inference_profile.py lammps \
-        --model-file /models/dpa4-with-comm.pt2 \
-        --data-file /path/to/lammps/examples/rdf-adf/data.spce \
-        --lammps-input tests/deepmd/dpa4_water_profile.template \
-        --lammps-exe /opt/dtk/bin/lmp --mpi-exe /opt/mpi/bin/mpirun \
-        --gpu-ids 0,1,2 --replicate 2,2,2 --steps 0 \
-        --output-dir /tmp/dpa4-lmp-three
-
-    python3 tests/deepmd/test_dpa4_inference_profile.py generate-data \
-        --input-npz /systems/water.npz --replicate 4,4,4 \
-        --output-npz /tmp/water-profile.npz
-
-``generate-data`` creates a reusable direct-inference NPZ by periodically
-replicating a supplied structure. It preserves source atom type indices and
-requires an existing periodic cell; the indices must match the selected model.
-
-LAMMPS templates must use ``${model}`` in ``pair_style deepmd``, ``${data}``
-in ``read_data``, include ``atom_modify map yes``, and use ``run ${steps}``.
-For replication, include ``replicate ${rx} ${ry} ${rz}`` after ``read_data``.
-The runner stages short symlink aliases in each run directory so LAMMPS variable
-values do not contain spaces. ``--steps 0`` (the default) profiles the initial
-force evaluation without advancing dynamics; use a positive value for a longer
-simulation. LAMMPS profiling uses DeepMD's ``DP_PROFILER`` Kineto trace
-(rank-specific in MPI mode) and ``timer full`` output.
-
-For any multi-rank LAMMPS DPA4 run, the model must be a frozen artifact containing
-``model/extra/forward_lower_with_comm.pt2`` (or metadata marking a comm artifact).
-The bundled water template assumes model type order O,H; use a compatible model.
-The sample ``data.spce`` contains bonded topology and is intended for the default
-zero-step profile; positive ``--steps`` also advances its SPC/E bond/angle terms.
-A plain ``DPA4Model.eval`` call does not distribute one inference across ranks.
+See README.md beside this script for commands, prerequisites and interpretation.
+Direct inference defaults to memory-based periodic replication (70% of available
+memory), followed by 5 same-size warmup calls and exactly one recorded eval.
+Use --fixed-input to disable scaling. Model, type map and input must agree.
+LAMMPS runs real MD for 20 steps by default and requires the PTExpt backend's
+DP_PROFILER window support: skip 5 model calls, then capture 10. One rank uses
+one GPU; multiple ranks require MPI and a with-comm .pt2 model. --world-size
+must match the requested GPU count when provided. Rank traces are independent.
+These profiles locate hotspots; collection wall time is not inference latency.
 """
 
 from __future__ import annotations
@@ -76,9 +31,9 @@ from typing import Any
 import numpy as np
 import torch
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_PROJECT_ROOT / "python"))
-_MIN_BYTES_PER_ATOM = 1024 * 1024
+_MIN_BYTES_PER_ATOM = 64 * 1024
 _MAX_SIZING_PROBES = 6
 
 
@@ -130,47 +85,55 @@ def _load_npz_system(path: Path):
 
 
 def _read_lammps_system(path: Path):
-    bounds: dict[str, tuple[float, float]] = {}
-    atoms: list[tuple[int, int, float, float, float]] = []
+    """Read wrapped coordinates; optional image flags are not coordinates."""
+    bounds = {}
+    atoms = []
+    layout = None
     in_atoms = False
+    layouts = {"atomic": (5, 1, 2), "charge": (6, 1, 3),
+               "molecular": (6, 2, 3), "full": (7, 2, 4)}
     for line in path.read_text().splitlines():
-        fields = line.split("#", 1)[0].split()
+        body, _, comment = line.partition("#")
+        fields = body.split()
         if not fields:
             continue
-        if len(fields) >= 6 and fields[-3:] == ["xy", "xz", "yz"]:
+        if fields[-3:] == ["xy", "xz", "yz"]:
             if any(abs(float(value)) > 1.0e-12 for value in fields[:3]):
-                raise ValueError(
-                    "triclinic LAMMPS boxes are unsupported by this parser; "
-                    "provide the geometry through a cell-aware NPZ instead"
-                )
+                raise ValueError("triclinic LAMMPS boxes require a cell-aware NPZ")
             continue
         for axis in ("x", "y", "z"):
-            if len(fields) >= 4 and fields[-2:] == [f"{axis}lo", f"{axis}hi"]:
+            if len(fields) == 4 and fields[-2:] == [f"{axis}lo", f"{axis}hi"]:
                 bounds[axis] = (float(fields[0]), float(fields[1]))
-                break
         if fields[0] == "Atoms":
+            style = comment.strip().split()[0] if comment.strip() else ""
+            if style not in layouts:
+                raise ValueError("unsupported or missing atom style; use Atoms # atomic/charge/molecular/full")
+            layout = layouts[style]
             in_atoms = True
             continue
         if not in_atoms:
             continue
         if not fields[0].lstrip("+-").isdigit():
-            if atoms:
-                break
-            continue
-        if len(fields) < 5:
-            continue
-        atom_id = int(fields[0])
-        atom_type = int(fields[1]) if len(fields) == 5 else int(fields[2])
-        x, y, z = (float(value) for value in fields[-3:])
+            break
+        width, type_col, coord_col = layout
+        if len(fields) not in (width, width + 3):
+            raise ValueError(f"invalid Atoms row: expected {width} columns with optional image flags")
+        atom_id, atom_type = int(fields[0]), int(fields[type_col])
+        if atom_id <= 0 or atom_type <= 0:
+            raise ValueError("LAMMPS atom IDs and types must be positive")
+        x, y, z = map(float, fields[coord_col:coord_col + 3])
         atoms.append((atom_id, atom_type, x, y, z))
-
     if len(bounds) != 3 or not atoms:
         raise ValueError(f"could not parse orthorhombic LAMMPS geometry from {path}")
     atoms.sort(key=lambda row: row[0])
+    if len({row[0] for row in atoms}) != len(atoms):
+        raise ValueError("duplicate LAMMPS atom IDs")
     coords = np.asarray([[row[2], row[3], row[4]] for row in atoms], dtype=np.float64)
     atom_types = np.asarray([row[1] - 1 for row in atoms], dtype=np.int32)
     lengths = [bounds[axis][1] - bounds[axis][0] for axis in ("x", "y", "z")]
-    cells = np.diag(np.asarray(lengths, dtype=np.float64)).reshape(1, 9)
+    if any(length <= 0 for length in lengths):
+        raise ValueError("LAMMPS box lengths must be positive")
+    cells = np.diag(lengths).reshape(1, 9)
     return _normalize_system(coords, atom_types, cells)
 
 
@@ -339,6 +302,8 @@ def _choose_large_system(model, source_system, args):
         int(math.ceil(calibration_delta / max(base_atoms, 1))), _MIN_BYTES_PER_ATOM
     )
     memory_budget = int(free_after * args.memory_fraction)
+    if calibration_delta > memory_budget:
+        raise RuntimeError("source input already exceeds the profiling memory budget; provide a smaller seed or increase --memory-fraction")
     target_atoms = max(base_atoms, memory_budget // bytes_per_atom)
     if args.max_atoms > 0:
         target_atoms = min(target_atoms, args.max_atoms)
@@ -377,8 +342,9 @@ def _choose_large_system(model, source_system, args):
             break
         try:
             peak_delta = _memory_delta_for_inference(model, candidate, args.device)
-            free_now, _ = torch.cuda.mem_get_info(args.device)
-        except Exception as error:
+            torch.cuda.empty_cache()
+
+        except torch.cuda.OutOfMemoryError as error:
             failed_probe = {
                 "atoms": candidate_atoms,
                 "replicas": list(factors),
@@ -392,6 +358,16 @@ def _choose_large_system(model, source_system, args):
             except Exception:
                 pass
             target_atoms = max(base_atoms, int(candidate_atoms * 0.70))
+            if target_atoms <= int(selected_system[0].shape[1]):
+                break
+            continue
+
+        if peak_delta > memory_budget:
+            probes.append({"atoms": candidate_atoms, "replicas": list(factors),
+                           "status": "over_budget", "peak_increment_bytes": peak_delta})
+            print("DPA4 sizing probe: " + json.dumps(probes[-1]), flush=True)
+            target_atoms = max(base_atoms, min(int(candidate_atoms * 0.70),
+                               int(candidate_atoms * memory_budget / peak_delta)))
             if target_atoms <= int(selected_system[0].shape[1]):
                 break
             continue
@@ -414,7 +390,7 @@ def _choose_large_system(model, source_system, args):
         measured_per_atom = max(
             int(math.ceil(peak_delta / max(candidate_atoms, 1))), _MIN_BYTES_PER_ATOM
         )
-        next_target = max(candidate_atoms, int((free_now * args.memory_fraction) / measured_per_atom))
+        next_target = max(candidate_atoms, int(memory_budget / measured_per_atom))
         if args.max_atoms > 0:
             next_target = min(next_target, args.max_atoms)
         if next_target <= int(candidate_atoms * 1.15):
@@ -436,6 +412,89 @@ def _choose_large_system(model, source_system, args):
         "max_atoms_override": args.max_atoms or None,
         "sizing_probes": probes,
     }
+
+
+def _prepare_direct_system(model, source_system, args):
+    atoms = int(source_system[0].shape[1])
+    if args.max_atoms > 0 and atoms > args.max_atoms:
+        raise ValueError("input exceeds --max-atoms; cannot shrink the source structure")
+    if args.auto_size:
+        return _choose_large_system(model, source_system, args)
+    return source_system, (1, 1, 1), {
+        "mode": "fixed input", "source_atoms": atoms, "selected_atoms": atoms,
+        "sizing_probes": [],
+    }
+
+
+def _warmup_model(model, system, device, calls):
+    for _ in range(calls):
+        _outputs_to_arrays(model.eval(system[0], system[2], system[1]))
+    torch.cuda.synchronize(device)
+
+
+_NATIVE_KERNELS = {
+    "gie": ("gie_zonal_scatter_",),
+    "rmsnorm": ("rmsnorm_forward_kernel", "rmsnorm_backward_kernel"),
+    "so2_envelope_reduce": ("so2_reduce_",),
+}
+
+
+def _summarize_trace(path, native_ops=()):
+    payload = json.loads(Path(path).read_text())
+    events = payload.get("traceEvents", []) if isinstance(payload, dict) else payload
+    groups = {"device": {}, "cpu": {}, "communication": {}}
+    for event in events:
+        if event.get("ph") != "X" or float(event.get("dur", 0)) <= 0:
+            continue
+        category = str(event.get("cat", "")).lower()
+        name = str(event.get("name", ""))
+        device = category in ("kernel", "gpu_kernel", "hip_kernel", "cuda_kernel")
+        kinds = ["device"] if device else (["cpu"] if "cpu_op" in category else [])
+        if any(token in name.lower() for token in ("nccl", "rccl", "mpi_", "border_op", "communicat")):
+            kinds.append("communication")
+        for kind in kinds:
+            row = groups[kind].setdefault(name, {"name": name, "calls": 0, "duration_us": 0.0})
+            row["calls"] += 1
+            row["duration_us"] += float(event["dur"])
+    if not groups["device"]:
+        raise RuntimeError(f"trace has no device kernel events: {path}")
+    def top(kind):
+        return sorted(groups[kind].values(), key=lambda row: row["duration_us"], reverse=True)[:40]
+    native = {}
+    for op in native_ops:
+        matched = [name for name in groups["device"] if any(
+            token in name for token in _NATIVE_KERNELS.get(op, ())
+        )]
+        native[op] = {"status": "observed" if matched else "unconfirmed", "kernel_names": matched}
+    return {
+        "trace_file": str(path),
+        "device_kernel_calls": sum(row["calls"] for row in groups["device"].values()),
+        "top_device_kernels": top("device"), "top_cpu_ops": top("cpu"),
+        "communication_events": top("communication"), "native_execution": native,
+        "duration_note": "Summed event durations can overlap; they are not inference latency. Communication names are heuristic; absence does not prove no communication.",
+    }
+
+
+def _collect_lammps_profiles(stem, ranks, skip, active):
+    reports = []
+    for rank in range(ranks):
+        prefix = f"{stem.name}_rank{rank}_gpu" if ranks > 1 else f"{stem.name}*_gpu"
+        traces = [p for p in stem.parent.glob(prefix + "*.json") if not p.name.endswith(".summary.json")]
+        if len(traces) != 1:
+            raise RuntimeError(f"rank {rank}: expected one .pt2 trace, found {len(traces)}; rebuild DeepMD with PTExpt DP_PROFILER support")
+        trace = traces[0]
+        window_path = Path(str(trace) + ".summary.json")
+        if not window_path.is_file():
+            raise RuntimeError(f"rank {rank}: missing profiler window summary; rebuild DeepMD")
+        window = json.loads(window_path.read_text())
+        if (not window.get("complete") or window.get("aborted")
+                or window.get("captured_calls") != active
+                or window.get("skip_calls") != skip or window.get("active_calls") != active):
+            raise RuntimeError(f"rank {rank}: incomplete or mismatched profiler window: {window}")
+        report = _summarize_trace(trace)
+        report.update(rank=rank, window=window)
+        reports.append(report)
+    return reports
 
 
 def _profile_events(profiler) -> tuple[str, list[dict[str, Any]]]:
@@ -503,6 +562,7 @@ def _construct_dpa4_model(args):
         return DPA4Model(
             args.model_file,
             native_ops=_parse_native_ops(args.native_ops),
+            auto_batch_size=False,
         )
     finally:
         if not initialized_modules:
@@ -553,9 +613,12 @@ def _run_dpa4(args) -> int:
     output_dir.mkdir()
     trace_path = output_dir / "dpa4_inference_trace.json"
     summary_path = output_dir / "dpa4_inference_profile_summary.json"
+    torch.cuda.set_device(device)
+    args.device = str(device)
     model = _construct_dpa4_model(args)
     try:
-        selected_system, replicas, sizing = _choose_large_system(model, source_system, args)
+        selected_system, replicas, sizing = _prepare_direct_system(model, source_system, args)
+        _warmup_model(model, selected_system, device, args.warmup)
         coords, atom_types, cells = selected_system
         memory_before = int(torch.cuda.memory_allocated(device))
         torch.cuda.reset_peak_memory_stats(device)
@@ -592,6 +655,8 @@ def _run_dpa4(args) -> int:
             "model_file": str(Path(args.model_file).resolve()),
             "input_source": input_source,
             "backend": str(getattr(model, "backend", "unknown")),
+            "execution_kind": "eager_checkpoint" if Path(args.model_file).suffix == ".pt" else "exported_artifact",
+            "native_patch_applicable": Path(args.model_file).suffix == ".pt",
             "native_ops": list(getattr(model, "native_ops", ())),
             "native_ops_patched": dict(getattr(model, "native_ops_patched", {})),
             "device": str(device),
@@ -604,12 +669,16 @@ def _run_dpa4(args) -> int:
             "hip_version": torch.version.hip,
             "torch_version": str(torch.__version__),
             "profiled_inference_calls": 1,
+            "warmup_calls": args.warmup,
+            "world_size": 1,
+            "analysis_goal": "hotspots",
             "atom_count": int(coords.shape[1]),
             "source_atom_count": int(source_system[0].shape[1]),
             "replication_factors": list(replicas),
             "sizing_probe_calls": len(sizing.get("sizing_probes", [])),
             "sizing": sizing,
             "profile_wall_ms": float(elapsed_ms),
+            "profile_wall_ms_note": "Includes profiler startup, capture and shutdown; not inference latency.",
             "memory_before_bytes": memory_before,
             "profile_peak_allocated_bytes": peak_memory,
             "profile_peak_increment_bytes": max(peak_memory - memory_before, 0),
@@ -623,6 +692,7 @@ def _run_dpa4(args) -> int:
             "trace_file": str(trace_path),
         }
         profiler.export_chrome_trace(str(trace_path))
+        report["trace_analysis"] = _summarize_trace(trace_path, report["native_ops"])
         summary_path.write_text(json.dumps(report, indent=2) + "\n")
         print(f"DPA4 trace: {trace_path}", flush=True)
         print(f"DPA4 summary: {summary_path}", flush=True)
@@ -749,6 +819,7 @@ for key in ("OMPI_COMM_WORLD_LOCAL_RANK", "MPI_LOCALRANKID", "PMI_LOCAL_RANK", "
 if rank is None:
     raise SystemExit("cannot determine local MPI rank for DeepMD GPU mapping")
 os.environ["LOCAL_RANK"] = str(rank)
+os.environ["RANK"] = str(rank)
 os.environ["DEVICE"] = "cuda"
 stem = os.environ["DPA4_DP_PROFILER_STEM"]
 os.environ["DP_PROFILER"] = f"{stem}_rank{rank}"
@@ -818,14 +889,34 @@ def _lammps_rank_count(args) -> int:
         ranks = fixed_modes[args.mode]
     else:
         raise ValueError(f"unsupported LAMMPS mode: {args.mode}")
+    world_size = getattr(args, "world_size", None)
+    if world_size is not None and (world_size < 1 or world_size != ranks):
+        raise ValueError("--world-size must equal the number of --gpu-ids and match the selected mode")
     if len(args.gpu_ids) != ranks:
         raise ValueError(f"{args.mode} requires exactly {ranks} distinct --gpu-ids")
     return ranks
 
 
+def _gpu_visibility(gpu_ids, env):
+    masks = [env[key].strip() for key in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+             if key in env]
+    if len(set(masks)) > 1:
+        raise ValueError("conflicting HIP/CUDA visibility masks; align them before launching")
+    if not masks:
+        return ",".join(str(index) for index in gpu_ids)
+    devices = [token.strip() for token in masks[0].split(",")]
+    if any(index >= len(devices) for index in gpu_ids):
+        raise ValueError("GPU selection exceeds the inherited visibility mask")
+    return ",".join(devices[index] for index in gpu_ids)
+
+
 def _run_lammps(args) -> int:
-    if args.steps < 0:
-        raise ValueError("--steps must be zero or a positive integer")
+    if args.steps < 1:
+        raise ValueError("--steps must be positive for steady-state MD profiling")
+    if args.profile_skip < 1 or args.profile_calls < 1:
+        raise ValueError("--profile-skip and --profile-calls must be positive")
+    if args.steps < args.profile_skip + args.profile_calls:
+        raise ValueError("--steps must be at least --profile-skip + --profile-calls")
     if args.timeout is not None and args.timeout <= 0:
         raise ValueError("--timeout must be positive")
     ranks = _lammps_rank_count(args)
@@ -842,6 +933,7 @@ def _run_lammps(args) -> int:
     lmp_exe = shutil.which(args.lammps_exe) or (args.lammps_exe if Path(args.lammps_exe).is_file() else None)
     if lmp_exe is None:
         raise FileNotFoundError(f"LAMMPS executable not found: {args.lammps_exe}")
+    lmp_exe = str(Path(lmp_exe).resolve())
     mpi_exe = None
     if ranks > 1:
         requested_mpi_exe = getattr(args, "mpi_exe", None)
@@ -852,6 +944,7 @@ def _run_lammps(args) -> int:
         )
         if mpi_exe is None:
             raise FileNotFoundError(f"MPI launcher not found: {requested_mpi_exe}")
+        mpi_exe = str(Path(mpi_exe).resolve())
 
     gpu_ids = args.gpu_ids
     if not torch.cuda.is_available() or torch.version.hip is None:
@@ -884,14 +977,18 @@ def _run_lammps(args) -> int:
     log_path = mode_dir / "lammps_stdout.log"
     profiler_stem = mode_dir / f"deepmd_profile_{time.time_ns()}"
     env = os.environ.copy()
-    visible = ",".join(str(index) for index in gpu_ids)
+    visible = _gpu_visibility(gpu_ids, env)
     env["CUDA_VISIBLE_DEVICES"] = visible
     env["HIP_VISIBLE_DEVICES"] = visible
     env["DEVICE"] = "cuda"
+    env["WORLD_SIZE"] = str(ranks)
+    env["DP_PROFILER_SKIP"] = str(args.profile_skip)
+    env["DP_PROFILER_ACTIVE"] = str(args.profile_calls)
     env["DPA4_DP_PROFILER_STEM"] = str(profiler_stem)
     env["DPA4_RANK_LOG_DIR"] = str(mode_dir)
     if ranks == 1:
         env["LOCAL_RANK"] = "0"
+        env["RANK"] = "0"
         env["DP_PROFILER"] = str(profiler_stem)
     command = _build_lammps_command(
         args,
@@ -916,6 +1013,7 @@ def _run_lammps(args) -> int:
     elapsed_s = time.perf_counter() - started
     profile_files = sorted(
         str(path) for path in mode_dir.glob(f"{profiler_stem.name}*.json")
+        if not path.name.endswith(".summary.json")
     )
     rank_logs = sorted(str(path) for path in mode_dir.glob("lammps_rank*.log"))
     data_atoms = _lammps_atom_count(data_path)
@@ -933,13 +1031,19 @@ def _run_lammps(args) -> int:
         "lammps_executable": str(lmp_exe),
         "mpi_executable": None if mpi_exe is None else str(mpi_exe),
         "ranks": ranks,
+        "world_size": ranks,
+        "analysis_goal": "hotspots",
+        "operator_source": "exported artifact; no Python DPA4Model patches",
+        "profile_window": {"skip_model_calls": args.profile_skip, "active_model_calls": args.profile_calls},
         "gpu_ids": list(gpu_ids),
+        "child_visible_devices": visible,
         "replication_factors": list(args.replicate),
         "source_atom_count": data_atoms,
         "requested_atom_count": total_atoms,
         "steps": args.steps,
         "command": command,
         "elapsed_seconds": elapsed_s,
+        "elapsed_seconds_note": "Whole subprocess including loading and startup; not steady-state latency.",
         "return_code": result.returncode,
         "stdout_log": str(log_path),
         "rank_logs": rank_logs,
@@ -947,16 +1051,21 @@ def _run_lammps(args) -> int:
         "deepmd_profiler_files": profile_files,
     }
     summary_path = mode_dir / "profile_summary.json"
-    summary_path.write_text(json.dumps(report, indent=2) + "\n")
-    print(f"LAMMPS profile summary: {summary_path}", flush=True)
-    print(json.dumps(report, sort_keys=True), flush=True)
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, command)
-    if not profile_files:
-        raise RuntimeError(
-            "LAMMPS completed but DeepMD DP_PROFILER produced no JSON trace; "
-            "check that the DeepMD PyTorch profiler is enabled in this build"
+    try:
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, command)
+        report["rank_profiles"] = _collect_lammps_profiles(
+            profiler_stem, ranks, args.profile_skip, args.profile_calls
         )
+        report["profile_valid"] = True
+    except (RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+        report["profile_valid"] = False
+        report["profile_error"] = str(error)
+        raise
+    finally:
+        summary_path.write_text(json.dumps(report, indent=2) + "\n")
+        print(f"LAMMPS profile summary: {summary_path}", flush=True)
+        print(json.dumps(report, sort_keys=True), flush=True)
     return 0
 
 
@@ -972,8 +1081,8 @@ def _add_lammps_arguments(
     parser.add_argument(
         "--steps",
         type=int,
-        default=0,
-        help="LAMMPS steps; zero (default) profiles the initial force evaluation only",
+        default=20,
+        help="MD steps (default 20); must cover the skip and active model-call window",
     )
     parser.add_argument(
         "--gpu-ids",
@@ -984,6 +1093,12 @@ def _add_lammps_arguments(
             "selects the MPI rank count (one rank per GPU)"
         ),
     )
+    parser.add_argument("--world-size", type=int, default=None,
+                        help="MPI ranks; must match --gpu-ids count (default inferred)")
+    parser.add_argument("--profile-skip", type=int, default=5,
+                        help="model calls excluded before capture, including initial force")
+    parser.add_argument("--profile-calls", type=int, default=10,
+                        help="model calls captured after warmup")
     parser.add_argument("--timeout", type=float, default=None)
     if mpi or mpi_optional:
         parser.add_argument(
@@ -1010,7 +1125,15 @@ def build_parser() -> argparse.ArgumentParser:
     dpa4.add_argument("--device", default="cuda:0")
     dpa4.add_argument("--expected-dcu-name", default="K500SM_AI")
     dpa4.add_argument("--max-atoms", type=int, default=0)
-    dpa4.add_argument("--memory-fraction", type=float, default=0.50)
+    dpa4.add_argument("--memory-fraction", type=float, default=0.70)
+    sizing_group = dpa4.add_mutually_exclusive_group()
+    sizing_group.add_argument("--auto-size", dest="auto_size", action="store_true",
+                              help="estimate a large periodic system from free memory (default)")
+    sizing_group.add_argument("--fixed-input", dest="auto_size", action="store_false",
+                              help="profile exactly the supplied input without replication")
+    dpa4.set_defaults(auto_size=True)
+    dpa4.add_argument("--warmup", type=int, default=5,
+                      help="same-size inference calls before capture (default 5)")
     dpa4.add_argument(
         "--native-ops",
         default=None,
@@ -1077,6 +1200,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise FileNotFoundError(f"input NPZ does not exist: {args.input_npz}")
             if args.geometry and not args.geometry.is_file():
                 raise FileNotFoundError(f"geometry file does not exist: {args.geometry}")
+            if args.warmup < 1:
+                raise ValueError("--warmup must be positive")
             if args.max_atoms < 0:
                 raise ValueError("--max-atoms must be zero (auto) or a positive ceiling")
             if not 0.05 <= args.memory_fraction <= 0.85:
