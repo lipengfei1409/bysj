@@ -16,8 +16,8 @@ if not torch.version.hip:
 
 sources = [
     "csrc/bindings.cpp",
-    "csrc/rmsnorm/rmsnorm.cpp",
-    "csrc/gie/gie.cpp",
+    "csrc/rmsnorm.cpp",
+    "csrc/gie.cpp",
 ]
 ext_modules = [CUDAExtension(
     "kernels._C",
