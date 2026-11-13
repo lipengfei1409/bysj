@@ -27,7 +27,7 @@ python3 tests/deepmd/profile/test_dpa4_inference_profile.py generate-data \
 ## 1. 单卡 DeepMD 单次推理
 
 ```bash
-PYTHONPATH=python python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
+source /opt/dtk/env.sh && PYTHONPATH=python python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
   --model-file /models/water_pt_expt.pt --input-npz tests/deepmd/profile/water_spce_4500.npz \
   --device cuda:0 --memory-fraction 0.70 --output-dir /tmp/profile-direct
 ```
@@ -41,7 +41,7 @@ PYTHONPATH=python python3 tests/deepmd/profile/test_dpa4_inference_profile.py dp
 ## 2. 单卡 LAMMPS 稳态模拟
 
 ```bash
-python3 tests/deepmd/profile/test_dpa4_inference_profile.py lammps-single \
+source /opt/dtk/env.sh && python3 tests/deepmd/profile/test_dpa4_inference_profile.py lammps-single \
   --model-file /models/water.pt2 --data-file ../lammps/examples/rdf-adf/data.spce \
   --lammps-input tests/deepmd/profile/dpa4_water_profile.template \
   --lammps-exe /opt/lammps/bin/lmp --gpu-ids 0 --world-size 1 \
@@ -52,7 +52,7 @@ python3 tests/deepmd/profile/test_dpa4_inference_profile.py lammps-single \
 ## 3. 单机多卡 LAMMPS 稳态模拟
 
 ```bash
-python3 tests/deepmd/profile/test_dpa4_inference_profile.py lammps \
+source /opt/dtk/env.sh && python3 tests/deepmd/profile/test_dpa4_inference_profile.py lammps \
   --model-file /models/water-with-comm.pt2 --data-file ../lammps/examples/rdf-adf/data.spce \
   --lammps-input tests/deepmd/profile/dpa4_water_profile.template \
   --lammps-exe /opt/lammps/bin/lmp --mpi-exe /opt/mpi/bin/mpirun \
