@@ -18,7 +18,7 @@ _native_module = importlib.import_module("kernels.native")
 
 
 class RMSNormBuildConfigurationTests(unittest.TestCase):
-    def _capture_native_extension(self, flags):
+    def _capture_native_extension(self):
         root = Path(__file__).resolve().parents[2]
         extension_args = {}
 
@@ -27,7 +27,7 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
             extension_args.update(kwargs)
             return SimpleNamespace(name=name)
 
-        with patch.dict(os.environ, flags, clear=False), patch.object(
+        with patch.dict(os.environ, {}, clear=True), patch.object(
             torch.version, "hip", "6.0.0"
         ), patch(
             "torch.utils.cpp_extension.CUDAExtension",
@@ -39,35 +39,20 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
 
         return extension_args, setup_call.call_args.kwargs
 
-    def test_rmsnorm_only_build_does_not_require_or_include_dumma(self):
-        extension, setup_kwargs = self._capture_native_extension(
-            {
-                "DPA4_BUILD_HIP": "1",
-                "DPA4_ENABLE_DUMMA": "0",
-                "DPA4_ENABLE_RMSNORM": "1",
-                "DPA4_ENABLE_GIE": "0",
-            }
-        )
+    def test_default_build_includes_all_remaining_native_operators(self):
+        extension, setup_kwargs = self._capture_native_extension()
         self.assertEqual(extension["name"], "kernels._C")
         self.assertEqual(
-            extension["sources"], ["csrc/bindings.cpp", "csrc/rmsnorm/rmsnorm.cpp"]
+            extension["sources"],
+            [
+                "csrc/bindings.cpp",
+                "csrc/rmsnorm/rmsnorm.cpp",
+                "csrc/gie/gie.cpp",
+            ],
         )
-        self.assertEqual(extension["define_macros"], [("DPA4_ENABLE_RMSNORM", "1")])
+        self.assertEqual(extension["define_macros"], [])
         self.assertEqual(set(setup_kwargs["cmdclass"]), {"build_ext"})
 
-    def test_existing_dumma_build_selection_is_preserved(self):
-        extension, _ = self._capture_native_extension(
-            {
-                "DPA4_BUILD_HIP": "1",
-                "DPA4_ENABLE_DUMMA": "1",
-                "DPA4_ENABLE_RMSNORM": "0",
-                "DPA4_ENABLE_GIE": "0",
-            }
-        )
-        self.assertEqual(
-            extension["sources"], ["csrc/bindings.cpp", "csrc/gemm/gemm.cpp"]
-        )
-        self.assertEqual(extension["define_macros"], [("DPA4_ENABLE_DUMMA", "1")])
 
 
 class RMSNormReferenceTests(unittest.TestCase):

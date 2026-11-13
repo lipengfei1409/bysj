@@ -1,15 +1,11 @@
-#include "../include/ops.h"
-#include "../include/checks.h"
+#include "../ops.h"
+#include "../checks.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <hip/hip_runtime.h>
 #include <cstdint>
 #include <limits>
 #include <tuple>
-
-#if !defined(DPA4_ENABLE_GIE)
-#error "Build the GIE source with DPA4_ENABLE_GIE=1"
-#endif
 
 namespace {
 constexpr unsigned int kBlockSize = 256;

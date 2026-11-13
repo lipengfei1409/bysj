@@ -1,4 +1,4 @@
-"""DCU runtime and extension checks for native GEMM."""
+"""DCU runtime and optional native extension checks."""
 from __future__ import annotations
 
 import importlib
@@ -53,20 +53,20 @@ def _extension(required_symbol="gemm"):
     except (ImportError, OSError) as exc:
         if required_symbol == "gemm":
             guidance = (
-                "build the DUMMA GEMM extension with DPA4_BUILD_HIP=1 "
-                "DPA4_ENABLE_DUMMA=1 on a supported DCU"
+                "native GEMM is not included in this extension; the local HIP "
+                "build provides RMSNorm and GIE only"
             )
         else:
             guidance = (
-                "build the native extension with DPA4_BUILD_HIP=1 and the "
-                "matching DPA4_ENABLE_* operator flag on a supported DCU"
+                "build the default HIP extension on a supported DCU "
+                "(RMSNorm and GIE)"
             )
         raise RuntimeError(guidance) from exc
     if not hasattr(extension, required_symbol):
         if required_symbol == "gemm":
             detail = (
-                "the loaded kernels._C extension has no DUMMA GEMM; rebuild with "
-                "DPA4_BUILD_HIP=1 DPA4_ENABLE_DUMMA=1"
+                "the loaded kernels._C extension has no native GEMM entry point; "
+                "this project build provides RMSNorm and GIE only"
             )
         else:
             detail = (

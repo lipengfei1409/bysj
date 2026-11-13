@@ -1,16 +1,15 @@
-# DCU DPA4 GEMM
+# DCU DPA4 Native Operators
 
-The current production GEMM operator is a contiguous, 2D FP32 `A[M,K] @ B[K,N]` implemented with DTK DUMMA. The native path is DCU-only and has no CPU, rocBLAS, or scalar-kernel fallback. A separate PyTorch oracle lives in `python/reference/` for explicit tests and comparisons. For DPA4/SeZM inference, `python/model/dpa4.py` adapts DeepMD-kit rather than reimplementing its model graph; DeepMD owns checkpoint loading, neighbor-list handling, energy, forces, and virial, while selected standalone TileLang operators can be enabled in its `pt_expt` backend.
+The optional HIP extension in this checkout builds standalone RMSNorm and GIE (`zonal_scatter`) operators for DCU. The C++/HIP DUMMA GEMM source is not present in `csrc`; the Python `kernels.gemm` wrapper, PyTorch oracle, and DUMMA comparison benchmark are retained, but this extension does not export `kernels._C.gemm`. For DPA4/SeZM inference, `python/model/dpa4.py` adapts DeepMD-kit rather than reimplementing its model graph; DeepMD owns checkpoint loading, neighbor-list handling, energy, forces, and virial, while selected standalone TileLang operators can be enabled in its `pt_expt` backend.
 
 ## Scope
 
-- `python/kernels/`: production GEMM API and DCU extension checks.
+- `python/kernels/`: native RMSNorm/GIE APIs and the retained Python GEMM wrapper with DCU extension checks.
 - `python/kernels/tilelang_ops/`: optional standalone TileLang operators for DPA4/SeZM, each with a PyTorch reference and (where needed) autograd wrapper.
-- `python/reference/`: explicit PyTorch GEMM oracle; not imported as a production fallback.
-- `csrc/gemm/gemm.cpp`: DUMMA FP32 16x16x4 kernel with masked M/N/K tails.
-- `include/`: `.h` headers for the four DUMMA API wrappers, manual-based MMA shape selectors, and shared tile/LDS/cooperative-load/synchronization helpers.
+- `python/reference/`: explicit PyTorch oracles, including the GEMM oracle; these are not imported as production fallbacks.
+- `csrc/rmsnorm/` and `csrc/gie/`: native HIP operator sources included by the optional extension build.
 - `tests/`: Python contracts, host-side helper contracts, and opt-in DTK/DCU accuracy tests.
-- `doc/kernel-model.html`: architecture overview for the DUMMA kernel, TileLang operators, and DPA4 model adapter.
+- `doc/kernel-model.html`: architecture overview for the TileLang operators and DPA4 model adapter.
 
 ## Python API
 
@@ -21,11 +20,11 @@ from reference import gemm as reference_gemm
 
 a = torch.randn(19, 7, device="cuda", dtype=torch.float32)
 b = torch.randn(7, 23, device="cuda", dtype=torch.float32)
-y = gemm(a, b)                 # requires a supported DCU and built DUMMA extension
+y = gemm(a, b)                 # requires a separately provided kernels._C.gemm entry point
 expected = reference_gemm(a, b)  # explicit PyTorch oracle
 ```
 
-The first operator contract requires two contiguous 2D FP32 tensors on the same supported DCU, with matching inner dimensions. It is forward-only and does not support batching, transposes, bias, alpha/beta/C, or autograd. The oracle is available through `PYTHONPATH=python`; `kernels.gemm` never calls it implicitly.
+The retained GEMM wrapper requires two contiguous 2D FP32 tensors on the same supported DCU, with matching inner dimensions. It is forward-only and does not support batching, transposes, bias, alpha/beta/C, or autograd. The oracle is available through `PYTHONPATH=python`; `kernels.gemm` never calls it implicitly. The local HIP extension build below does not provide the GEMM entry point.
 
 ## TileLang operator development
 
@@ -83,14 +82,14 @@ python -m unittest tests.python.test_dpa4_model -v
 
 ## Build and test on DTK/DCU
 
-The extension requires HIP-enabled PyTorch, the DTK HIP compiler, and the external `<du_mma.h>` header from a compatible DTK installation. The FP32 K=4 DUMMA shape is enabled for gfx926, gfx928, gfx936, and gfx938. `gemm.cpp` contains HIP syntax despite the `.cpp` suffix; setup compiles native `.cpp` files with `hipcc` (override with `DPA4_HIP_CXX`). The project does not vendor DUMMA.
+Package builds compile the native RMSNorm and GIE HIP operators by default and require HIP-enabled PyTorch and the DTK HIP compiler. Setup compiles native `.cpp` files with `hipcc` (override with `HIPCXX`). The deleted DUMMA GEMM source is not part of this extension.
 
 ```bash
 source /opt/dtk/env.sh
 export PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}"
-DPA4_BUILD_HIP=1 DPA4_ENABLE_DUMMA=1 DPA4_HIP_CXX=hipcc MAX_JOBS=4 \
+MAX_JOBS=4 \
   python setup.py build_ext --inplace
 python -m unittest discover -s tests/csrc -v
 ```
 
-For the direct DUMMA instruction test, set `DPA4_RUN_INSTRUCTION_TESTS=1` and `DPA4_TEST_DUMMA=1` when running the C++ test suite. Native tests require a supported DCU; a non-DCU environment can run the Python oracle and host header tests but cannot verify the kernel.
+Native tests require a supported DCU; a non-DCU environment can run the Python oracle and host header tests but cannot verify the kernels.

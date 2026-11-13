@@ -106,9 +106,10 @@
     <header>
       <p class="eyebrow">MYPROJECT / DESIGN</p>
       <h1>内核与模型</h1>
-      <p class="lead">本仓库实现一条原生 DUMMA GEMM 路径，并提供一组可选 TileLang 算子供 DeepMD-kit 的 DPA4/SeZM 推理调用。完整模型图和推理由 DeepMD-kit 管理。</p>
+      <p class="lead">本仓库提供 RMSNorm/GIE 原生算子与可选 TileLang 内核；DPA4/SeZM 完整 descriptor、interaction、fitting 和能量/力/virial 路径由 DeepMD-kit 实现。下方源码映射对应相邻 <code>deepmd-kit</code> checkout 的 commit <code>1a2e083b</code>。</p>
       <nav aria-label="页面导航">
         <a href="#architecture">架构</a>
+        <a href="#deepmd-code">DeepMD 源码</a>
         <a href="#tilelang">TileLang 算子</a>
         <a href="#integration">接入 DPA4</a>
       </nav>
@@ -121,10 +122,10 @@
       </div>
       <div class="path-grid">
         <article class="path">
-          <p class="tag">Production kernel</p>
-          <h3>GEMM</h3>
-          <p class="flow">kernels.gemm → kernels._C → HIP / DUMMA</p>
-          <p>连续二维 FP32 矩阵乘法；wave64 计算 16×16 输出 tile，每个 K step 为 4。仅支持 gfx926/gfx928/gfx936/gfx938 DCU 前向计算，不回退到 CPU、rocBLAS 或 PyTorch。</p>
+          <p class="tag">Native primitives</p>
+          <h3>RMSNorm + GIE</h3>
+          <p class="flow">RMSNorm / zonal_scatter → kernels._C → HIP</p>
+          <p>当前本地 HIP 扩展默认编译 RMSNorm 与 GIE；完整 SeZM descriptor/interaction/fitting 由 DeepMD-kit 管理。</p>
         </article>
         <article class="path">
           <p class="tag">DPA4 / SeZM inference</p>
@@ -138,8 +139,33 @@
         <a href="../python/kernels/gemm.py">GEMM API</a>
         <a href="../python/kernels/native.py">DCU 检查与扩展加载</a>
         <a href="../csrc/bindings.cpp">Native binding</a>
-        <a href="../csrc/gemm/gemm.cpp">DUMMA HIP kernel</a>
+        <a href="../csrc/rmsnorm/rmsnorm.cpp">RMSNorm HIP kernel</a>
+        <a href="../csrc/gie/gie.cpp">GIE HIP kernel</a>
+        <a href="../../deepmd-kit/deepmd/pt_expt/descriptor/dpa4.py">DeepMD pt_expt descriptor</a>
+        <a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4.py">DeepMD SeZM descriptor</a>
       </div>
+    </section>
+
+    <section id="deepmd-code">
+      <div class="section-head">
+        <p class="section-id">DeepMD source map · 1a2e083b</p>
+        <h2>SeZM 模块、函数与代码出处</h2>
+        <p class="lead">下面按运行顺序列出 DeepMD 中可直接核对的模块和入口。源码相对路径链接到工作区相邻的 <code>deepmd-kit/</code>。</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>阶段</th><th>模块 / 函数</th><th>代码出处</th></tr></thead>
+          <tbody>
+            <tr><td>注册与 descriptor 入口</td><td><code>DPA4Model._create_deep_pot</code> → <code>pt_expt.DescrptDPA4.forward</code> → <code>dpmodel.DescrptDPA4.call</code> → <code>_run_graph</code></td><td><a href="../python/model/dpa4.py"><code>python/model/dpa4.py</code></a>:127–136 → DeepPot；<a href="../../deepmd-kit/deepmd/pt_expt/descriptor/dpa4.py"><code>pt_expt/descriptor/dpa4.py</code></a>:308–313, 660–698；<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4.py"><code>dpmodel/descriptor/dpa4.py</code></a>:234–290, 1276–1388, 1477–1555</td></tr>
+            <tr><td>边与径向特征</td><td><code>_edge_cache_from_arrays</code>, <code>RadialBasis.call</code>, <code>RadialMLP.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/edge_cache.py"><code>dpa4_nn/edge_cache.py</code></a>:266–449；<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/radial.py"><code>dpa4_nn/radial.py</code></a>:51–155, 457–590；descriptor 调用点：<code>dpa4.py</code>:1585–1628</td></tr>
+            <tr><td>初始 embedding</td><td><code>SeZMTypeEmbedding.call</code>, 可选 <code>EnvironmentInitialEmbedding.call</code>, <code>GeometricInitialEmbedding.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/embedding.py"><code>dpa4_nn/embedding.py</code></a>:71–150, 214–418, 438–804；调用顺序：<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4.py"><code>dpa4.py</code></a>:1559–1575, 1630–1697。pt_expt GIE override：<a href="../../deepmd-kit/deepmd/pt_expt/descriptor/dpa4_nn/embedding.py"><code>pt_expt/descriptor/dpa4_nn/embedding.py</code></a>:136–205</td></tr>
+            <tr><td>交互层</td><td><code>SeZMInteractionBlock.call</code>, <code>SO2Convolution.call</code>, <code>EquivariantFFN.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/block.py"><code>dpa4_nn/block.py</code></a>:113–155, 644–849；<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/so2.py"><code>dpa4_nn/so2.py</code></a>:935–956, 1635–1681, 2328–2405, 2570–2698；<a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/ffn.py"><code>dpa4_nn/ffn.py</code></a>:52–70, 264–279</td></tr>
+            <tr><td>注意力（可选）</td><td><code>attention_weights</code>, <code>_attention_softmax</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4_nn/so2.py"><code>dpa4_nn/so2.py</code></a>:2055–2168</td></tr>
+            <tr><td>readout / energy fitting</td><td><code>DescrptDPA4._apply_readout</code>, <code>SeZMEnergyFittingNet</code>, <code>EnergyModel.call</code></td><td><a href="../../deepmd-kit/deepmd/dpmodel/descriptor/dpa4.py"><code>dpmodel/descriptor/dpa4.py</code></a>:1867–1910；<a href="../../deepmd-kit/deepmd/dpmodel/fitting/dpa4_ener.py"><code>dpmodel/fitting/dpa4_ener.py</code></a>:357–424；pt_expt fitting registry：<a href="../../deepmd-kit/deepmd/pt_expt/fitting/dpa4_ener.py"><code>pt_expt/fitting/dpa4_ener.py</code></a>:65–70；<a href="../../deepmd-kit/deepmd/pt_expt/model/dpa4_model.py"><code>pt_expt/model/dpa4_model.py</code></a>:35–42；<a href="../../deepmd-kit/deepmd/dpmodel/model/ener_model.py"><code>dpmodel/model/ener_model.py</code></a>:88–137；<a href="../../deepmd-kit/deepmd/pt_expt/model/ener_model.py"><code>pt_expt/model/ener_model.py</code></a>:328–382</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="callout">GIE（ℓ&gt;0 的 zonal 几何嵌入）与 Env seed（环境矩阵/Gram 生成 ℓ=0 FiLM）是两个独立模块。层数、通道数、degree schedule、attention 和 readout mode 由 checkpoint/config 选择；此表说明代码出处，不把某个配置误当成所有 SeZM 模型的固定结构。</p>
     </section>
 
     <section id="tilelang">

@@ -8,7 +8,7 @@
         <mxCell id="ov2" value="&lt;b&gt;DPA4 / SeZM 推理结构&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#203B43;strokeColor=#203B43;fontColor=#FFFFFF;fontSize=24;align=center;verticalAlign=middle;spacing=8;fontStyle=1;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="40" y="24" width="1600" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="ov3" value="证据边界：宏观模型流据项目文档描述，由 DeepMD-kit 管理；实线仅用于仓库可核对的独立算子数据流，虚线表示 DeepMD 所有或尚未验证的模型连接 / 顺序。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="ov3" value="源码口径：完整 descriptor / interaction / fitting 由 DeepMD-kit 执行；模块、函数及行号见“DeepMD 源码出处”页。层数、宽度与可选分支由 checkpoint 配置决定；实线/虚线仍区分本仓库算子与配置级连接。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="40" y="84" width="1600" height="58" as="geometry" />
         </mxCell>
         <mxCell id="ov4" value="&lt;b&gt;图例&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F7F7;strokeColor=#B6C8CA;fontColor=#15323B;fontSize=12;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
@@ -29,13 +29,13 @@
         <mxCell id="ov9" value="&lt;b&gt;边几何与径向特征&lt;/b&gt;&lt;br&gt;距离、单位方向、envelope&lt;br&gt;径向基 / 类型特征" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="555" y="250" width="260" height="126" as="geometry" />
         </mxCell>
-        <mxCell id="ov10" value="&lt;b&gt;GIE 初始几何嵌入&lt;/b&gt;&lt;br&gt;zonal scatter&lt;br&gt;environment-seed / Gram" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="ov10" value="&lt;b&gt;初始节点嵌入&lt;/b&gt;&lt;br&gt;SeZMTypeEmbedding → l=0&lt;br&gt;可选 EnvironmentInitialEmbedding → FiLM&lt;br&gt;GeometricInitialEmbedding / GIE → l&gt;0" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="860" y="250" width="230" height="126" as="geometry" />
         </mxCell>
-        <mxCell id="ov11" value="&lt;b&gt;SeZM 交互与 readout&lt;/b&gt;&lt;br&gt;相互作用层数、顺序、宽度&lt;br&gt;依赖模型 / DeepMD 配置" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEE6FA;strokeColor=#8064A2;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="ov11" value="&lt;b&gt;SeZMInteractionBlock × n_blocks&lt;/b&gt;&lt;br&gt;SO2Convolution → EquivariantFFN residual&lt;br&gt;attention / l,m schedule 按配置选择&lt;br&gt;最终 scalar readout" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEE6FA;strokeColor=#8064A2;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="1135" y="250" width="255" height="126" as="geometry" />
         </mxCell>
-        <mxCell id="ov12" value="&lt;b&gt;能量输出&lt;/b&gt;&lt;br&gt;原子能 Eᵢ&lt;br&gt;总能 E = Σᵢ Eᵢ" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9E5E1;strokeColor=#C86C62;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="ov12" value="&lt;b&gt;能量输出&lt;/b&gt;&lt;br&gt;SeZMEnergyFittingNet → 原子能 Eᵢ&lt;br&gt;EnergyModel：E = Σᵢ Eᵢ&lt;br&gt;力 / virial 由能量导数得到" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9E5E1;strokeColor=#C86C62;fontColor=#15323B;fontSize=14;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="1435" y="250" width="205" height="126" as="geometry" />
         </mxCell>
         <mxCell id="ov13" value="构图" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C88729;strokeWidth=2;dashed=1;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="ov7" target="ov8">
@@ -59,28 +59,28 @@
         <mxCell id="ov19" value="自动微分 / 导数" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#C88729;strokeWidth=2;dashed=1;startArrow=none;startFill=1;endArrow=block;endFill=1;fontColor=#526B73;fontSize=11;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="ov12" target="ov18">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="ov20" value="&lt;b&gt;DeepMD-owned macro graph&lt;/b&gt;&lt;br&gt;DPA4Model 是 DeepPot 薄适配层；DeepMD 负责 checkpoint、neighbor handling、完整 descriptor / interaction / fitting 与能量、力、virial 评估。&lt;br&gt;本仓库没有完整模型定义；图中的宏观节点是上下文，不代表已验证的层级或 dispatch 顺序。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="ov20" value="&lt;b&gt;DeepMD-owned model graph&lt;/b&gt;&lt;br&gt;本仓库 DPA4Model 通过 DeepPot 加载模型；DeepMD 源码可沿 DescrptDPA4.call → _run_graph → _forward_blocks → _apply_readout 追踪。&lt;br&gt;“DeepMD 源码出处”页给出该 sibling checkout 的模块/函数与行号；实际启用的分支及超参数仍由 checkpoint 配置决定。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="40" y="440" width="1080" height="105" as="geometry" />
         </mxCell>
         <mxCell id="ov21" value="&lt;b&gt;本仓库的可选 TileLang 算子清单&lt;/b&gt; · standalone / non-fused · DeepMD pt_expt 通过 DP_TILELANG_* gates 选择；下列分组仅作模块归类，不表示实际执行顺序。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#203B43;strokeColor=#203B43;fontColor=#FFFFFF;fontSize=15;align=left;verticalAlign=middle;spacing=8;fontStyle=1;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="40" y="590" width="1600" height="55" as="geometry" />
         </mxCell>
-        <mxCell id="ov22" value="&lt;b&gt;径向与边输入&lt;/b&gt;&lt;br&gt;radial_basis&lt;br&gt;cutoff_envelope&lt;br&gt;edge_geometry · edge_degree&lt;br&gt;edge_type_features" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="ov22" value="&lt;b&gt;径向与边输入&lt;/b&gt;&lt;br&gt;EdgeCache / radial basis / cutoff&lt;br&gt;edge geometry · degree · type features&lt;br&gt;DeepMD：edge_cache.py::_edge_cache_from_arrays；radial.py::RadialBasis.call" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="40" y="675" width="360" height="155" as="geometry" />
         </mxCell>
         <mxCell id="ov23" value="&lt;b&gt;旋转准备&lt;/b&gt;&lt;br&gt;edge_quaternion&lt;br&gt;wigner_l1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="430" y="675" width="250" height="155" as="geometry" />
         </mxCell>
-        <mxCell id="ov24" value="&lt;b&gt;GIE&lt;/b&gt;&lt;br&gt;zonal_scatter&lt;br&gt;environment_matrix&lt;br&gt;env_seed_scatter&lt;br&gt;env_seed_gram" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="ov24" value="&lt;b&gt;初始嵌入（两个独立模块）&lt;/b&gt;&lt;br&gt;GIE：GeometricInitialEmbedding / zonal scatter（ℓ&gt;0）&lt;br&gt;Env seed：EnvironmentInitialEmbedding / matrix → Gram → FiLM（l=0，可选）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="710" y="675" width="330" height="155" as="geometry" />
         </mxCell>
-        <mxCell id="ov25" value="&lt;b&gt;EMFA SO(2)&lt;/b&gt;&lt;br&gt;so2_rotate_to_local_l1&lt;br&gt;so2_radial_scale · so2_linear_l1&lt;br&gt;so2_rotate_back_l1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEE6FA;strokeColor=#8064A2;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="ov25" value="&lt;b&gt;DeepMD SO(2) convolution&lt;/b&gt;&lt;br&gt;SO2Convolution：rotate to local → radial mix → SO2Linear → rotate back&lt;br&gt;destination aggregation / attention 由配置选择" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEE6FA;strokeColor=#8064A2;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="1070" y="675" width="320" height="155" as="geometry" />
         </mxCell>
         <mxCell id="ov26" value="&lt;b&gt;交互 / 读出相关&lt;/b&gt;&lt;br&gt;segment_softmax&lt;br&gt;attention_aggregate&lt;br&gt;grid_product" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9E5E1;strokeColor=#C86C62;fontColor=#15323B;fontSize=13;align=center;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="1420" y="675" width="220" height="155" as="geometry" />
         </mxCell>
-        <mxCell id="ov27" value="源码边界：python/model/dpa4.py · doc/kernel-model.html · python/kernels/tilelang_ops/README.md。GIE 与 EMFA SO(2) 的可核对计算细节见后两页。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F7F7;strokeColor=#B6C8CA;fontColor=#15323B;fontSize=12;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="ov27" value="源码映射：本页之后新增“DeepMD 源码出处”，对应 ../deepmd-kit @ 1a2e083b。GIE 和 SO(2) 算子级公式见前两页；DeepMD 的完整模型调用链与函数出处见新页。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F7F7;strokeColor=#B6C8CA;fontColor=#15323B;fontSize=12;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="40" y="895" width="1600" height="52" as="geometry" />
         </mxCell>
       </root>
@@ -163,7 +163,7 @@
         <mxCell id="gie25" value="逐节点公式：G[n,d,a] = Σⱼ₌₀³ M[n,j,d] · M[n,j,a]（第二个轴截取前 A 个 embedding 方向）。输出是对局部坐标轴的 invariant Gram projection。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F7F7;strokeColor=#B6C8CA;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="50" y="830" width="1580" height="65" as="geometry" />
         </mxCell>
-        <mxCell id="gie26" value="&lt;b&gt;范围说明&lt;/b&gt;&lt;br&gt;上述形状与公式来自 TileLang kernel/reference；模型层如何构造 features、如何消费 GIE 输出以及它们在完整 SeZM descriptor 中的先后关系，由 DeepMD 配置决定且本仓库未完整定义。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="gie26" value="&lt;b&gt;源码边界&lt;/b&gt;&lt;br&gt;本页公式来自项目 TileLang kernel/reference。DeepMD snapshot 的 _run_graph 顺序为可选 Env FiLM → GIE → interaction blocks（deepmd/dpmodel/descriptor/dpa4.py:1630–1731）；use_env_seed / use_gie 等分支由模型配置控制。详见“DeepMD 源码出处”页。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="50" y="930" width="1580" height="84" as="geometry" />
         </mxCell>
       </root>
@@ -237,8 +237,37 @@
         <mxCell id="so22" value="&lt;b&gt;source 形状约束&lt;/b&gt;&lt;br&gt;rotate-to-local：X[N,4,C] + D[E,4,4] + src[E] → [E,4,C]&lt;br&gt;radial scale：values / radial 同形 [E,M,C]，逐元素相乘&lt;br&gt;SO2Linear：X[F,E,I] × W[I,F,O] → Y[F,E,O]；权重冻结时仅 feature path 参与反向&lt;br&gt;rotate-back：局部特征按 [E,F,4,C] 布局输入，输出 [E,4,F·C]。层间 layout / reshape 由调用方组织。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4F7F7;strokeColor=#B6C8CA;fontColor=#15323B;fontSize=12;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=0;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="45" y="875" width="1070" height="150" as="geometry" />
         </mxCell>
-        <mxCell id="so23" value="&lt;b&gt;边界&lt;/b&gt;&lt;br&gt;此页是运算符级 SO(2) 数据流示意，不声称每个 DPA4 模型都按该顺序连接这些 kernel。DeepMD pt_expt 构建时由 DP_TILELANG_* gate 选择支持的独立阶段；精确模型 wiring 不在本仓库。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+        <mxCell id="so23" value="&lt;b&gt;源码边界&lt;/b&gt;&lt;br&gt;本图的 local-frame 主路径对应 DeepMD SO2Convolution.so2_message/_rotate_mix 和 SeZMInteractionBlock residual path；pt_expt 可以融合/替换局部算子。attention、mixing 与激活分支随配置变化；代码位置见“DeepMD 源码出处”页。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=13;align=left;verticalAlign=middle;spacing=8;fontStyle=0;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
           <mxGeometry x="1150" y="875" width="445" height="150" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="deepmd-source-map" name="DeepMD 源码出处">
+    <mxGraphModel dx="1680" dy="1160" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1680" pageHeight="1120" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="dsrc-title" value="DeepMD SeZM：模块、函数与源码出处" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#203B43;strokeColor=#203B43;fontColor=#FFFFFF;fontSize=23;align=center;verticalAlign=middle;spacing=8;fontStyle=1;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="1600" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="dsrc-revision" value="源码快照：相邻目录 ../deepmd-kit（相对 myproject 根目录），branch master，commit 1a2e083b。以下路径和行号对应此快照；dpmodel 定义模型方程 / 调用链，pt_expt 提供 PyTorch runtime 注册和可选 kernel override。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=12;align=left;verticalAlign=middle;spacing=10;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="82" width="1600" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="dsrc-entry" value="&lt;b&gt;1 · 推理入口与 descriptor 图构建&lt;/b&gt;&lt;br&gt;本仓库适配层：python/model/dpa4.py::_create_deep_pot (127–136) → DeepPot。&lt;br&gt;DeepMD pt_expt 注册：deepmd/pt_expt/descriptor/dpa4.py:308–313；DescrptDPA4.forward:660–698 → self.call；该类继承 dpmodel descriptor。&lt;br&gt;核心方程 / 执行大纲：deepmd/dpmodel/descriptor/dpa4.py::DescrptDPA4 (234–290)；call (1276–1388) → _run_graph (1477–1555)。输入 coord / atype / nlist。&lt;br&gt;邻接图与 edge cache：dpa4.py:1348–1388、1559–1611；deepmd/dpmodel/descriptor/dpa4_nn/edge_cache.py::_edge_cache_from_arrays (266–449)。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1EDFA;strokeColor=#4C78A8;fontColor=#15323B;fontSize=12;align=left;verticalAlign=top;spacing=12;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="165" width="770" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="dsrc-init" value="&lt;b&gt;2 · type / radial / Env seed / GIE 初始化&lt;/b&gt;&lt;br&gt;l=0 type embedding：SeZMTypeEmbedding.call — deepmd/dpmodel/descriptor/dpa4_nn/embedding.py:71–150；调用点 dpa4.py:1559–1575。&lt;br&gt;径向特征：RadialBasis.call — dpa4_nn/radial.py:457–590；RadialMLP.call — radial.py:51–155；组装于 dpa4.py:1617–1628。&lt;br&gt;可选环境 FiLM（不同于 GIE）：EnvironmentInitialEmbedding.call — embedding.py:438–804；dpa4.py:1630–1663。环境矩阵 / 聚合 / Gram 生成 scale、shift。&lt;br&gt;可选 GIE（几何 ℓ&gt;0 初始化）：GeometricInitialEmbedding.call — embedding.py:214–418；dpa4.py:1678–1697。pt_expt scatter override：deepmd/pt_expt/descriptor/dpa4_nn/embedding.py:136–205。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F1EC;strokeColor=#288779;fontColor=#15323B;fontSize=12;align=left;verticalAlign=top;spacing=12;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="850" y="165" width="770" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="dsrc-blocks" value="&lt;b&gt;3 · 重复的 SeZM interaction blocks&lt;/b&gt;&lt;br&gt;descriptor._forward_blocks (dpa4.py:1747–1788) 依次调用 self.blocks。SeZMInteractionBlock.call — dpa4_nn/block.py:644–690。&lt;br&gt;基线残差路径：block.py:804–849，SO(2) unit 后接 equivariant FFN subblocks；具体数目和 schedules 来自 descriptor 配置。&lt;br&gt;SO2Convolution.call — dpa4_nn/so2.py:1635–1681；edge message / local-frame path so2_message (2328–2405)、_rotate_to_local (2570–2606)、_rotate_mix (2608–2677)、_rotate_back (2683–)。&lt;br&gt;attention 可选：attention_weights / _attention_softmax — so2.py:2055–2168。EquivariantFFN.call — dpa4_nn/ffn.py:52–70、264–279。pt_expt runtime wrappers 位于 deepmd/pt_expt/descriptor/dpa4_nn/{block,so2}.py。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEE6FA;strokeColor=#8064A2;fontColor=#15323B;fontSize=12;align=left;verticalAlign=top;spacing=12;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="500" width="770" height="360" as="geometry" />
+        </mxCell>
+        <mxCell id="dsrc-output" value="&lt;b&gt;4 · invariant readout、fitting 与能量导数&lt;/b&gt;&lt;br&gt;scalar descriptor readout：DescrptDPA4._apply_readout — deepmd/dpmodel/descriptor/dpa4.py:1867–1910；默认 none 仅保留 ℓ=0，其他模式可把高阶系数折入标量。&lt;br&gt;SeZM fitting：SeZMEnergyFittingNet — deepmd/dpmodel/fitting/dpa4_ener.py:357–424；GLUFittingNet.call:170–172。pt_expt fitting dispatch：deepmd/pt_expt/fitting/dpa4_ener.py:65–70。&lt;br&gt;模型注册：DPA4EnergyModel — deepmd/dpmodel/model/dpa4_model.py:18–26；pt_expt model registry — deepmd/pt_expt/model/dpa4_model.py:35–42。&lt;br&gt;EnergyModel.call — deepmd/dpmodel/model/ener_model.py:88–137；pt_expt EnergyModel.forward — deepmd/pt_expt/model/ener_model.py:328–382，负责 energy / force / virial 输出路径。&lt;br&gt;这部分是 DeepMD 端完整模型路径；本仓库 DPA4Model 只负责加载 DeepPot 并作用 TileLang selector。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9E5E1;strokeColor=#C86C62;fontColor=#15323B;fontSize=12;align=left;verticalAlign=top;spacing=12;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="850" y="500" width="770" height="360" as="geometry" />
+        </mxCell>
+        <mxCell id="dsrc-caveat" value="&lt;b&gt;阅读边界&lt;/b&gt;&lt;br&gt;源码可确认模块及函数的调用关系；但 n_blocks、channels、lmax/mmax、use_env_seed、use_gie、attention heads、SO(3) readout、FFN 与 radial 参数均由实际 checkpoint/config 决定。GIE 与 Env seed 是两个独立模块；图中的“EMFA SO(2)”在 DeepMD 源码中对应 SO2Convolution。源码快照更新后，行号可能变化。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF0D5;strokeColor=#C88729;fontColor=#15323B;fontSize=12;align=left;verticalAlign=middle;spacing=10;dashed=1;strokeWidth=1.5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="895" width="1600" height="130" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

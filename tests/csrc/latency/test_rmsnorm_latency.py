@@ -30,7 +30,7 @@ _RUN_LATENCY = os.environ.get("DPA4_RUN_RMSNORM_LATENCY", "0").lower() in {
 
 @unittest.skipUnless(
     _RUN_LATENCY and rmsnorm_available(),
-    "set DPA4_RUN_RMSNORM_LATENCY=1 and build RMSNorm on a supported DCU",
+    "set DPA4_RUN_RMSNORM_LATENCY=1 and build the native HIP extension on a supported DCU",
 )
 class RMSNormLatencyTests(unittest.TestCase):
     def test_feature_shape_latency(self):

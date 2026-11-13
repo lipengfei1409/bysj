@@ -31,7 +31,7 @@ def _inputs(*, requires_grad=False, degree_shape=(2,)):
 
 
 class GIEBuildConfigurationTests(unittest.TestCase):
-    def test_gie_only_build_does_not_require_or_include_dumma(self):
+    def test_default_build_includes_all_remaining_operators(self):
         root = Path(__file__).resolve().parents[2]
         extension_args = {}
 
@@ -40,13 +40,7 @@ class GIEBuildConfigurationTests(unittest.TestCase):
             extension_args.update(kwargs)
             return SimpleNamespace(name=name)
 
-        flags = {
-            "DPA4_BUILD_HIP": "1",
-            "DPA4_ENABLE_DUMMA": "0",
-            "DPA4_ENABLE_RMSNORM": "0",
-            "DPA4_ENABLE_GIE": "1",
-        }
-        with patch.dict(os.environ, flags, clear=False), patch.object(
+        with patch.dict(os.environ, {}, clear=True), patch.object(
             torch.version, "hip", "6.0.0"
         ), patch(
             "torch.utils.cpp_extension.CUDAExtension",
@@ -58,9 +52,14 @@ class GIEBuildConfigurationTests(unittest.TestCase):
 
         self.assertEqual(extension_args["name"], "kernels._C")
         self.assertEqual(
-            extension_args["sources"], ["csrc/bindings.cpp", "csrc/gie/gie.cpp"]
+            extension_args["sources"],
+            [
+                "csrc/bindings.cpp",
+                "csrc/rmsnorm/rmsnorm.cpp",
+                "csrc/gie/gie.cpp",
+            ],
         )
-        self.assertEqual(extension_args["define_macros"], [("DPA4_ENABLE_GIE", "1")])
+        self.assertEqual(extension_args["define_macros"], [])
 
 
 class GIEReferenceTests(unittest.TestCase):

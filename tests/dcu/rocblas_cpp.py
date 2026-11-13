@@ -46,11 +46,7 @@ def _load_extension(library_path: Optional[str]):
     if not source.is_file():
         raise RocblasError(f"C++ rocBLAS source is missing: {source}")
 
-    compiler = (
-        os.environ.get("DPA4_HIP_CXX")
-        or os.environ.get("HIPCXX")
-        or "hipcc"
-    )
+    compiler = os.environ.get("HIPCXX") or "hipcc"
     link_flags, include_dirs = _library_arguments(library_path)
     cache_key = "system" if library_path is None else str(Path(library_path).expanduser().resolve())
     digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()[:10]

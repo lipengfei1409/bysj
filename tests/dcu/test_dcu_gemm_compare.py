@@ -473,8 +473,8 @@ def _check_hardware(device_index: int) -> tuple[torch.device, Any]:
     with torch.cuda.device(device):
         if not native_available():
             raise RuntimeError(
-                "DUMMA extension is unavailable on this device; build with "
-                "DPA4_BUILD_HIP=1 DPA4_ENABLE_DUMMA=1 and check the DTK/DUMMA setup"
+                "DUMMA GEMM is not included in this checkout's native extension; "
+                "use an extension that provides the GEMM entry point"
             )
         properties = torch.cuda.get_device_properties(device)
     return device, properties
