@@ -14,7 +14,7 @@ from pathlib import Path
 from types import MethodType
 from typing import Any, Callable, Iterable, Optional
 
-_NATIVE_OPS = frozenset(("gie", "rmsnorm"))
+_NATIVE_OPS = frozenset(("gie", "rmsnorm", "so2_envelope_reduce"))
 
 
 def _normalize_tilelang_ops(
@@ -88,6 +88,13 @@ def _load_native_operator(
         from kernels.rmsnorm import rmsnorm, rmsnorm_available
 
         return rmsnorm_available, rmsnorm
+    if name == "so2_envelope_reduce":
+        from kernels.so2_reduce import (
+            so2_envelope_reduce,
+            so2_envelope_reduce_available,
+        )
+
+        return so2_envelope_reduce_available, so2_envelope_reduce
     raise ValueError(f"unknown native DPA4 operator {name!r}")
 
 
@@ -242,6 +249,106 @@ def _make_gie_call(module: Any, native_scatter: Callable[..., Any]) -> Any:
     return MethodType(patched_call, module)
 
 
+def _is_dpa4_so2_convolution(module: Any) -> bool:
+    return (
+        _is_plain_deepmd_module(
+            module,
+            class_name="SO2Convolution",
+            module_name="deepmd.dpmodel.descriptor.dpa4_nn.so2",
+        )
+        and callable(getattr(module, "call", None))
+        and callable(getattr(module, "edge_message", None))
+        and callable(getattr(module, "forward_envelope", None))
+        and getattr(module, "n_atten_head", None) == 0
+        and hasattr(module, "precision")
+    )
+
+
+def _make_so2_envelope_reduce(
+    module: Any, native_reduce: Callable[..., Any]
+) -> Any:
+    original_forward_envelope = module.forward_envelope
+
+    def patched_forward_envelope(
+        self: Any, x: Any, edge_cache: Any, radial_feat: Any
+    ) -> Any:
+        if (
+            bool(getattr(self, "training", False))
+            or getattr(self, "n_atten_head", None) != 0
+            or not _is_fp32_compute_precision(self)
+            or not _native_fp32_tensor(x)
+            or not _native_fp32_tensor(radial_feat)
+        ):
+            return original_forward_envelope(x, edge_cache, radial_feat)
+
+        edge_env = getattr(edge_cache, "edge_env", None)
+        inverse = getattr(edge_cache, "inv_sqrt_deg", None)
+        dst = getattr(edge_cache, "dst", None)
+        edge_src_gate = getattr(edge_cache, "edge_src_gate", None)
+        if (
+            not _native_fp32_tensor(edge_env)
+            or not _native_fp32_tensor(inverse)
+            or not _native_device_tensor(dst)
+            or (edge_src_gate is not None and not _native_fp32_tensor(edge_src_gate))
+            or not _native_dcu_tensors(
+                x,
+                radial_feat,
+                edge_env,
+                inverse,
+                dst,
+                *(() if edge_src_gate is None else (edge_src_gate,)),
+            )
+        ):
+            return original_forward_envelope(x, edge_cache, radial_feat)
+
+        import torch
+
+        n_nodes = x.shape[0]
+        n_edges = dst.shape[0]
+        if (
+            x.ndim != 3
+            or radial_feat.ndim != 3
+            or edge_env.shape not in ((n_edges,), (n_edges, 1))
+            or dst.ndim != 1
+            or dst.dtype != torch.int64
+            or inverse.ndim not in (1, 3)
+            or (inverse.ndim == 3 and inverse.shape[1:] != (1, 1))
+            or inverse.shape[0] != n_nodes
+            or dst.device != x.device
+            or edge_env.device != x.device
+            or inverse.device != x.device
+            or (
+                edge_src_gate is not None
+                and edge_src_gate.shape not in ((n_edges,), (n_edges, 1))
+            )
+        ):
+            return original_forward_envelope(x, edge_cache, radial_feat)
+
+        message, _ = self.edge_message(x, edge_cache, radial_feat)
+        if (
+            not _native_fp32_tensor(message)
+            or message.ndim != 3
+            or message.shape[0] != n_edges
+            or message.shape[1] != x.shape[1]
+            or message.shape[2] != x.shape[2]
+            or message.device != x.device
+            or not _native_dcu_tensors(message, edge_env, inverse, dst)
+        ):
+            return original_forward_envelope(x, edge_cache, radial_feat)
+
+        edge_weight = edge_env
+        if edge_src_gate is not None:
+            edge_weight = edge_weight * edge_src_gate.to(dtype=edge_weight.dtype)
+        return native_reduce(
+            message.contiguous(),
+            edge_weight.reshape(-1).contiguous(),
+            dst.contiguous(),
+            inverse.reshape(-1).contiguous(),
+        )
+
+    return MethodType(patched_forward_envelope, module)
+
+
 def _make_rmsnorm_call(module: Any, native_rmsnorm: Callable[..., Any]) -> Any:
     original_call = module.call
 
@@ -287,6 +394,9 @@ def _install_native_ops(deep_pot: Any, native_ops: tuple[str, ...]) -> dict[str,
     targets: dict[str, list[Any]] = {
         "gie": [module for module in modules if _is_dpa4_gie(module)],
         "rmsnorm": [module for module in modules if _is_plain_rmsnorm(module)],
+        "so2_envelope_reduce": [
+            module for module in modules if _is_dpa4_so2_convolution(module)
+        ],
     }
     for name in native_ops:
         if not targets[name]:
@@ -310,41 +420,59 @@ def _install_native_ops(deep_pot: Any, native_ops: tuple[str, ...]) -> dict[str,
             )
         implementations[name] = implementation
 
-    patches: list[tuple[Any, Any]] = []
+    patches: list[tuple[Any, str, Any]] = []
     counts: dict[str, int] = {}
     if "gie" in native_ops:
         patches.extend(
-            (module, _make_gie_call(module, implementations["gie"]))
+            (module, "call", _make_gie_call(module, implementations["gie"]))
             for module in targets["gie"]
         )
         counts["gie"] = len(targets["gie"])
     if "rmsnorm" in native_ops:
         patches.extend(
-            (module, _make_rmsnorm_call(module, implementations["rmsnorm"]))
+            (module, "call", _make_rmsnorm_call(module, implementations["rmsnorm"]))
             for module in targets["rmsnorm"]
         )
         counts["rmsnorm"] = len(targets["rmsnorm"])
+    if "so2_envelope_reduce" in native_ops:
+        patches.extend(
+            (
+                module,
+                "forward_envelope",
+                _make_so2_envelope_reduce(
+                    module, implementations["so2_envelope_reduce"]
+                ),
+            )
+            for module in targets["so2_envelope_reduce"]
+        )
+        counts["so2_envelope_reduce"] = len(targets["so2_envelope_reduce"])
 
-    originals = [(module, module.call) for module, _ in patches]
+    originals = [
+        (module, method_name, getattr(module, method_name))
+        for module, method_name, _ in patches
+    ]
     try:
-        for module, patched_call in patches:
-            module.call = patched_call
+        for module, method_name, patched_method in patches:
+            setattr(module, method_name, patched_method)
     except Exception:
-        for module, original_call in originals:
-            module.call = original_call
+        for module, method_name, original_method in originals:
+            setattr(module, method_name, original_method)
         raise
     return counts
 
 
 class DPA4Model:
-    """DeepMD DPA4/SeZM inference facade with native GIE and RMSNorm patches.
+    """DeepMD DPA4/SeZM facade with native inference operator patches.
 
     DeepMD-kit owns model loading, neighbor-list handling, energy, force, and
     virial evaluation. By default, the matching GIE and plain RMSNorm modules
     in an eager ``pt_expt`` ``.pt`` model are patched per instance to use this
     project's HIP/DCU operators. Pass ``native_ops=()`` to run the DeepMD
     baseline, or select one native operator explicitly. Unsupported individual
-    calls continue through the original DeepMD implementation.
+    calls continue through the original DeepMD implementation. The optional
+    ``so2_envelope_reduce`` selector only accelerates the destination reduction
+    inside attention-free SO(2) convolution; the rest of the convolution stays in
+    DeepMD and unsupported layouts fall back unchanged.
 
     ``tilelang_ops`` remains as a deprecated compatibility guard: ``None`` or
     an empty iterable is accepted, while non-empty selections raise. The
@@ -361,8 +489,9 @@ class DPA4Model:
         are accepted; this adapter never dispatches TileLang operators.
     native_ops
         Project HIP/DCU operators to patch. Defaults to ``("gie", "rmsnorm")``;
-        pass an empty iterable to opt out, or select one operator. The project
-        HIP extension and a supported DCU must be available when non-empty.
+        pass an empty iterable to opt out, or select one operator including the
+        opt-in ``so2_envelope_reduce`` path. The project HIP extension and a
+        supported DCU must be available when non-empty.
     **deepmd_kwargs
         Keyword arguments forwarded to :class:`deepmd.infer.DeepPot`.
 

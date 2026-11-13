@@ -48,6 +48,7 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
                 "csrc/bindings.cpp",
                 "csrc/rmsnorm.cpp",
                 "csrc/gie.cpp",
+                "csrc/so2_reduce.cpp",
             ],
         )
         self.assertEqual(extension["define_macros"], [])

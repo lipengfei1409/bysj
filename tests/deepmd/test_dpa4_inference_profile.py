@@ -1015,7 +1015,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--native-ops",
         default=None,
         help=(
-            "comma-separated native operators (gie,rmsnorm by default); "
+            "comma-separated native operators (gie,rmsnorm by default; "
+            "so2_envelope_reduce is opt-in for attention-free SO2Convolution); "
             "pass an empty string to run the DeepMD baseline"
         ),
     )

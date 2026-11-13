@@ -22,7 +22,16 @@ class TileLangOpsPackageTests(unittest.TestCase):
             package = importlib.import_module("kernels.tilelang_ops")
         self.assertEqual(
             kernels.__all__,
-            ["gemm", "gie_available", "gie_zonal_scatter", "rmsnorm", "rmsnorm_available", "zonal_scatter"],
+            [
+                "gemm",
+                "gie_available",
+                "gie_zonal_scatter",
+                "rmsnorm",
+                "rmsnorm_available",
+                "so2_envelope_reduce",
+                "so2_envelope_reduce_available",
+                "zonal_scatter",
+            ],
         )
         self.assertIn("tilelang_bessel_radial_basis", package.__all__)
 

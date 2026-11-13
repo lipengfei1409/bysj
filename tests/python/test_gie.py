@@ -57,6 +57,7 @@ class GIEBuildConfigurationTests(unittest.TestCase):
                 "csrc/bindings.cpp",
                 "csrc/rmsnorm.cpp",
                 "csrc/gie.cpp",
+                "csrc/so2_reduce.cpp",
             ],
         )
         self.assertEqual(extension_args["define_macros"], [])

@@ -15,3 +15,8 @@ Tensor gie_zonal_scatter_forward_hip(
 std::tuple<Tensor, Tensor, Tensor> gie_zonal_scatter_backward_hip(
     Tensor grad_output, Tensor zonal, Tensor radial, Tensor dst,
     Tensor radial_slot, Tensor inv_sqrt_deg);
+std::tuple<Tensor, Tensor> so2_envelope_reduce_forward_hip(
+    Tensor message, Tensor edge_weight, Tensor dst, Tensor inverse);
+std::tuple<Tensor, Tensor, Tensor> so2_envelope_reduce_backward_hip(
+    Tensor grad_output, Tensor message, Tensor edge_weight, Tensor dst,
+    Tensor inverse, Tensor pre_norm);

@@ -106,7 +106,7 @@
     <header>
       <p class="eyebrow">MYPROJECT / DESIGN</p>
       <h1>内核与模型</h1>
-      <p class="lead">本仓库提供 RMSNorm/GIE 原生算子与独立 TileLang 内核；DPA4Model 默认用原生算子替换 GIE/RMSNorm，适配器不启用 TileLang。DPA4/SeZM 完整 descriptor、interaction、fitting 和能量/力/virial 路径由 DeepMD-kit 实现。下方源码映射对应相邻 <code>deepmd-kit</code> checkout 的 DPA4 实现。</p>
+      <p class="lead">本仓库提供 RMSNorm/GIE 原生算子与独立 TileLang 内核；DPA4Model 默认用原生算子替换 GIE/RMSNorm，并可选加速 attention-free SO2Convolution 的 envelope aggregation；适配器不启用 TileLang。DPA4/SeZM 完整 descriptor、interaction、fitting 和能量/力/virial 路径由 DeepMD-kit 实现。下方源码映射对应相邻 <code>deepmd-kit</code> checkout 的 DPA4 实现。</p>
       <nav aria-label="页面导航">
         <a href="#architecture">架构</a>
         <a href="#deepmd-code">DeepMD 源码</a>
@@ -130,8 +130,8 @@
         <article class="path">
           <p class="tag">DPA4 / SeZM inference</p>
           <h3>DeepMD adapter</h3>
-          <p class="flow">DPA4Model → DeepPot → DeepMD pt_expt → native GIE/RMSNorm</p>
-          <p>模型图、邻居图、能量和导数由 DeepMD-kit 执行；适配器默认仅将受支持的 GIE 和 plain RMSNorm 阶段替换为原生 HIP/DCU 算子。TileLang 不参与该路径。</p>
+          <p class="flow">DPA4Model → DeepPot → DeepMD pt_expt → native GIE/RMSNorm + optional SO(2) envelope reduction</p>
+          <p>模型图、邻居图、能量和导数由 DeepMD-kit 执行；适配器默认仅将受支持的 GIE 和 plain RMSNorm 阶段替换为原生 HIP/DCU 算子；可选 SO(2) 算子仅替换 attention-free convolution 的 destination envelope reduction，其余卷积仍由 DeepMD 执行。TileLang 不参与该路径。</p>
         </article>
       </div>
       <p class="callout">DPA4 的一般数据流由 DeepMD-kit 负责：坐标、类型与邻居图 → 边几何和径向特征 → SeZM 交互块与读出 → 原子能量及总能量；力和 virial 由模型导数得到。该模型图不是本仓库重新实现的内核清单。</p>
@@ -236,12 +236,13 @@ with DPA4Model("water_pt_expt.pt", native_ops=()) as baseline:
     energy, force, virial = baseline.eval(coords, cells, atom_types)</code></pre>
           </div>
           <p>先安装 DeepMD-kit，并让项目的 <code>python/</code> 目录可导入。原生 patch 要求 HIP 扩展和受支持的 DCU，以及可访问 <code>deep_eval._dpmodel</code> 的 eager <code>pt_expt</code> <code>.pt</code> 模型；其他模型需显式传 <code>native_ops=()</code> 使用 DeepMD baseline。</p>
+          <p>attention-free 模型可单独选择 <code>native_ops=("so2_envelope_reduce",)</code>；该算子只替换 destination envelope reduction，不接管边几何、旋转或 SO(2) mixing stack。</p>
         </article>
         <article class="panel">
           <h3>选择规则</h3>
-          <p><code>native_ops=None</code> 默认选择 <code>("gie", "rmsnorm")</code>；传入 <code>native_ops=()</code> 明确运行 DeepMD baseline，也可只选择一个原生算子。旧 <code>tilelang_ops</code> 参数仅为兼容保留，非空值会被拒绝；DPA4 TileLang dispatch 已从对应 DeepMD-kit checkout 移除。</p>
+          <p><code>native_ops=None</code> 默认选择 <code>("gie", "rmsnorm")</code>；传入 <code>native_ops=()</code> 明确运行 DeepMD baseline，也可只选择一个原生算子。旧 <code>tilelang_ops</code> 参数仅为兼容保留，非空值会被拒绝；<code>native_ops=("so2_envelope_reduce",)</code> 只加速 attention-free SO2Convolution 的 destination reduction，不替换完整卷积。DPA4 TileLang dispatch 已从对应 DeepMD-kit checkout 移除。</p>
           <p>原生 patch 需要 eager <code>pt_expt</code> <code>.pt</code> 模型和受支持的 HIP/DCU。缺失扩展、后端或目标模块会报错并关闭已加载模型；单次输入不满足原生算子条件时则调用原始 DeepMD 方法。旧 <code>pt</code>、导出的 <code>.pt2</code>/<code>.pte</code> 不支持加载后 patch；导出 artifact 已固定的算子图也不会被 <code>native_ops=()</code> 改写。独立 TileLang 算子仍保留在项目中，不由此适配器调用。</p>
-          <p>只替换 plain RMSNorm 和受支持的 GIE scatter 阶段；其余图构建、通用线性层、拟合等仍由 DeepMD/PyTorch 执行。当前 native wrapper 面向 float32 HIP/DCU 推理。</p>
+          <p>默认只替换 plain RMSNorm 和受支持的 GIE scatter 阶段；可选 SO(2) selector 仅替换 edge message 后的 destination aggregation。其余图构建、旋转、radial mixing、SO(2) mixing stack、通用线性层和 fitting 仍由 DeepMD/PyTorch 执行。当前 native wrapper 面向 float32 HIP/DCU 推理。</p>
         </article>
       </div>
       <div class="source-links">
