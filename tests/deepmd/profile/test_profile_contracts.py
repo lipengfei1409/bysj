@@ -27,7 +27,6 @@ class ProfileContracts(unittest.TestCase):
         self.assertTrue(getattr(args, "auto_size", False))
         self.assertEqual(args.memory_fraction, 0.70)
         self.assertEqual(getattr(args, "warmup", None), 5)
-        self.assertEqual(cli._PROJECT_ROOT, Path(__file__).resolve().parents[3])
 
     def test_fixed_input_never_runs_sizing(self):
         source = (np.zeros((1, 2, 3)), np.zeros((1, 2), dtype=np.int32), np.eye(3).reshape(1, 9))

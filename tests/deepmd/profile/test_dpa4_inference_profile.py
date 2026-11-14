@@ -32,7 +32,6 @@ from typing import Any
 import numpy as np
 import torch
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _MIN_BYTES_PER_ATOM = 64 * 1024
 _MAX_SIZING_PROBES = 6
 
