@@ -4,6 +4,7 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <hip/hip_runtime.h>
 #include <cstdint>
+#include <limits>
 #include <tuple>
 
 namespace {
@@ -38,6 +39,10 @@ void check_gie_inputs(const Tensor& zonal, const Tensor& radial,
   TORCH_CHECK(inv_sqrt_deg.dim() != 3 ||
                   (inv_sqrt_deg.size(1) == 1 && inv_sqrt_deg.size(2) == 1),
               "GIE inv_sqrt_deg must have shape (n_nodes, 1, 1)");
+  TORCH_CHECK(n_rows == 0 || radial.size(1) > 0,
+              "GIE radial slots are required for non-scalar rows");
+  TORCH_CHECK(n_edges == 0 || inv_sqrt_deg.size(0) > 0,
+              "GIE edges require destination nodes");
   same_device(zonal, {radial, dst, radial_slot, inv_sqrt_deg});
 }
 
@@ -62,7 +67,7 @@ unsigned int grid_size(int64_t work_items) {
 
 __global__ void gie_zonal_scatter_forward_kernel(
     const float* zonal, const float* radial, const int64_t* dst,
-    const int64_t* radial_slot, const float* inv_sqrt_deg, float* output,
+    const int64_t* radial_slot, float* output,
     int64_t n_edges, int64_t n_rows, int64_t n_radial, int64_t channels,
     int64_t work_items) {
   const int64_t first = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -74,11 +79,20 @@ __global__ void gie_zonal_scatter_forward_kernel(
     const int64_t node = dst[edge];
     const int64_t slot = radial_slot[row];
     const float value = zonal[edge * n_rows + row] *
-        radial[(edge * n_radial + slot) * channels + channel] *
-        inv_sqrt_deg[node];
+        radial[(edge * n_radial + slot) * channels + channel];
     const int64_t output_index =
         (node * (n_rows + 1) + row + 1) * channels + channel;
     atomicAdd(output + output_index, value);
+  }
+}
+
+// DeepMD normalizes the destination sum, not each edge before summation.
+__global__ void gie_zonal_scatter_scale_kernel(
+    float* output, const float* inverse, int64_t plane, int64_t work_items) {
+  const int64_t first = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
+  for (int64_t index = first; index < work_items; index += stride) {
+    output[index] *= inverse[index / plane];
   }
 }
 
@@ -86,7 +100,7 @@ __global__ void gie_zonal_scatter_backward_kernel(
     const float* grad_output, const float* zonal, const float* radial,
     const int64_t* dst, const int64_t* radial_slot,
     const float* inv_sqrt_deg, float* grad_zonal, float* grad_radial,
-    float* grad_inv_sqrt_deg, int64_t n_edges, int64_t n_rows,
+    int64_t n_edges, int64_t n_rows,
     int64_t n_radial, int64_t channels, int64_t work_items) {
   const int64_t first = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
@@ -103,13 +117,31 @@ __global__ void gie_zonal_scatter_backward_kernel(
     const float radial_value = radial[radial_index];
     const float inverse = inv_sqrt_deg[node];
 
+    const float normalized_upstream = upstream * inverse;
     atomicAdd(grad_zonal + edge * n_rows + row,
-              upstream * radial_value * inverse);
+              normalized_upstream * radial_value);
     atomicAdd(grad_radial + radial_index,
-              upstream * zonal_value * inverse);
-    atomicAdd(grad_inv_sqrt_deg + node,
-              upstream * zonal_value * radial_value);
+              normalized_upstream * zonal_value);
   }
+}
+// The inverse-degree derivative uses the same unnormalized destination sum
+// as forward; multiplying each edge by upstream before summation changes FP32.
+__global__ void gie_inverse_backward_kernel(
+    const float* grad_output, const float* pre_norm, float* grad_inverse,
+    int64_t plane) {
+  __shared__ float partial[kBlockSize];
+  const int64_t offset = static_cast<int64_t>(blockIdx.x) * plane;
+  float sum = 0.0f;
+  for (int64_t inner = threadIdx.x; inner < plane; inner += blockDim.x) {
+    sum += grad_output[offset + inner] * pre_norm[offset + inner];
+  }
+  partial[threadIdx.x] = sum;
+  __syncthreads();
+  for (unsigned int stride = blockDim.x / 2; stride; stride >>= 1) {
+    if (threadIdx.x < stride) partial[threadIdx.x] += partial[threadIdx.x + stride];
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) grad_inverse[blockIdx.x] = partial[0];
 }
 } // namespace
 
@@ -130,9 +162,15 @@ Tensor gie_zonal_scatter_forward_hip(Tensor zonal, Tensor radial, Tensor dst, Te
       dim3(grid_size(work_items)), dim3(kBlockSize), 0,
       at::cuda::getCurrentCUDAStream(), zonal.data_ptr<float>(),
       radial.data_ptr<float>(), dst.data_ptr<int64_t>(),
-      radial_slot.data_ptr<int64_t>(), inv_sqrt_deg.data_ptr<float>(),
+      radial_slot.data_ptr<int64_t>(),
       output.data_ptr<float>(), n_edges, n_rows, n_radial, channels,
       work_items);
+  launch_check();
+  const int64_t output_items = output.numel();
+  hipLaunchKernelGGL(gie_zonal_scatter_scale_kernel,
+      dim3(grid_size(output_items)), dim3(kBlockSize), 0,
+      at::cuda::getCurrentCUDAStream(), output.data_ptr<float>(),
+      inv_sqrt_deg.data_ptr<float>(), (n_rows + 1) * channels, output_items);
   launch_check();
   return output;
 }
@@ -161,6 +199,9 @@ std::tuple<Tensor, Tensor, Tensor> gie_zonal_scatter_backward_hip(
   if (work_items == 0)
     return std::make_tuple(grad_zonal, grad_radial, grad_inv_sqrt_deg);
 
+  TORCH_CHECK(n_nodes <= static_cast<int64_t>(std::numeric_limits<unsigned int>::max()),
+              "GIE node count exceeds the HIP grid limit");
+  Tensor pre_norm = torch::zeros_like(grad_output);
   c10::cuda::CUDAGuard guard(zonal.device());
   hipLaunchKernelGGL(gie_zonal_scatter_backward_kernel,
       dim3(grid_size(work_items)), dim3(kBlockSize), 0,
@@ -168,8 +209,20 @@ std::tuple<Tensor, Tensor, Tensor> gie_zonal_scatter_backward_hip(
       zonal.data_ptr<float>(), radial.data_ptr<float>(),
       dst.data_ptr<int64_t>(), radial_slot.data_ptr<int64_t>(),
       inv_sqrt_deg.data_ptr<float>(), grad_zonal.data_ptr<float>(),
-      grad_radial.data_ptr<float>(), grad_inv_sqrt_deg.data_ptr<float>(),
-      n_edges, n_rows, n_radial, channels, work_items);
+      grad_radial.data_ptr<float>(), n_edges, n_rows, n_radial, channels, work_items);
+  launch_check();
+  // Reconstruct the destination sum without changing the public forward ABI.
+  hipLaunchKernelGGL(gie_zonal_scatter_forward_kernel,
+      dim3(grid_size(work_items)), dim3(kBlockSize), 0,
+      at::cuda::getCurrentCUDAStream(), zonal.data_ptr<float>(),
+      radial.data_ptr<float>(), dst.data_ptr<int64_t>(), radial_slot.data_ptr<int64_t>(),
+      pre_norm.data_ptr<float>(), n_edges, n_rows, n_radial, channels, work_items);
+  launch_check();
+  hipLaunchKernelGGL(gie_inverse_backward_kernel,
+      dim3(static_cast<unsigned int>(n_nodes)), dim3(kBlockSize), 0,
+      at::cuda::getCurrentCUDAStream(), grad_output.data_ptr<float>(),
+      pre_norm.data_ptr<float>(), grad_inv_sqrt_deg.data_ptr<float>(),
+      (n_rows + 1) * channels);
   launch_check();
   return std::make_tuple(grad_zonal, grad_radial, grad_inv_sqrt_deg);
 }

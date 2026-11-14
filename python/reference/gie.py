@@ -43,8 +43,8 @@ def zonal_scatter_reference(zonal, radial, dst, radial_slot, inv_sqrt_deg):
     """Scatter normalized edge messages into ``[N, R+1, C]``.
 
     Row zero is reserved and stays zero. The mathematical contract is
-    ``out[dst[e], r+1, c] += zonal[e,r] * radial[e,radial_slot[r],c] *
-    inv_sqrt_deg[dst[e]]``. Destination and radial-slot indices must be in range.
+    ``out[n, r+1, c] = sum_{dst[e]=n}(zonal[e,r] *
+    radial[e,radial_slot[r],c]) * inv_sqrt_deg[n]`` (normalize after summation). Destination and radial-slot indices must be in range.
     """
     _validate(zonal, radial, dst, radial_slot, inv_sqrt_deg)
     inverse = inv_sqrt_deg.reshape(-1)
@@ -61,9 +61,8 @@ def zonal_scatter_reference(zonal, radial, dst, radial_slot, inv_sqrt_deg):
         indices = radial_slot.reshape(1, n_rows, 1).expand(n_edges, n_rows, channels)
         radial_values = radial.gather(1, indices)
         messages = zonal.unsqueeze(-1) * radial_values
-        messages = messages * inverse.index_select(0, dst).reshape(n_edges, 1, 1)
         output[:, 1:, :].index_add_(0, dst, messages)
-    return output
+    return output * inverse.reshape(n_nodes, 1, 1)
 
 
 # Descriptive alias for callers that group the operator by model stage.

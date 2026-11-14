@@ -175,5 +175,17 @@ class GIEWrapperTests(unittest.TestCase):
             )
 
 
+class GIENormalizationOrderTests(unittest.TestCase):
+    def test_normalize_after_destination_sum_like_deepmd(self):
+        zonal = torch.tensor([[1e8], [-1e8 + 8], [1.0]])
+        radial = torch.ones(3, 1, 1)
+        dst = torch.zeros(3, dtype=torch.int64)
+        slots = torch.zeros(1, dtype=torch.int64)
+        inverse = torch.tensor([0.3])
+        actual = zonal_scatter_reference(zonal, radial, dst, slots, inverse)
+        expected = zonal.sum(0) * inverse
+        torch.testing.assert_close(actual[0, 1], expected, rtol=0, atol=0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -71,7 +71,7 @@ class _SO2EnvelopeReduceFunction(torch.autograd.Function):
 
 
 def so2_envelope_reduce(message, edge_weight, dst, inv_sqrt_deg):
-    """Compute ``inv_sqrt_deg[dst] * scatter_sum(message * edge_weight)``.
+    """Compute ``scatter_sum(message * edge_weight)[n] * inv_sqrt_deg[n]``.
 
     The primitive supports contiguous float32 DCU tensors, arbitrary coefficient
     and channel dimensions, valid int64 destination indices, and first-order

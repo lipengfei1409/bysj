@@ -4,6 +4,7 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <hip/hip_runtime.h>
 #include <cstdint>
+#include <limits>
 #include <tuple>
 
 namespace {
@@ -104,9 +105,9 @@ __global__ void so2_reduce_edge_backward_kernel(
     for (int64_t inner = threadIdx.x; inner < plane; inner += blockDim.x) {
       const int64_t edge_index = edge * plane + inner;
       const int64_t node_index = node * plane + inner;
-      const float upstream = grad_output[node_index];
-      grad_message[edge_index] = upstream * edge_weight[edge] * inv;
-      dot += upstream * message[edge_index] * inv;
+      const float normalized_upstream = grad_output[node_index] * inv;
+      grad_message[edge_index] = normalized_upstream * edge_weight[edge];
+      dot += normalized_upstream * message[edge_index];
     }
     const float reduced = block_sum(dot, partial);
     if (threadIdx.x == 0) grad_weight[edge] = reduced;
@@ -177,8 +178,11 @@ std::tuple<Tensor, Tensor, Tensor> so2_envelope_reduce_backward_hip(
   const int64_t n_channels = message.size(2);
   const int64_t n_nodes = inverse.size(0);
   const int64_t plane = checked_product(n_coeff, n_channels, "SO(2) reduce");
-  TORCH_CHECK(grad_output.sizes() == pre_norm.sizes() &&
-                  grad_output.size(0) == n_nodes,
+  TORCH_CHECK(grad_output.dim() == 3 && pre_norm.dim() == 3 &&
+                  grad_output.sizes() == pre_norm.sizes() &&
+                  grad_output.size(0) == n_nodes &&
+                  grad_output.size(1) == n_coeff &&
+                  grad_output.size(2) == n_channels,
               "SO(2) grad_output must have shape (n_nodes, n_coeff, n_channels)");
   Tensor grad_message = torch::empty_like(message);
   Tensor grad_weight = torch::empty_like(edge_weight);

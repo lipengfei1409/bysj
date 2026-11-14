@@ -454,6 +454,37 @@ class DPA4ModelAdapterTests(unittest.TestCase):
         self.assertEqual(gie.original_calls, 1)
         self.assertEqual(native_called, [])
 
+    def test_so2_gate_vector_cannot_broadcast_over_edges(self):
+        module = _FakeSO2Convolution().eval()
+        module.compute_precision = "float32"
+        x = torch.ones(3, 4, 2)
+        message = torch.arange(24, dtype=torch.float32).reshape(3, 4, 2)
+        cache = SimpleNamespace(dst=torch.tensor([0, 1, 0]),
+            edge_env=torch.tensor([[0.2], [0.5], [0.8]]),
+            edge_src_gate=torch.tensor([1., 0., 0.5]),
+            inv_sqrt_deg=torch.ones(3, 1, 1))
+        with mock.patch.object(dpa4, "_native_fp32_tensor", return_value=True), \
+             mock.patch.object(dpa4, "_native_device_tensor", return_value=True), \
+             mock.patch.object(dpa4, "_native_dcu_tensors", return_value=True), \
+             mock.patch.object(dpa4, "_is_fp32_compute_precision", return_value=True):
+            actual = dpa4._make_so2_envelope_reduce(module, so2_envelope_reduce_reference)(x, cache, message)
+        expected = so2_envelope_reduce_reference(message, torch.tensor([.2, 0., .4]), cache.dst, cache.inv_sqrt_deg)
+        torch.testing.assert_close(actual, expected)
+
+    def test_so2_non_fp32_accumulation_retains_deepmd(self):
+        module = _FakeSO2Convolution().eval()
+        module.compute_precision = "float64"
+        native = mock.Mock()
+        cache = SimpleNamespace(dst=torch.tensor([0]), edge_env=torch.ones(1, 1),
+            inv_sqrt_deg=torch.ones(2, 1, 1), edge_src_gate=None)
+        with mock.patch.object(dpa4, "_is_fp32_compute_precision", return_value=True), \
+             mock.patch.object(dpa4, "_native_fp32_tensor", return_value=True), \
+             mock.patch.object(dpa4, "_native_device_tensor", return_value=True), \
+             mock.patch.object(dpa4, "_native_dcu_tensors", return_value=True):
+            result = dpa4._make_so2_envelope_reduce(module, native)(torch.ones(2,4,3), cache, torch.ones(1,4,3))
+        self.assertEqual(module.original_forward_calls, 1)
+        native.assert_not_called()
+
     def test_native_rmsnorm_falls_back_on_unsupported_cpu_input(self):
         rmsnorm = _FakeRMSNorm()
         fake_model = _FakeDeepPot(model_tree=_FakeModelTree(rmsnorm))

@@ -276,6 +276,8 @@ def _make_so2_envelope_reduce(
             bool(getattr(self, "training", False))
             or getattr(self, "n_atten_head", None) != 0
             or not _is_fp32_compute_precision(self)
+            or str(getattr(self, "compute_precision", self.precision)) not in
+                ("float32", "single", "torch.float32")
             or not _native_fp32_tensor(x)
             or not _native_fp32_tensor(radial_feat)
         ):
@@ -336,9 +338,9 @@ def _make_so2_envelope_reduce(
         ):
             return original_forward_envelope(x, edge_cache, radial_feat)
 
-        edge_weight = edge_env
+        edge_weight = edge_env.reshape(-1)
         if edge_src_gate is not None:
-            edge_weight = edge_weight * edge_src_gate.to(dtype=edge_weight.dtype)
+            edge_weight = edge_weight * edge_src_gate.reshape(-1).to(dtype=edge_weight.dtype)
         return native_reduce(
             message.contiguous(),
             edge_weight.reshape(-1).contiguous(),

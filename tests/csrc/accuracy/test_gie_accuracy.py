@@ -48,6 +48,20 @@ class GIEZonalScatterAccuracyTests(unittest.TestCase):
         for actual_grad, expected_grad in zip(actual_grads, expected_grads):
             torch.testing.assert_close(actual_grad, expected_grad, rtol=4e-4, atol=2e-5)
 
+    def test_inverse_gradient_normalizes_after_destination_sum(self):
+        zonal = torch.tensor([[1e8], [-1e8 + 8], [1.]], device="cuda")
+        radial = torch.ones(3, 1, 1, device="cuda")
+        dst = torch.zeros(3, dtype=torch.int64, device="cuda")
+        slots = torch.zeros(1, dtype=torch.int64, device="cuda")
+        inverse = torch.ones(1, device="cuda", requires_grad=True)
+        actual = zonal_scatter(zonal, radial, dst, slots, inverse)
+        upstream = torch.tensor([[[0.], [.3]]], device="cuda")
+        grad, = torch.autograd.grad(actual, (inverse,), upstream)
+        # Atomic summation can produce 8 or 9 before scaling. Per-edge
+        # normalization instead yields about 4, outside this valid interval.
+        self.assertGreaterEqual(grad.item(), 2.39)
+        self.assertLessEqual(grad.item(), 2.71)
+
     def test_three_dimensional_inverse_degree_layout(self):
         inputs = self._inputs(degree_shape=(2, 1, 1))
         actual = zonal_scatter(*inputs)

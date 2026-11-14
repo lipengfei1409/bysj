@@ -41,8 +41,8 @@ class GIEDeepMDParityTests(unittest.TestCase):
                 "and a supported DCU"
             )
         try:
-            from deepmd.pt.model.descriptor.sezm_nn.edge_cache import EdgeFeatureCache
-            from deepmd.pt.model.descriptor.sezm_nn.embedding import (
+            from deepmd.dpmodel.descriptor.dpa4_nn.edge_cache import EdgeCache
+            from deepmd.pt_expt.descriptor.dpa4_nn.embedding import (
                 GeometricInitialEmbedding,
             )
         except Exception as exc:
@@ -51,7 +51,7 @@ class GIEDeepMDParityTests(unittest.TestCase):
                 "and importable (including deepmd.lib); see the test docstring"
             ) from exc
 
-        cls.EdgeFeatureCache = EdgeFeatureCache
+        cls.EdgeFeatureCache = EdgeCache
         cls.GeometricInitialEmbedding = GeometricInitialEmbedding
         cls.device = torch.device("cuda")
 
@@ -84,8 +84,8 @@ class GIEDeepMDParityTests(unittest.TestCase):
         deg.index_add_(0, dst, edge_env[:, 0].square())
         inv_sqrt_deg = torch.rsqrt(deg + 1.0).reshape(n_nodes, 1, 1).contiguous()
 
-        radial_slot = module.radial_slot_index_for_row.to(
-            device=device, dtype=torch.int64
+        radial_slot = torch.as_tensor(
+            module.radial_slot_index_for_row, device=device, dtype=torch.int64
         ).contiguous()
         edge_cache = GIEDeepMDParityTests.EdgeFeatureCache(
             src=src.contiguous(),
@@ -108,10 +108,10 @@ class GIEDeepMDParityTests(unittest.TestCase):
 
     def test_forward_output_matches_deepmd(self):
         channels = 8
-        for lmax in (1, 2):
+        for lmax in (1, 2, 3):
             with self.subTest(lmax=lmax):
                 module = self.GeometricInitialEmbedding(
-                    lmax=lmax, channels=channels, dtype=torch.float32
+                    lmax=lmax, channels=channels, precision="float32"
                 ).to(self.device)
                 # Keep DeepMD on its reference composition, not an optional fused
                 # path; csr_cache=None also prevents the fused branch.
@@ -168,6 +168,21 @@ class GIEDeepMDParityTests(unittest.TestCase):
                     f"lmax={lmax}: max_abs={max_abs:.8g}, "
                     f"rms={rms:.8g}, max_rel={max_rel:.8g}"
                 )
+
+    def test_first_order_value_gradients_match_deepmd(self):
+        module = self.GeometricInitialEmbedding(lmax=2, channels=5, precision="float32").to(self.device)
+        module.train()
+        zonal, radial, dst, slots, inverse, cache = self._inputs(module, lmax=2, channels=5, seed=26)
+        for tensor in (zonal, radial, inverse):
+            tensor.requires_grad_(True)
+        expected = module(n_nodes=inverse.shape[0], edge_cache=cache,
+                          radial_feat=radial, zonal_coupling=zonal)
+        actual = zonal_scatter(zonal, radial, dst, slots, inverse)
+        upstream = torch.randn_like(expected)
+        expected_grads = torch.autograd.grad(expected, (zonal, radial, inverse), upstream, retain_graph=True)
+        actual_grads = torch.autograd.grad(actual, (zonal, radial, inverse), upstream)
+        for a, b in zip(actual_grads, expected_grads):
+            torch.testing.assert_close(a, b, atol=3e-5, rtol=4e-4)
 
 
 if __name__ == "__main__":
