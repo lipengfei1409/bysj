@@ -746,7 +746,7 @@ def _run_dpa4(args) -> int:
             ],
             record_shapes=True,
             profile_memory=True,
-            with_stack=False,
+            with_stack=True,
         ) as profiler:
             with torch.profiler.record_function("dpa4/inference.single_energy_force"):
                 outputs = model.eval(coords, cells, atom_types)
