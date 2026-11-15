@@ -15,6 +15,7 @@ These profiles locate hotspots; collection wall time is not inference latency.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import os
@@ -26,6 +27,7 @@ import tempfile
 import time
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -247,6 +249,66 @@ def _write_generated_npz(output_path: Path, system, type_map=None) -> Path:
         output_path.unlink(missing_ok=True)
         raise
     return output_path
+
+
+def _water_data_by_atom_count(source: str, atoms: int) -> str:
+    """Keep whole O-H-H molecules and their topology from the SPC/E water file."""
+    if atoms < 3 or atoms % 3:
+        raise ValueError("--atoms must be a positive multiple of 3 (whole water molecules)")
+    lines = source.splitlines(keepends=True)
+    sections = {}
+    for index, line in enumerate(lines):
+        name = line.partition("#")[0].strip()
+        if name in ("Atoms", "Bonds", "Angles"):
+            sections[name] = index
+    if set(sections) != {"Atoms", "Bonds", "Angles"} or not (
+        sections["Atoms"] < sections["Bonds"] < sections["Angles"]
+    ):
+        raise ValueError("source water data must contain Atoms, Bonds, and Angles sections")
+
+    def section_rows(name: str, end: int) -> list[str]:
+        return [
+            line for line in lines[sections[name] + 1:end]
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+
+    atom_rows = section_rows("Atoms", sections["Bonds"])
+    bond_rows = section_rows("Bonds", sections["Angles"])
+    angle_rows = section_rows("Angles", len(lines))
+    source_atoms = len(atom_rows)
+    if atoms > source_atoms:
+        raise ValueError(f"--atoms={atoms} exceeds source atom count {source_atoms}")
+    if source_atoms % 3 or len(bond_rows) != source_atoms * 2 // 3 or len(angle_rows) != source_atoms // 3:
+        raise ValueError("source data does not contain complete three-atom water molecules")
+    for molecule in range(source_atoms // 3):
+        triplet = [row.split() for row in atom_rows[3 * molecule:3 * molecule + 3]]
+        expected_ids = [3 * molecule + 1, 3 * molecule + 2, 3 * molecule + 3]
+        if ([int(row[0]) for row in triplet] != expected_ids
+                or [int(row[1]) for row in triplet] != [molecule + 1] * 3
+                or [int(row[2]) for row in triplet] != [1, 2, 2]):
+            raise ValueError("source atoms must be ordered O-H-H with consecutive molecule IDs")
+
+    selected_bonds = bond_rows[:atoms * 2 // 3]
+    selected_angles = angle_rows[:atoms // 3]
+    for rows, width in ((selected_bonds, 2), (selected_angles, 3)):
+        if any(int(atom_id) > atoms or int(atom_id) < 1
+               for row in rows for atom_id in row.split()[2:2 + width]):
+            raise ValueError("source topology references atoms outside the selected molecules")
+
+    header = lines[:sections["Atoms"]]
+    counts = {"atoms": atoms, "bonds": len(selected_bonds), "angles": len(selected_angles)}
+    for label, count in counts.items():
+        matches = [index for index, line in enumerate(header)
+                   if re.fullmatch(rf"\s*\d+\s+{label}\s*", line)]
+        if len(matches) != 1:
+            raise ValueError(f"source water data must declare exactly one {label} count")
+        header[matches[0]] = f"{count} {label}\n"
+    return (
+        "".join(header) + "Atoms # full\n\n"
+        + "".join(atom_rows[:atoms])
+        + "\nBonds\n\n" + "".join(selected_bonds)
+        + "\nAngles\n\n" + "".join(selected_angles)
+    )
 
 
 def _outputs_to_arrays(outputs):
@@ -764,6 +826,36 @@ def _run_generate_data(args) -> int:
         raise FileNotFoundError(f"source geometry does not exist: {source_path}")
     if args.output_npz.exists() or args.output_npz.is_symlink():
         raise FileExistsError(f"refusing to overwrite generated input: {args.output_npz}")
+    if args.atoms is not None:
+        if args.geometry is None or args.output_data is None:
+            raise ValueError("--atoms requires --geometry and --output-data")
+        if args.output_data.exists() or args.output_data.is_symlink():
+            raise FileExistsError(f"refusing to overwrite generated input: {args.output_data}")
+        input_type_map, _ = _input_type_map(args)
+        if input_type_map is not None and input_type_map != ["O", "H"]:
+            raise ValueError("SPC/E water generation requires --input-type-map O,H")
+        source_text = source_path.read_text()
+        data_text = _water_data_by_atom_count(source_text, args.atoms)
+        args.output_data.parent.mkdir(parents=True, exist_ok=True)
+        with args.output_data.open("x") as stream:
+            stream.write(data_text)
+        try:
+            generated_system = _read_lammps_system(args.output_data)
+            output_path = _write_generated_npz(args.output_npz, generated_system, ["O", "H"])
+        except BaseException:
+            args.output_data.unlink(missing_ok=True)
+            raise
+        print(json.dumps({
+            "source": str(source_path.resolve()),
+            "output_data": str(args.output_data.resolve()),
+            "output_npz": str(output_path.resolve()),
+            "source_atoms": int(re.search(r"(?m)^\s*(\d+)\s+atoms\s*$", source_text).group(1)),
+            "generated_atoms": args.atoms,
+            "type_map": ["O", "H"],
+        }, sort_keys=True), flush=True)
+        return 0
+    if args.output_data is not None:
+        raise ValueError("--output-data is supported only with --atoms")
     source_system = (
         _load_npz_system(source_path)
         if args.input_npz is not None
@@ -1220,25 +1312,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     generate = subparsers.add_parser(
         "generate-data",
-        help="replicate a supplied periodic structure into a reusable NPZ input",
+        help="replicate a periodic input or select complete water molecules by atom count",
         description=(
-            "Create a larger, deterministic profile input by periodically copying "
-            "a supplied NPZ or orthorhombic LAMMPS geometry. Atom type indices "
-            "are preserved; ensure they match the model used for profiling."
+            "Use --replicate to expand a periodic NPZ or LAMMPS geometry into NPZ. "
+            "Use --atoms with a full-style SPC/E water data file to create matching "
+            "LAMMPS data and NPZ inputs for smaller tests."
         ),
     )
     source = generate.add_mutually_exclusive_group(required=True)
     source.add_argument("--input-npz", type=Path)
     source.add_argument("--geometry", type=Path)
-    generate.add_argument(
+    sizing = generate.add_mutually_exclusive_group(required=True)
+    sizing.add_argument(
         "--replicate",
         type=_parse_triplet,
-        required=True,
         help="periodic replication factors x,y,z (each must be positive)",
     )
+    sizing.add_argument("--atoms", type=int,
+                        help="keep exactly this many atoms as complete SPC/E water molecules")
     generate.add_argument("--input-type-map", default=None,
                           help="source element order to embed in the generated NPZ, e.g. O,H")
     generate.add_argument("--output-npz", type=Path, required=True)
+    generate.add_argument("--output-data", type=Path,
+                          help="LAMMPS data output; required with --atoms")
     return parser
 
 
@@ -1493,6 +1589,81 @@ class DPA4ProfilerCLITests(unittest.TestCase):
 
 
 class DPA4ProfilerGeometryTests(unittest.TestCase):
+    def test_atom_count_generation_writes_matching_lammps_and_npz_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "water.data"
+            source.write_text("""LAMMPS water
+
+6 atoms
+4 bonds
+2 angles
+2 atom types
+1 bond types
+1 angle types
+
+0 10 xlo xhi
+0 10 ylo yhi
+0 10 zlo zhi
+
+Masses
+
+1 15.9994
+2 1.00794
+
+Atoms
+
+1 1 1 -0.8472 1 1 1 0 0 0
+2 1 2 0.4236 2 1 1 0 0 0
+3 1 2 0.4236 1 2 1 0 0 0
+4 2 1 -0.8472 5 5 5 0 0 0
+5 2 2 0.4236 6 5 5 0 0 0
+6 2 2 0.4236 5 6 5 0 0 0
+
+Bonds
+
+1 1 1 2
+2 1 1 3
+3 1 4 5
+4 1 4 6
+
+Angles
+
+1 1 2 1 3
+2 1 5 4 6
+""")
+            output_data = root / "water_3.data"
+            output_npz = root / "water_3.npz"
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = main([
+                    "generate-data", "--geometry", str(source),
+                    "--atoms", "3",
+                    "--output-data", str(output_data),
+                    "--output-npz", str(output_npz),
+                ])
+            self.assertEqual(result, 0)
+            self.assertEqual(json.loads(output.getvalue())["source_atoms"], 6)
+            data_text = output_data.read_text()
+            self.assertIn("3 atoms", data_text)
+            self.assertIn("2 bonds", data_text)
+            self.assertIn("1 angles", data_text)
+            self.assertIn("Atoms # full", data_text)
+            self.assertNotIn("4 2 1 -0.8472", data_text)
+            coords, atom_types, cells = _read_lammps_system(output_data)
+            self.assertEqual(coords.shape, (1, 3, 3))
+            np.testing.assert_array_equal(atom_types, [[0, 1, 1]])
+            with np.load(output_npz) as sample:
+                self.assertEqual(sample["type_map"].tolist(), ["O", "H"])
+            generated = _load_npz_system(output_npz)
+            np.testing.assert_array_equal(generated[0], coords)
+            np.testing.assert_array_equal(generated[1], atom_types)
+            np.testing.assert_array_equal(generated[2], cells)
+
+    def test_atom_count_generation_rejects_incomplete_water_molecules(self):
+        with self.assertRaisesRegex(ValueError, "multiple of 3"):
+            _water_data_by_atom_count("", 4)
+
     def test_balanced_replication_and_scaled_cell(self):
         self.assertEqual(_balanced_replication_factors(8), (2, 2, 2))
         source = (

@@ -24,6 +24,20 @@ python3 tests/deepmd/profile/test_dpa4_inference_profile.py generate-data \
 
 扩胞生成的新 NPZ 会保留原类型编号，并将源输入的元素顺序写入 `type_map` 数组，因此生成文件单独复制后也可按模型顺序重映射。源输入没有元素信息时，可在生成或推理时传 `--input-type-map O,H`。
 
+### 按原子数生成直接推理与 LAMMPS 共用的水体系
+
+OOM 后可从原始 SPC/E data 中保留指定数量的完整水分子，同时生成 LAMMPS data 和直接推理 NPZ：
+
+```bash
+python3 tests/deepmd/profile/test_dpa4_inference_profile.py generate-data \
+  --geometry ../lammps/examples/rdf-adf/data.spce --atoms 300 \
+  --output-data /tmp/water_spce_300.data --output-npz /tmp/water_spce_300.npz
+```
+
+`--atoms` 必须是 3 的倍数，范围为 3 到原始数据的 4500 个原子；两个输出文件均不会覆盖已有文件。生成的 NPZ 内嵌 `O,H` 类型顺序，LAMMPS data 保留水分子的电荷、键、角及原周期盒。原盒不随删减缩小，因此小体系变得稀疏，适合功能与 OOM 排查，不适合与原体系直接比较性能。
+
+直接推理使用 `--input-npz /tmp/water_spce_300.npz --fixed-input`，以避免重新自动扩胞；LAMMPS 命令使用 `--data-file /tmp/water_spce_300.data --replicate 1,1,1`。LAMMPS 仍须使用冻结后的 `.pt2` 模型和匹配的水模板。
+
 下面的 LAMMPS 命令以相邻仓库 `../lammps` 为数据路径；`--lammps-exe` 仍需填写目标机器上编译出的可执行文件。
 
 ## 1. 单卡 DeepMD 单次推理
