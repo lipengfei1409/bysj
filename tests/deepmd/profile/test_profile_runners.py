@@ -24,6 +24,34 @@ def write_trace(path):
 
 
 class ProfileRunners(unittest.TestCase):
+    def test_direct_prints_backend_before_inference_failure(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+            root = Path(tmp)
+            model_path = root / "model.pt"
+            model_path.touch()
+            np.savez(root / "system.npz", coords=np.zeros((2, 3)), atom_types=np.zeros(2, dtype=np.int32))
+            args = cli.build_parser().parse_args([
+                "dpa4", "--model-file", str(model_path), "--input-npz", str(root / "system.npz"),
+                "--output-dir", str(root / "out"), "--fixed-input",
+            ])
+            backend_type = type("DeepEval", (), {"__module__": "deepmd.pt_expt.infer.deep_eval"})
+            model = Mock()
+            model.deep_eval = backend_type()
+            model.deep_eval.metadata = {"lower_input_kind": "graph"}
+            output = io.StringIO()
+            stack.enter_context(patch.object(cli, "_construct_deepmd_model", return_value=model))
+            stack.enter_context(patch.object(cli, "_remap_input_types", side_effect=RuntimeError("inference failed")))
+            stack.enter_context(patch.object(cli.torch.version, "hip", "test"))
+            for method, value in {"is_available": True, "device_count": 1, "get_device_name": "K500SM_AI"}.items():
+                stack.enter_context(patch.object(cli.torch.cuda, method, return_value=value))
+            stack.enter_context(patch.object(cli.torch.cuda, "set_device"))
+            stack.enter_context(contextlib.redirect_stdout(output))
+            with self.assertRaisesRegex(RuntimeError, "inference failed"):
+                cli._run_dpa4(args)
+            self.assertIn("DeepMD backend: pt_expt", output.getvalue())
+            self.assertIn("lower_input_kind: graph", output.getvalue())
+            model.close.assert_called_once()
+
     def test_direct_records_one_eval_after_five_warmups(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
             root = Path(tmp)

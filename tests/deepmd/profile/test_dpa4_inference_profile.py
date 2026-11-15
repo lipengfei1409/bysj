@@ -660,6 +660,15 @@ def _run_dpa4(args) -> int:
     args.device = str(device)
     model = _construct_deepmd_model(args)
     try:
+        backend = model.deep_eval
+        lower_input_kind = (getattr(backend, "metadata", None) or {}).get(
+            "lower_input_kind"
+        )
+        print(
+            f"DeepMD backend: {_deepmd_backend_name(model)}; "
+            f"lower_input_kind: {lower_input_kind or 'unknown'}",
+            flush=True,
+        )
         source_system, type_mapping = _remap_input_types(model, source_system, args)
         print("DeepMD input types: " + json.dumps(type_mapping), flush=True)
         selected_system, replicas, sizing = _prepare_direct_system(model, source_system, args)

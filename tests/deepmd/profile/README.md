@@ -40,6 +40,28 @@ source /opt/dtk/env.sh && python3 tests/deepmd/profile/test_dpa4_inference_profi
 - 始终使用原始 `DeepPot.eval`，支持当前 DeepMD 安装可读取的 `.pt/.pth/.pt2/.pte` 等模型；不要求 eager `pt_expt`，不需要编译本仓库扩展，也没有 `--native-ops` 参数。`--expected-dcu-name ''` 可关闭默认 K500SM_AI 名称检查。
 - NPZ 包含 `coords`、`atom_types` 和可选 `cells`，只使用第一帧。geometry 支持显式标注 `Atoms # atomic/charge/molecular/full` 的正交 LAMMPS 数据，正确跳过 image flags。`--input-type-map O,H` 可显式指定输入编号对应的元素，优先于 NPZ 内嵌的 `type_map` 和旁边同名 `.metadata.json` 的 `type_map`（依次读取）；都没有时，按模型自身编号解释并检查范围。报告保存模型类型顺序和重映射表。
 
+### 确认 `.pt` 实际使用的推理后端
+
+直接模式由 DeepMD 根据模型内容选择 `pt` 或 `pt_expt`，不能仅凭 `.pt` 后缀判断。profiling 脚本加载模型后会立即打印 `DeepMD backend` 和 `lower_input_kind`，即使后续推理在生成 summary 前失败也能看到。也可在同一容器及 Python 环境中单独加载模型检查；下面的命令不执行 `eval`：
+
+```bash
+source /opt/dtk/env.sh
+DEVICE=cuda LOCAL_RANK=0 PYTHONPATH=python python3 - <<'PY'
+import deepmd
+from deepmd.infer import DeepPot
+
+model_file = "/root/private_data/lipengfei/model/DPA4-OMol/DPA4-Air-OMol25-100M-v20260820.pt"
+model = DeepPot(model_file, auto_batch_size=False)
+backend = model.deep_eval
+print("deepmd package:", deepmd.__file__, flush=True)
+print("backend:", type(backend).__module__, flush=True)
+print("lower_input_kind:", getattr(backend, "metadata", {}).get("lower_input_kind"), flush=True)
+model.close()
+PY
+```
+
+`backend` 为 `deepmd.pt.infer.deep_eval` 时使用旧 `pt` 路径；为 `deepmd.pt_expt.infer.deep_eval` 时使用 `pt_expt` 路径。`pt_expt` 的 `lower_input_kind=graph` 对应 `neighbor_graph_method` 构图配置，`nlist` 对应 `nlist_backend`；旧 `pt` 路径可能不提供这个元数据。上面的 `deepmd package` 用来核对当前进程导入的安装位置。成功完成 profiling 后，summary 的 `backend` 字段也会记录实际后端。若遇到 `Failed to load libcuda.so`，参见 [HIP/DCU 邻居搜索排查](TROUBLESHOOTING.md)。
+
 ## 2. 单卡 LAMMPS 稳态模拟
 
 ```bash
