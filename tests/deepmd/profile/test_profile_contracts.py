@@ -27,7 +27,17 @@ class ProfileContracts(unittest.TestCase):
         self.assertTrue(getattr(args, "auto_size", False))
         self.assertEqual(args.memory_fraction, 0.70)
         self.assertEqual(getattr(args, "warmup", None), 5)
-        self.assertFalse(args.with_stack)
+        self.assertFalse(args.no_profile)
+        self.assertEqual(args.iterations, 10)
+        self.assertFalse(hasattr(args, "with_stack"))
+
+    def test_no_profile_mode_is_explicit(self):
+        args = cli.build_parser().parse_args([
+            "dpa4", "--model-file", "m.pt", "--input-npz", "s.npz",
+            "--output-dir", "out", "--no-profile", "--iterations", "3",
+        ])
+        self.assertTrue(args.no_profile)
+        self.assertEqual(args.iterations, 3)
 
     def test_fixed_input_never_runs_sizing(self):
         source = (np.zeros((1, 2, 3)), np.zeros((1, 2), dtype=np.int32), np.eye(3).reshape(1, 9))

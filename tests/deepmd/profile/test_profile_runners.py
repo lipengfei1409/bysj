@@ -60,7 +60,7 @@ class ProfileRunners(unittest.TestCase):
             np.savez(root / "system.npz", coords=np.zeros((2, 3)), atom_types=np.zeros(2, dtype=np.int32))
             args = cli.build_parser().parse_args([
                 "dpa4", "--model-file", str(model_path), "--input-npz", str(root / "system.npz"),
-                "--output-dir", str(root / "out"), "--fixed-input", "--with-stack",
+                "--output-dir", str(root / "out"), "--fixed-input",
             ])
             args.cli_command = ["test"]
             model = Mock()
@@ -99,6 +99,45 @@ class ProfileRunners(unittest.TestCase):
             self.assertTrue(Path(report["trace_file"]).is_file())
             self.assertEqual(cli.torch.profiler.profile.call_args.kwargs["with_stack"], True)
             profiler.export_chrome_trace.assert_called_once()
+
+    def test_direct_no_profile_measures_repeated_eval_without_trace(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+            root = Path(tmp)
+            model_path = root / "model.pt"
+            model_path.touch()
+            np.savez(root / "system.npz", coords=np.zeros((2, 3)), atom_types=np.zeros(2, dtype=np.int32))
+            args = cli.build_parser().parse_args([
+                "dpa4", "--model-file", str(model_path), "--input-npz", str(root / "system.npz"),
+                "--output-dir", str(root / "out"), "--fixed-input", "--no-profile", "--iterations", "3",
+            ])
+            args.cli_command = ["test"]
+            model = Mock()
+            backend_type = type("DeepEval", (), {"__module__": "deepmd.pt.infer.deep_eval"})
+            model.deep_eval = backend_type()
+            model.get_type_map.return_value = ["O", "H"]
+            model.eval.return_value = (np.zeros(1), np.zeros((2, 3)), np.zeros(9))
+            stack.enter_context(patch.object(cli, "_construct_deepmd_model", return_value=model))
+            profiler = stack.enter_context(patch.object(cli.torch.profiler, "profile"))
+            stack.enter_context(patch.object(cli.torch.version, "hip", "test"))
+            for method, value in {"is_available": True, "device_count": 1, "get_device_name": "K500SM_AI", "memory_allocated": 0, "max_memory_allocated": 1024}.items():
+                stack.enter_context(patch.object(cli.torch.cuda, method, return_value=value))
+            for method in ("reset_peak_memory_stats", "synchronize", "set_device"):
+                stack.enter_context(patch.object(cli.torch.cuda, method))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+
+            self.assertEqual(cli._run_dpa4(args), 0)
+            self.assertEqual(model.eval.call_count, 8)  # five warmups plus three samples
+            model.close.assert_called_once()
+            profiler.assert_not_called()
+            reports = list((root / "out").rglob("dpa4_inference_summary.json"))
+            self.assertEqual(len(reports), 1)
+            report = json.loads(reports[0].read_text())
+            self.assertFalse(report["profiled"])
+            self.assertFalse(report["with_stack"])
+            self.assertEqual(report["timed_inference_calls"], 3)
+            self.assertEqual(len(report["inference_wall_ms_samples"]), 3)
+            self.assertGreaterEqual(report["inference_wall_ms_median"], 0.0)
+            self.assertFalse(list((root / "out").rglob("dpa4_inference_trace.json")))
 
     def test_lammps_single_and_multi_rank_collect_complete_windows(self):
         for ranks in (1, 2):

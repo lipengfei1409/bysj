@@ -682,6 +682,8 @@ def _construct_deepmd_model(args):
 
 
 def _run_dpa4(args) -> int:
+    if args.no_profile and int(args.iterations) < 1:
+        raise ValueError("--iterations must be at least 1")
     if not torch.cuda.is_available() or torch.version.hip is None:
         raise RuntimeError("direct DPA4 profile requires a HIP/DCU PyTorch runtime")
     if not Path(args.model_file).is_file():
@@ -716,8 +718,14 @@ def _run_dpa4(args) -> int:
     output_root.mkdir(parents=True, exist_ok=True)
     output_dir = output_root / f"dpa4_{time.time_ns()}"
     output_dir.mkdir()
-    trace_path = output_dir / "dpa4_inference_trace.json"
-    summary_path = output_dir / "dpa4_inference_profile_summary.json"
+    profiled = not bool(args.no_profile)
+    trace_path = output_dir / "dpa4_inference_trace.json" if profiled else None
+    summary_name = (
+        "dpa4_inference_profile_summary.json"
+        if profiled
+        else "dpa4_inference_summary.json"
+    )
+    summary_path = output_dir / summary_name
     torch.cuda.set_device(device)
     args.device = str(device)
     model = _construct_deepmd_model(args)
@@ -738,36 +746,81 @@ def _run_dpa4(args) -> int:
         coords, atom_types, cells = selected_system
         memory_before = int(torch.cuda.memory_allocated(device))
         torch.cuda.reset_peak_memory_stats(device)
-        start = time.perf_counter()
-        with torch.profiler.profile(
-            activities=[
-                torch.profiler.ProfilerActivity.CPU,
-                torch.profiler.ProfilerActivity.CUDA,
-            ],
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=bool(args.with_stack),
-        ) as profiler:
-            with torch.profiler.record_function("dpa4/inference.single_energy_force"):
-                outputs = model.eval(coords, cells, atom_types)
-            torch.cuda.synchronize(device)
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
-        arrays = _outputs_to_arrays(outputs)
-        peak_memory = int(torch.cuda.max_memory_allocated(device))
-        sort_metric, all_events = _profile_events(profiler)
-        inference_range = next(
-            (event for event in all_events if event["name"] == "dpa4/inference.single_energy_force"),
-            None,
-        )
-        if inference_range is None or inference_range["calls"] != 1:
-            raise RuntimeError("trace does not contain exactly one model inference range")
-        device_events = [event for event in all_events if event["self_device_us"] > 0.0]
-        if not device_events:
-            raise RuntimeError(
-                "PyTorch profiler recorded no HIP device events; check profiler support"
+
+        if profiled:
+            start = time.perf_counter()
+            with torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True,
+            ) as profiler:
+                with torch.profiler.record_function("dpa4/inference.single_energy_force"):
+                    outputs = model.eval(coords, cells, atom_types)
+                torch.cuda.synchronize(device)
+            profile_wall_ms = (time.perf_counter() - start) * 1000.0
+            arrays = _outputs_to_arrays(outputs)
+            peak_memory = int(torch.cuda.max_memory_allocated(device))
+            sort_metric, all_events = _profile_events(profiler)
+            inference_range = next(
+                (event for event in all_events if event["name"] == "dpa4/inference.single_energy_force"),
+                None,
             )
+            if inference_range is None or inference_range["calls"] != 1:
+                raise RuntimeError("trace does not contain exactly one model inference range")
+            device_events = [event for event in all_events if event["self_device_us"] > 0.0]
+            if not device_events:
+                raise RuntimeError(
+                    "PyTorch profiler recorded no HIP device events; check profiler support"
+                )
+            timing_report = {
+                "profiled_inference_calls": 1,
+                "profile_wall_ms": float(profile_wall_ms),
+                "profile_wall_ms_note": "Includes profiler startup, capture and shutdown; not inference latency.",
+                "profiler_sort_metric": sort_metric,
+                "device_event_count": len(device_events),
+                "top_profiler_events": all_events[:40],
+                "trace_file": str(trace_path),
+            }
+        else:
+            iterations = int(args.iterations)
+            elapsed_samples_ms = []
+            outputs = None
+            for _ in range(iterations):
+                torch.cuda.synchronize(device)
+                start = time.perf_counter()
+                outputs = model.eval(coords, cells, atom_types)
+                torch.cuda.synchronize(device)
+                elapsed_samples_ms.append((time.perf_counter() - start) * 1000.0)
+            arrays = _outputs_to_arrays(outputs)
+            peak_memory = int(torch.cuda.max_memory_allocated(device))
+            timing_report = {
+                "timed_inference_calls": iterations,
+                "inference_wall_ms_samples": elapsed_samples_ms,
+                "inference_wall_ms_mean": float(np.mean(elapsed_samples_ms)),
+                "inference_wall_ms_median": float(np.median(elapsed_samples_ms)),
+                "inference_wall_ms_p95": float(np.percentile(elapsed_samples_ms, 95)),
+                "inference_wall_ms_min": float(np.min(elapsed_samples_ms)),
+                "inference_wall_ms_max": float(np.max(elapsed_samples_ms)),
+                "inference_wall_ms_note": "Measured without torch.profiler; each iteration is synchronized before and after DeepPot.eval.",
+            }
+
+        if profiled:
+            memory_report = {
+                "profile_peak_allocated_bytes": peak_memory,
+                "profile_peak_increment_bytes": max(peak_memory - memory_before, 0),
+            }
+        else:
+            memory_report = {
+                "peak_allocated_bytes": peak_memory,
+                "peak_increment_bytes": max(peak_memory - memory_before, 0),
+            }
         report = {
             "mode": "direct_dpa4_single_card",
+            "profiled": profiled,
             "model_file": str(Path(args.model_file).resolve()),
             "input_source": input_source,
             "backend": _deepmd_backend_name(model),
@@ -784,34 +837,28 @@ def _run_dpa4(args) -> int:
             "command": args.cli_command,
             "hip_version": torch.version.hip,
             "torch_version": str(torch.__version__),
-            "profiled_inference_calls": 1,
             "warmup_calls": args.warmup,
-            "with_stack": bool(args.with_stack),
+            "with_stack": profiled,
             "world_size": 1,
-            "analysis_goal": "hotspots",
             "atom_count": int(coords.shape[1]),
             "source_atom_count": int(source_system[0].shape[1]),
             "replication_factors": list(replicas),
             "sizing_probe_calls": len(sizing.get("sizing_probes", [])),
             "sizing": sizing,
-            "profile_wall_ms": float(elapsed_ms),
-            "profile_wall_ms_note": "Includes profiler startup, capture and shutdown; not inference latency.",
             "memory_before_bytes": memory_before,
-            "profile_peak_allocated_bytes": peak_memory,
-            "profile_peak_increment_bytes": max(peak_memory - memory_before, 0),
-            "profiler_sort_metric": sort_metric,
-            "device_event_count": len(device_events),
-            "top_profiler_events": all_events[:40],
             "outputs": {
                 name: {"shape": list(value.shape), "dtype": str(value.dtype)}
                 for name, value in arrays.items()
             },
-            "trace_file": str(trace_path),
+            **memory_report,
+            **timing_report,
         }
-        profiler.export_chrome_trace(str(trace_path))
-        report["trace_analysis"] = _summarize_trace(trace_path)
+        if profiled:
+            report["analysis_goal"] = "hotspots"
+            profiler.export_chrome_trace(str(trace_path))
+            report["trace_analysis"] = _summarize_trace(trace_path)
+            print(f"DPA4 trace: {trace_path}", flush=True)
         summary_path.write_text(json.dumps(report, indent=2) + "\n")
-        print(f"DPA4 trace: {trace_path}", flush=True)
         print(f"DPA4 summary: {summary_path}", flush=True)
         print(json.dumps(report, sort_keys=True), flush=True)
         return 0
@@ -1286,11 +1333,15 @@ def build_parser() -> argparse.ArgumentParser:
                               help="profile exactly the supplied input without replication")
     dpa4.set_defaults(auto_size=True)
     dpa4.add_argument("--warmup", type=int, default=5,
-                      help="same-size inference calls before capture (default 5)")
+                      help="same-size inference calls before measurement (default 5)")
     dpa4.add_argument(
-        "--with-stack",
+        "--no-profile",
         action="store_true",
-        help="record Python stack information during profiler capture (adds overhead)",
+        help="skip torch.profiler and measure synchronized inference iterations",
+    )
+    dpa4.add_argument(
+        "--iterations", type=int, default=10,
+        help="timed inference calls in --no-profile mode (default 10)",
     )
     dpa4.add_argument(
         "--input-type-map", default=None,
