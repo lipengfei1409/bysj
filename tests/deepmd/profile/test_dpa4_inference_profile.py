@@ -746,7 +746,7 @@ def _run_dpa4(args) -> int:
             ],
             record_shapes=True,
             profile_memory=True,
-            with_stack=True,
+            with_stack=bool(args.with_stack),
         ) as profiler:
             with torch.profiler.record_function("dpa4/inference.single_energy_force"):
                 outputs = model.eval(coords, cells, atom_types)
@@ -786,6 +786,7 @@ def _run_dpa4(args) -> int:
             "torch_version": str(torch.__version__),
             "profiled_inference_calls": 1,
             "warmup_calls": args.warmup,
+            "with_stack": bool(args.with_stack),
             "world_size": 1,
             "analysis_goal": "hotspots",
             "atom_count": int(coords.shape[1]),
@@ -1286,6 +1287,11 @@ def build_parser() -> argparse.ArgumentParser:
     dpa4.set_defaults(auto_size=True)
     dpa4.add_argument("--warmup", type=int, default=5,
                       help="same-size inference calls before capture (default 5)")
+    dpa4.add_argument(
+        "--with-stack",
+        action="store_true",
+        help="record Python stack information during profiler capture (adds overhead)",
+    )
     dpa4.add_argument(
         "--input-type-map", default=None,
         help="comma-separated source element order, e.g. O,H; defaults to embedded NPZ type_map, then sidecar metadata, otherwise model indices",

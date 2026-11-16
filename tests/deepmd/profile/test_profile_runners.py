@@ -60,7 +60,7 @@ class ProfileRunners(unittest.TestCase):
             np.savez(root / "system.npz", coords=np.zeros((2, 3)), atom_types=np.zeros(2, dtype=np.int32))
             args = cli.build_parser().parse_args([
                 "dpa4", "--model-file", str(model_path), "--input-npz", str(root / "system.npz"),
-                "--output-dir", str(root / "out"), "--fixed-input",
+                "--output-dir", str(root / "out"), "--fixed-input", "--with-stack",
             ])
             args.cli_command = ["test"]
             model = Mock()
@@ -94,6 +94,11 @@ class ProfileRunners(unittest.TestCase):
             self.assertEqual(report["warmup_calls"], 5)
             self.assertEqual(report["atom_count"], 2)
             self.assertEqual(report["trace_analysis"]["device_kernel_calls"], 1)
+            self.assertTrue(report["with_stack"])
+            self.assertNotIn("python_call_tree_file", report)
+            self.assertTrue(Path(report["trace_file"]).is_file())
+            self.assertEqual(cli.torch.profiler.profile.call_args.kwargs["with_stack"], True)
+            profiler.export_chrome_trace.assert_called_once()
 
     def test_lammps_single_and_multi_rank_collect_complete_windows(self):
         for ranks in (1, 2):
