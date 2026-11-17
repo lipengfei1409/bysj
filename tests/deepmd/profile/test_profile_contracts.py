@@ -28,8 +28,22 @@ class ProfileContracts(unittest.TestCase):
         self.assertEqual(args.memory_fraction, 0.70)
         self.assertEqual(getattr(args, "warmup", None), 5)
         self.assertFalse(args.no_profile)
+        self.assertFalse(args.compile)
         self.assertEqual(args.iterations, 10)
         self.assertFalse(hasattr(args, "with_stack"))
+
+    def test_compile_is_an_opt_in_direct_dpa4_switch(self):
+        args = cli.build_parser().parse_args([
+            "dpa4", "--model-file", "m.pt", "--input-npz", "s.npz",
+            "--output-dir", "out", "--compile",
+        ])
+        self.assertTrue(args.compile)
+        lammps_args = cli.build_parser().parse_args([
+            "lammps", "--model-file", "m.pt2", "--data-file", "s.data",
+            "--lammps-input", "in", "--lammps-exe", "lmp", "--gpu-ids", "0",
+            "--output-dir", "out",
+        ])
+        self.assertFalse(hasattr(lammps_args, "compile"))
 
     def test_no_profile_mode_is_explicit(self):
         args = cli.build_parser().parse_args([
@@ -168,7 +182,7 @@ class ProfileContracts(unittest.TestCase):
                 cli._choose_large_system(Mock(), source, args)
 
     def test_direct_constructor_uses_original_deepmd_for_both_backends(self):
-        args = SimpleNamespace(device="cuda:1", model_file=Path("model.pt"))
+        args = SimpleNamespace(device="cuda:1", model_file=Path("model.pt"), compile=True)
         for backend in ("pt", "pt_expt"):
             with self.subTest(backend=backend):
                 backend_type = type("DeepEval", (), {"__module__": f"deepmd.{backend}.infer.deep_eval"})
@@ -178,19 +192,34 @@ class ProfileContracts(unittest.TestCase):
                     self.assertEqual(kwargs, {"auto_batch_size": False})
                     self.assertEqual(cli.os.environ["DEVICE"], "cuda")
                     self.assertEqual(cli.os.environ["LOCAL_RANK"], "1")
+                    self.assertEqual(
+                        cli.os.environ["DP_COMPILE_INFER"],
+                        "1" if args.compile else "0",
+                    )
                     return expected
                 package = ModuleType("deepmd")
                 infer = ModuleType("deepmd.infer")
                 infer.DeepPot = Mock(side_effect=create)
                 with patch.dict(sys.modules, {"deepmd": package, "deepmd.infer": infer}), \
                      patch.object(cli, "_loaded_deepmd_device_modules", return_value=[]), \
-                     patch.dict(cli.os.environ, {"DEVICE": "cpu", "LOCAL_RANK": "7"}):
+                     patch.dict(
+                         cli.os.environ,
+                         {"DEVICE": "cpu", "LOCAL_RANK": "7", "DP_COMPILE_INFER": "shell-value"},
+                     ):
                     actual = cli._construct_deepmd_model(args)
                     self.assertIs(actual, expected)
                     self.assertEqual(cli._deepmd_backend_name(actual), backend)
                     self.assertEqual(cli.os.environ["DEVICE"], "cpu")
                     self.assertEqual(cli.os.environ["LOCAL_RANK"], "7")
-                infer.DeepPot.assert_called_once()
+                    self.assertEqual(cli.os.environ["DP_COMPILE_INFER"], "shell-value")
+                    args.compile = False
+                    cli.os.environ.pop("DP_COMPILE_INFER", None)
+                    actual = cli._construct_deepmd_model(args)
+                    self.assertIs(actual, expected)
+                    self.assertEqual(cli.os.environ["DEVICE"], "cpu")
+                    self.assertEqual(cli.os.environ["LOCAL_RANK"], "7")
+                    self.assertNotIn("DP_COMPILE_INFER", cli.os.environ)
+                self.assertEqual(infer.DeepPot.call_count, 2)
 
     def test_direct_cli_does_not_offer_native_patches(self):
         args = cli.build_parser().parse_args([

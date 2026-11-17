@@ -52,6 +52,7 @@ source /opt/dtk/env.sh && python3 tests/deepmd/profile/test_dpa4_inference_profi
 - 没有周期盒时保持输入规模。`--max-atoms N` 设置上限，基础输入已超限会报错。`--fixed-input` 禁用自动扩容。
 - 选定规模后额外预热 5 次、同步，再采集一次完整 eval（包括能量、力、virial 和接口中的数据转换）。`--warmup` 可调整预热次数。
 - `dpa4` 默认开启 profiler 和 Python stack capture，会把可采集的 `python_function` 调用路径及文件、行号写入 Chrome trace，供 Perfetto 展开查看。C++ 内部函数和设备 kernel 不会变成 Python 调用树。
+- 编译推理默认关闭；仅对直接 `dpa4` 命令添加 `--compile`，即可在 `DeepPot` 初始化期间设置 `DP_COMPILE_INFER=1`。关闭时会显式设置为 `0`，并在模型构造后恢复原环境变量。编译可能在预热/扩容探测调用中产生额外耗时，这些调用不计入最终测时；比较延迟时建议使用同一模型、`--fixed-input` 和 `--no-profile`。DeepMD 文档目前注明该路径需要 `torch==2.11` / CUDA ≥ 12.6，而本脚本是 HIP/DCU runner，因此启用前需确认当前 DeepMD/设备组合支持；开关只请求编译路径，不保证加速；LAMMPS 子命令不受影响。
 - 需要测不带 profiler 的推理时间时，在 `dpa4` 命令后添加 `--no-profile`。程序仍执行预热，然后同步测量 `DeepPot.eval`；默认测 10 次，可用 `--iterations N` 调整。输出 `dpa4_inference_summary.json`，报告均值、中位数、p95、最小值和最大值，不生成 Chrome trace。建议搭配 `--fixed-input` 做可重复比较。
 - 始终使用原始 `DeepPot.eval`，支持当前 DeepMD 安装可读取的 `.pt/.pth/.pt2/.pte` 等模型；不要求 eager `pt_expt`，不需要编译本仓库扩展，也没有 `--native-ops` 参数。`--expected-dcu-name ''` 可关闭默认 K500SM_AI 名称检查。
 - NPZ 包含 `coords`、`atom_types` 和可选 `cells`，只使用第一帧。geometry 支持显式标注 `Atoms # atomic/charge/molecular/full` 的正交 LAMMPS 数据，正确跳过 image flags。`--input-type-map O,H` 可显式指定输入编号对应的元素，优先于 NPZ 内嵌的 `type_map` 和旁边同名 `.metadata.json` 的 `type_map`（依次读取）；都没有时，按模型自身编号解释并检查范围。报告保存模型类型顺序和重映射表。

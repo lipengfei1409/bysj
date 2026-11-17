@@ -660,6 +660,8 @@ def _construct_deepmd_model(args):
             )
     prior_device = os.environ.get("DEVICE")
     prior_rank = os.environ.get("LOCAL_RANK")
+    prior_compile_infer = os.environ.get("DP_COMPILE_INFER")
+    os.environ["DP_COMPILE_INFER"] = "1" if getattr(args, "compile", False) else "0"
     if not initialized_modules:
         os.environ["DEVICE"] = "cuda"
         os.environ["LOCAL_RANK"] = str(rank)
@@ -670,6 +672,10 @@ def _construct_deepmd_model(args):
             raise RuntimeError("profiling requires an installed DeepMD-kit") from error
         return DeepPot(str(args.model_file), auto_batch_size=False)
     finally:
+        if prior_compile_infer is None:
+            os.environ.pop("DP_COMPILE_INFER", None)
+        else:
+            os.environ["DP_COMPILE_INFER"] = prior_compile_infer
         if not initialized_modules:
             if prior_device is None:
                 os.environ.pop("DEVICE", None)
@@ -821,6 +827,7 @@ def _run_dpa4(args) -> int:
         report = {
             "mode": "direct_dpa4_single_card",
             "profiled": profiled,
+            "compile_requested": bool(getattr(args, "compile", False)),
             "model_file": str(Path(args.model_file).resolve()),
             "input_source": input_source,
             "backend": _deepmd_backend_name(model),
@@ -1334,6 +1341,10 @@ def build_parser() -> argparse.ArgumentParser:
     dpa4.set_defaults(auto_size=True)
     dpa4.add_argument("--warmup", type=int, default=5,
                       help="same-size inference calls before measurement (default 5)")
+    dpa4.add_argument(
+        "--compile", action="store_true",
+        help="request DeepMD compiled inference via DP_COMPILE_INFER (default off)",
+    )
     dpa4.add_argument(
         "--no-profile",
         action="store_true",

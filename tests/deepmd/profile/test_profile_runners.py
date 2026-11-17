@@ -60,7 +60,7 @@ class ProfileRunners(unittest.TestCase):
             np.savez(root / "system.npz", coords=np.zeros((2, 3)), atom_types=np.zeros(2, dtype=np.int32))
             args = cli.build_parser().parse_args([
                 "dpa4", "--model-file", str(model_path), "--input-npz", str(root / "system.npz"),
-                "--output-dir", str(root / "out"), "--fixed-input",
+                "--output-dir", str(root / "out"), "--fixed-input", "--compile",
             ])
             args.cli_command = ["test"]
             model = Mock()
@@ -91,6 +91,7 @@ class ProfileRunners(unittest.TestCase):
             self.assertEqual(report["operator_source"], "original DeepMD")
             self.assertNotIn("native_ops", report)
             self.assertEqual(report["profiled_inference_calls"], 1)
+            self.assertTrue(report["compile_requested"])
             self.assertEqual(report["warmup_calls"], 5)
             self.assertEqual(report["atom_count"], 2)
             self.assertEqual(report["trace_analysis"]["device_kernel_calls"], 1)
@@ -133,6 +134,7 @@ class ProfileRunners(unittest.TestCase):
             self.assertEqual(len(reports), 1)
             report = json.loads(reports[0].read_text())
             self.assertFalse(report["profiled"])
+            self.assertFalse(report["compile_requested"])
             self.assertFalse(report["with_stack"])
             self.assertEqual(report["timed_inference_calls"], 3)
             self.assertEqual(len(report["inference_wall_ms_samples"]), 3)

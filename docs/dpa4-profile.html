@@ -135,6 +135,7 @@
   --device cuda:0 --memory-fraction 0.70 \
   --output-dir /tmp/profile-deepmd</code></pre></div>
           <p class="muted">始终调用原始 DeepPot，不加载本仓库 native 算子。支持 DeepMD 自动选择的 pt/pt_expt 等后端。附带水输入按 metadata 的 O,H 顺序重映射到模型元素编号；可用 <code>--input-type-map O,H</code> 显式指定。输出包含 Chrome trace 与热点 summary。</p>
+          <p class="muted">可选 <code>--compile</code> 请求 DeepMD 编译推理（默认关闭），只影响直接 <code>dpa4</code> 路径。编译可能发生在预热中；DeepMD 文档目前注明需要 <code>torch==2.11</code> / CUDA ≥ 12.6，本 HIP/DCU runner 是否可用需确认。该选项不保证加速，LAMMPS 路径不受影响。</p>
         </article>
         <article class="card">
           <p class="tag">LAMMPS · one rank per HCU</p>
