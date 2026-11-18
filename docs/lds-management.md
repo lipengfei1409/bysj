@@ -17,15 +17,15 @@
 
 | HazyResearch Megakernels | 本实现 | 位置 |
 | --- | --- | --- |
-| `default_config`（228 KiB / 16 KiB page / 13 page / 16 consumer warps） | `Config`（64 KiB / 8 KiB page / 6 page / 4 consumer waves） | `csrc/dmk/config.h` |
-| `instruction_state_t<config>`（instruction / timings / pid_order / semaphores / scratch） | `InstructionState<Config>` | `csrc/dmk/config.h` |
-| `state<config>`（`pid(lid)` / `wait_page_ready` / `finish_page` / `next_instruction`） | `State<Config>` | `csrc/dmk/state.h` |
-| `page<config>[NUM_PAGES]` 放在 `extern __shared__` | `Page<Config>[kNumPages]`，base 128 B 对齐 | `csrc/dmk/state.h`、`csrc/dmk/megakernel.h` |
+| `default_config`（228 KiB / 16 KiB page / 13 page / 16 consumer warps） | `dmk::config`（64 KiB / 8 KiB page / 6 page / 4 consumer waves） | `csrc/dmk/config.h` |
+| `instruction_state_t<config>`（instruction / timings / pid_order / semaphores / scratch） | `InstructionState` | `csrc/dmk/config.h` |
+| `state<config>`（`pid(lid)` / `wait_page_ready` / `finish_page` / `next_instruction`） | `State` | `csrc/dmk/state.h` |
+| `page<config>[NUM_PAGES]` 放在 `extern __shared__` | `Page[kNumPages]`，base 128 B 对齐 | `csrc/dmk/state.h`、`csrc/dmk/megakernel.h` |
 | controller：fetch → page order → semaphores → publish | `controller::prepare_instruction` / `main_loop` | `csrc/dmk/controller.h` |
 | `MAKE_WORKER` + 五个角色 | `BaseOp` 虚接口 + `make_op` 工厂 + `Role`/`worker_loop`（DCU 版去掉 launcher，见 §8） | `csrc/dmk/op.h`、`csrc/dmk/state.h` |
 | `kittens::semaphore`（mbarrier） | `lds::Semaphore`（LDS 上的 parity 计数） | `csrc/dmk/lds.h` |
 | `__syncwarp()` / `kittens::warp::sync()` | `lds::wave_barrier()`（`__builtin_amdgcn_wave_barrier`） | `csrc/dmk/lds.h` |
-| `NoOp<config>` | `NoOp<Config, Globals>` | `csrc/dmk/noop.h` |
+| `NoOp<config>` | `NoOp<Globals>` | `csrc/dmk/noop.h` |
 | Llama 的 matvec/attention op | `ElementwiseOp` / `GemmOp` / `EmbeddingOp` 作为具体实现 | `csrc/dmk/demo_op.h`、`gemm.h`、`embedding.h` |
 | `get_smid()` 选择指令行 | `blockIdx.x` 选择指令行 | `csrc/dmk/controller.h` |
 | TMA load/store、`cp.async.bulk` timings | 普通 HBM 读写；timings 默认关闭 | `gemm.h`、`embedding.h`、`config.h` |
@@ -63,7 +63,7 @@ DCU 每个 CU 只有 **64 KiB LDS**（DTK 26.04 HIP 编程指南 §2.2），wave
 静态 LDS：
 
 ```
-InstructionState<Config> × 2        = 2 × 5120 B = 10240 B
+InstructionState × 2        = 2 × 5120 B = 10240 B
 instruction_arrived  × 2            = 32 B
 instruction_finished × 2            = 32 B
 page_finished[6][1]                 = 96 B
@@ -91,29 +91,28 @@ static + launch  = 59696 B < 65536 B
 
 ## 2. 静态 LDS：指令流水槽
 
-`InstructionState<Config>`（`csrc/dmk/config.h`）逐字段对应上游：
+`InstructionState`（`csrc/dmk/config.h`）逐字段对应上游：
 
 ```cpp
-template <typename Config>
 struct alignas(128) InstructionState {
-    int instruction[Config::kInstructionWidth];   // 32 words
-    int timings[Config::kTimingWidth];            // 128 ints（默认不写）
-    int pid_order[Config::kNumPages];             // lid -> pid
+    int instruction[config::kInstructionWidth];   // 32 words
+    int timings[config::kTimingWidth];            // 128 ints（默认不写）
+    int pid_order[config::kNumPages];             // lid -> pid
     int num_semaphores;                           // 本指令动态 semaphore 数
-    lds::Semaphore semaphores[Config::kDynamicSemaphores];
-    int scratch[Config::kScratchBytes / sizeof(int)];
+    lds::Semaphore semaphores[config::kDynamicSemaphores];
+    int scratch[config::kScratchBytes / sizeof(int)];
 };
 ```
 
 `mk_internal` 静态声明两块槽 + 三类 semaphore：
 
 ```cpp
-__shared__ alignas(128) InstructionState<Config> instruction_states[kStages];
+__shared__ alignas(128) InstructionState instruction_states[kStages];
 __shared__ lds::Semaphore instruction_arrived[kStages];
 __shared__ lds::Semaphore instruction_finished[kStages];
 __shared__ lds::Semaphore page_finished[kNumPages][kStageBits];
 __shared__ lds::Semaphore semaphores_ready;
-extern __shared__ int dynamic_lds[];   // 对齐 128 B 后解释成 Page<Config>[kNumPages]
+extern __shared__ int dynamic_lds[];   // 对齐 128 B 后解释成 Page[kNumPages]
 ```
 
 初始化规则与上游一致：
@@ -134,18 +133,17 @@ extern __shared__ int dynamic_lds[];   // 对齐 128 B 后解释成 Page<Config>
 
 ### 3.1 page
 
-`Page<Config>` 是固定 8 KiB 的裸缓冲区，128 B 对齐：
+`Page` 是固定 8 KiB 的裸缓冲区，128 B 对齐：
 
 ```cpp
-template <typename Config>
 struct alignas(128) Page {
-    int data[Config::kPageSize / sizeof(int)];
+    char data[config::kPageSize];   // 裸字节，op 自己 reinterpret 成 float/float4
     __device__ void* ptr(size_t byte_offset = 0);
 };
 ```
 
 dynamic LDS 的 base 由 kernel 自己对齐到 128 B，然后直接
-`reinterpret_cast<Page<Config>*>`；page `p` 的地址就是 `pages[p]`。
+`reinterpret_cast<Page*>`；page `p` 的地址就是 `pages[p]`。
 没有 arena、没有 bump pointer、没有 free list——页数在编译期固定，
 生命周期完全由 controller 的置换和 `page_finished` 决定。
 
@@ -255,16 +253,16 @@ wait(0) 在 ticket=4 之后返回；wait(1) 在 ticket=8 之后返回。
 | `+1` | storer | 1 |
 | `+2` | controller | 1 |
 
-worker 循环是 `worker_loop<Role, Config, Globals, Ops...>`。每条指令在本地
+worker 循环是 `worker_loop<Role, Globals, Ops...>`。每条指令在本地
 buffer 里构造一次当前 op，然后通过 `BaseOp*` 虚调用进入 op。角色只决定调哪个
 hook，op 本身只看到 `load/run/store`：
 
 ```cpp
-alignas(16) unsigned char storage[Config::kOpStorageBytes];
+alignas(16) unsigned char storage[config::kOpStorageBytes];
 for (instruction_index = 0, ring = 0; index < g.num_instructions;
      next_instruction()) {
     await_instruction();                    // wait instruction_arrived[ring]
-    BaseOp* op = make_op<Config, Globals, Ops...>(
+    BaseOp* op = make_op<Globals, Ops...>(
         instruction()[0], storage, instruction());
     if constexpr (Role == Loader) op->load(s, g);
     else if constexpr (Role == Storer) op->store(s, g);
@@ -303,28 +301,28 @@ worker 已经真正结束。
 
 ### 5.3 op 接口
 
-每个 op 都继承 `BaseOp<Config, Globals>`，实现五个 hook：
+每个 op 都继承 `BaseOp<Globals>`，实现五个 hook：
 
 ```cpp
-template <typename Config, typename Globals>
-class MyOp final : public BaseOp<Config, Globals> {
+template <typename Globals>
+class MyOp final : public BaseOp<Globals> {
 public:
     static constexpr int opcode = N;
 
     __device__ explicit MyOp(const int* instruction)
-        : BaseOp<Config, Globals>(instruction) {}
+        : BaseOp<Globals>(instruction) {}
 
     // controller：新指令物理槽 query 应继承的旧逻辑页 id
     __device__ int release_lid(int query) const override;
 
     // controller：初始化本指令的动态 semaphore，返回数量
-    __device__ int init_semaphores(State<Config>& s,
+    __device__ int init_semaphores(State& s,
                                    const Globals& g) const override;
 
     // 三条数据通路，与角色无关：HBM -> page，page 内计算，page -> HBM
-    __device__ void load(State<Config>& s, const Globals& g) const override;
-    __device__ void run(State<Config>& s, const Globals& g) const override;
-    __device__ void store(State<Config>& s, const Globals& g) const override;
+    __device__ void load(State& s, const Globals& g) const override;
+    __device__ void run(State& s, const Globals& g) const override;
+    __device__ void store(State& s, const Globals& g) const override;
 };
 ```
 
@@ -341,7 +339,7 @@ tile 的指令流就写 N 条指令。于是 controller、page 置换和退休�
 的，op 只需要解释自己那 32 个指令字。GEMM 的 A/B/C 三个 page 属于同一个 tile；
 Elementwise 的一个 page 就是那个 tile；Embedding 的一行就是那个 tile。
 
-controller 和 worker 都通过 `make_op<Config, Globals, Ops...>(opcode, storage,
+controller 和 worker 都通过 `make_op<Globals, Ops...>(opcode, storage,
 instruction)` 构造当前 op，并直接调用虚函数；controller 不再出现 opcode
 switch。`Ops...` 是 kernel 实例化时的 op pack，新增 op 只需在
 `megakernel.cpp` 的 pack 里加一个类型。
@@ -353,7 +351,7 @@ HIP/DCU 约束：
   placement-new 一次，调用完即丢弃。
 - op 必须**可平凡析构**（factory 有 `static_assert`），因为 VM 复用 buffer
   不调用析构函数。
-- op 对象大小 ≤ `Config::kOpStorageBytes = 64`，对齐 ≤ 16。
+- op 对象大小 ≤ `config::kOpStorageBytes = 64`，对齐 ≤ 16。
 - op 目前是 header-only/template；如果拆到独立 TU，device 函数指针/vtable
   跨 TU 需要 HIP 的 `-fgpu-rdc`。
 - 虚调用是每条指令每 role 一次；不要在 op 内部逐元素调用虚函数。
@@ -428,7 +426,7 @@ if (copy::aligned<float4>(src) && copy::aligned<float4>(page)) {
     for (size_t e = lane * kVector; e < vector_end; e += kWaveStride)
         copy::store_vec<float4>(page + e, copy::load_vec<float4>(src + e));
 }
-for (size_t e = vector_end + lane; e < count; e += Config::kWaveSize)
+for (size_t e = vector_end + lane; e < count; e += config::kWaveSize)
     page[e] = src[e];                 // 未对齐 base 或不满 kVector 的尾巴
 ```
 
@@ -453,16 +451,16 @@ for (size_t e = vector_end + lane; e < count; e += Config::kWaveSize)
 
 | 文件 | 内容 |
 | --- | --- |
-| `csrc/dmk/config.h` | `Config`、`InstructionState`、静态/动态/launch 字节常量与 `static_assert` |
+| `csrc/dmk/config.h` | `dmk::config` 常量、`InstructionState`、静态/动态/launch 字节常量与 `static_assert` |
 | `csrc/dmk/lds.h` | `lds::Semaphore`（parity）、对齐、`phase_for_ticket` |
 | `csrc/dmk/copy.h` | `load_vec`/`store_vec`/`aligned` 三个向量读写原语（循环在各 op 的 load/store 里） |
-| `csrc/dmk/op.h` | `BaseOp<Config, Globals>` 虚接口、`make_op` 工厂、op 存储约束 |
+| `csrc/dmk/op.h` | `BaseOp<Globals>` 虚接口、`make_op` 工厂、op 存储约束 |
 | `csrc/dmk/state.h` | `Page`、`State`、`Role`、`worker_loop`、`remap_page_order` |
 | `csrc/dmk/controller.h` | `prepare_instruction`、`main_loop`（op 通过 `BaseOp*` 直接调用） |
-| `csrc/dmk/noop.h` | `NoOp<Config, Globals>` |
-| `csrc/dmk/demo_op.h` | `ElementwiseOp<Config, Globals>` |
+| `csrc/dmk/noop.h` | `NoOp<Globals>` |
+| `csrc/dmk/demo_op.h` | `ElementwiseOp<Globals>` |
 | `csrc/dmk/gemm.h` | 低层 `GemmWave`/`run_gemm_wave` + 页面版 `GemmOp` |
-| `csrc/dmk/embedding.h` | `EmbeddingOp<Config, Globals>` |
+| `csrc/dmk/embedding.h` | `EmbeddingOp<Globals>` |
 | `csrc/dmk/megakernel.h` | `MkGlobals`、`mk_internal`、`mk` kernel 模板、`launch_mk` 声明 |
 | `csrc/megakernel.cpp` | demo kernel 实例、动态 LDS/设备检查、`launch_mk` |
 | `tests/csrc/test_dmk_lds.cpp` | host 逻辑测试 |
@@ -481,7 +479,7 @@ python tests/csrc/run_dmk_lds_test.py --host-only
 
 覆盖：
 
-- `Config` 预算：`kStaticBytes == ...`、`kStaticBytes + kLaunchBytes <= 64 KiB`；
+- `config` 预算：`kStaticBytes == ...`、`kStaticBytes + kLaunchBytes <= 64 KiB`；
 - `sizeof(Semaphore)==16`、`sizeof(Page)==kPageSize`、`InstructionState` 128 B 对齐；
 - `phase_for_ticket` 的 parity 序列（expected=1 和 4）；
 - `remap_page_order` 的 identity / rotation 置换；

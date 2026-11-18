@@ -46,7 +46,7 @@ struct MkGlobals {
         if (instructions.data == nullptr) return false;
         if (instructions.shape.dims[0] < blocks ||
             instructions.shape.dims[1] < static_cast<size_t>(num_instructions) ||
-            instructions.shape.dims[2] != Config::kInstructionWidth)
+            instructions.shape.dims[2] != config::kInstructionWidth)
             return false;
         const size_t count = elements();
         if (output.shape.dims[0] != count) return false;
@@ -56,23 +56,23 @@ struct MkGlobals {
     }
 };
 
-template <typename Config, typename Globals, typename... Ops>
+template <typename Globals, typename... Ops>
 __device__ inline void mk_internal(const Globals& g) {
     __shared__ alignas(128)
-        InstructionState<Config> instruction_states[Config::kStages];
-    __shared__ lds::Semaphore instruction_arrived[Config::kStages];
-    __shared__ lds::Semaphore instruction_finished[Config::kStages];
+        InstructionState instruction_states[config::kStages];
+    __shared__ lds::Semaphore instruction_arrived[config::kStages];
+    __shared__ lds::Semaphore instruction_finished[config::kStages];
     __shared__ lds::Semaphore
-        page_finished[Config::kNumPages][Config::kStageBits];
+        page_finished[config::kNumPages][config::kStageBits];
     __shared__ lds::Semaphore semaphores_ready;
 
     extern __shared__ int dynamic_lds[];
     const std::uintptr_t raw =
         reinterpret_cast<std::uintptr_t>(dynamic_lds);
     const std::uintptr_t aligned =
-        (raw + (Config::kDynamicAlign - 1)) &
-        ~static_cast<std::uintptr_t>(Config::kDynamicAlign - 1);
-    Page<Config>* pages = reinterpret_cast<Page<Config>*>(aligned);
+        (raw + (config::kDynamicAlign - 1)) &
+        ~static_cast<std::uintptr_t>(config::kDynamicAlign - 1);
+    Page* pages = reinterpret_cast<Page*>(aligned);
 
     static_assert(
         sizeof(instruction_states) + sizeof(instruction_arrived) +
@@ -82,20 +82,20 @@ __device__ inline void mk_internal(const Globals& g) {
         "static LDS accounting drifted from config.h");
 
     // Zero the timing slots and initialize the persistent semaphores.
-    if (threadIdx.x < Config::kTimingWidth) {
+    if (threadIdx.x < config::kTimingWidth) {
 #pragma unroll
-        for (int stage = 0; stage < Config::kStages; ++stage)
+        for (int stage = 0; stage < config::kStages; ++stage)
             instruction_states[stage].timings[threadIdx.x] = 0;
     }
-    if (threadIdx.x < Config::kStages) {
+    if (threadIdx.x < config::kStages) {
         instruction_arrived[threadIdx.x].init(1);
-        instruction_finished[threadIdx.x].init(Config::kWorkerWaves);
+        instruction_finished[threadIdx.x].init(config::kWorkerWaves);
     }
-    if (threadIdx.x < Config::kNumPages) {
+    if (threadIdx.x < config::kNumPages) {
 #pragma unroll
-        for (int bit = 0; bit < Config::kStageBits; ++bit) {
+        for (int bit = 0; bit < config::kStageBits; ++bit) {
             const uint32_t count =
-                static_cast<uint32_t>(Config::kConsumerWaves << bit);
+                static_cast<uint32_t>(config::kConsumerWaves << bit);
             page_finished[threadIdx.x][bit].init(count);
             // Complete phase 0 so pages are available for instruction 0.
             page_finished[threadIdx.x][bit].arrive(count);
@@ -107,30 +107,30 @@ __device__ inline void mk_internal(const Globals& g) {
     }
     __syncthreads();
 
-    State<Config> state{instruction_states,
-                        instruction_arrived,
-                        instruction_finished,
-                        &page_finished[0][0],
-                        &semaphores_ready,
-                        pages,
-                        static_cast<uint64_t>(clock64())};
+    State state{instruction_states,
+                instruction_arrived,
+                instruction_finished,
+                &page_finished[0][0],
+                &semaphores_ready,
+                pages,
+                static_cast<uint64_t>(clock64())};
 
-    const int wave = static_cast<int>(threadIdx.x / Config::kWaveSize);
-    if (wave < Config::kConsumerWaves) {
-        worker_loop<Role::Consumer, Config, Globals, Ops...>(g, state);
-    } else if (wave == Config::kConsumerWaves) {
-        worker_loop<Role::Loader, Config, Globals, Ops...>(g, state);
-    } else if (wave == Config::kConsumerWaves + 1) {
-        worker_loop<Role::Storer, Config, Globals, Ops...>(g, state);
+    const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
+    if (wave < config::kConsumerWaves) {
+        worker_loop<Role::Consumer, Globals, Ops...>(g, state);
+    } else if (wave == config::kConsumerWaves) {
+        worker_loop<Role::Loader, Globals, Ops...>(g, state);
+    } else if (wave == config::kConsumerWaves + 1) {
+        worker_loop<Role::Storer, Globals, Ops...>(g, state);
     } else {
-        controller::main_loop<Config, Globals, Ops...>(g, state);
+        controller::main_loop<Globals, Ops...>(g, state);
     }
     __syncthreads();
 }
 
-template <typename Config, typename Globals, typename... Ops>
+template <typename Globals, typename... Ops>
 __global__ void mk(const Globals g) {
-    mk_internal<Config, Globals, Ops...>(g);
+    mk_internal<Globals, Ops...>(g);
 }
 
 // Launch the demo kernel (NoOp + ElementwiseOp). `blocks` CTAs each read their

@@ -17,7 +17,7 @@
 namespace {
 
 using namespace dmk;
-using dmk::mk::Config;
+namespace config = dmk::config;
 using dmk::mk::InstructionState;
 using dmk::mk::kDynamicBytes;
 using dmk::mk::kLaunchBytes;
@@ -41,32 +41,32 @@ void check(bool condition, const char* expression, int line) {
 #define CHECK(expression) check((expression), #expression, __LINE__)
 
 void test_config_budget() {
-    CHECK(Config::kStages == 2);
-    CHECK(Config::kStageBits == 1);
-    CHECK(Config::kInstructionWidth == 32);
-    CHECK(Config::kConsumerWaves == 4);
-    CHECK(Config::kServiceWaves == 3);
-    CHECK(Config::kWorkerWaves == 6);
-    CHECK(Config::kTotalWaves == 7);
-    CHECK(Config::kThreads == 448);
-    CHECK(Config::kPageSize == 8192);
-    CHECK(Config::kNumPages == 6);
+    CHECK(config::kStages == 2);
+    CHECK(config::kStageBits == 1);
+    CHECK(config::kInstructionWidth == 32);
+    CHECK(config::kConsumerWaves == 4);
+    CHECK(config::kServiceWaves == 3);
+    CHECK(config::kWorkerWaves == 6);
+    CHECK(config::kTotalWaves == 7);
+    CHECK(config::kThreads == 448);
+    CHECK(config::kPageSize == 8192);
+    CHECK(config::kNumPages == 6);
 
     CHECK(kDynamicBytes == 6 * 8192);
-    CHECK(kLaunchBytes == kDynamicBytes + Config::kDynamicAlign);
+    CHECK(kLaunchBytes == kDynamicBytes + config::kDynamicAlign);
     CHECK(kStaticBytes ==
-          sizeof(InstructionState<Config>) * Config::kStages +
+          sizeof(InstructionState) * config::kStages +
               sizeof(lds::Semaphore) *
-                  (2 * Config::kStages + 1 +
-                   Config::kNumPages * Config::kStageBits));
-    CHECK(kStaticBytes + kLaunchBytes <= Config::kLdsBytesPerCu);
+                  (2 * config::kStages + 1 +
+                   config::kNumPages * config::kStageBits));
+    CHECK(kStaticBytes + kLaunchBytes <= config::kLdsBytesPerCu);
 
     CHECK(sizeof(lds::Semaphore) == 16);
     CHECK(alignof(lds::Semaphore) == 16);
-    CHECK(sizeof(InstructionState<Config>) % 128 == 0);
-    CHECK(sizeof(Page<Config>) == Config::kPageSize);
-    CHECK(alignof(Page<Config>) == 128);
-    CHECK(std::is_trivially_destructible<InstructionState<Config>>::value);
+    CHECK(sizeof(InstructionState) % 128 == 0);
+    CHECK(sizeof(Page) == config::kPageSize);
+    CHECK(alignof(Page) == 128);
+    CHECK(std::is_trivially_destructible<InstructionState>::value);
 }
 
 void test_phase_arithmetic() {
@@ -86,7 +86,7 @@ void test_phase_arithmetic() {
 }
 
 void test_page_permutation() {
-    constexpr int kPages = Config::kNumPages;
+    constexpr int kPages = config::kNumPages;
     const int previous[kPages] = {2, 4, 0, 5, 1, 3};
     const int identity[kPages] = {0, 1, 2, 3, 4, 5};
     for (int query = 0; query < kPages; ++query) {
@@ -105,16 +105,16 @@ void test_page_permutation() {
         CHECK(remap_page_order(identity, query) == query);
     }
 
-    CHECK(dmk::mk::ring_advance<Config::kStages>(0) == 1);
-    CHECK(dmk::mk::ring_advance<Config::kStages>(1) == 0);
-    CHECK(dmk::mk::ring_retreat<Config::kStages>(0) == 1);
-    CHECK(dmk::mk::ring_retreat<Config::kStages>(1) == 0);
+    CHECK(dmk::mk::ring_advance<config::kStages>(0) == 1);
+    CHECK(dmk::mk::ring_advance<config::kStages>(1) == 0);
+    CHECK(dmk::mk::ring_retreat<config::kStages>(0) == 1);
+    CHECK(dmk::mk::ring_retreat<config::kStages>(1) == 0);
 }
 
 void test_vector_access() {
     constexpr size_t kCount = 1000;
     constexpr size_t kVector = sizeof(float4) / sizeof(float);
-    constexpr size_t kWaveStride = 64 * kVector;  // Config::kWaveSize * kVector
+    constexpr size_t kWaveStride = 64 * kVector;  // config::kWaveSize * kVector
 
     alignas(16) float src[kCount];
     alignas(16) float dst[kCount];

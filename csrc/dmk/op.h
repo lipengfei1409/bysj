@@ -2,7 +2,7 @@
 
 // Operation interface for the page-based megakernel.
 //
-// Every op derives from BaseOp<Config, Globals> and describes one instruction
+// Every op derives from BaseOp<Globals> and describes one instruction
 // of work with three data hooks plus the two controller hooks:
 //
 //   load(s, g)           bring this instruction's inputs from HBM into its
@@ -53,6 +53,7 @@
 // shape, alignment and tail behaviour are op-specific, so the copy loops live
 // there and only the 16-byte load/store primitives come from copy.h.
 
+#include "config.h"
 #include "utils.h"
 
 #include <new>
@@ -60,10 +61,9 @@
 
 namespace dmk::mk {
 
-template <typename Config>
 struct State;
 
-template <typename Config, typename Globals>
+template <typename Globals>
 class BaseOp {
 public:
     // Page allocator: for the previous instruction, return the logical page id
@@ -71,15 +71,15 @@ public:
     __device__ virtual int release_lid(int query) const = 0;
 
     // Construct this instruction's dynamic semaphores; return how many were
-    // initialized (<= Config::kDynamicSemaphores).
-    __device__ virtual int init_semaphores(State<Config>& state,
+    // initialized (<= config::kDynamicSemaphores).
+    __device__ virtual int init_semaphores(State& state,
                                            const Globals& globals) const = 0;
 
-    __device__ virtual void load(State<Config>& state,
+    __device__ virtual void load(State& state,
                                  const Globals& globals) const = 0;
-    __device__ virtual void run(State<Config>& state,
+    __device__ virtual void run(State& state,
                                 const Globals& globals) const = 0;
-    __device__ virtual void store(State<Config>& state,
+    __device__ virtual void store(State& state,
                                   const Globals& globals) const = 0;
 
 protected:
@@ -97,38 +97,37 @@ private:
 
 // Device-side factory. Each call placement-news the op selected by `opcode`
 // into `storage` and returns it as BaseOp*. `storage` must be at least
-// Config::kOpStorageBytes and 16-byte aligned.
+// config::kOpStorageBytes and 16-byte aligned.
 namespace detail {
 
-template <typename Config, typename Globals>
-__device__ BaseOp<Config, Globals>* make_op_impl(int, void*, const int*) {
+template <typename Globals>
+__device__ BaseOp<Globals>* make_op_impl(int, void*, const int*) {
     __builtin_trap();
     return nullptr;
 }
 
-template <typename Config, typename Globals, typename Op, typename... Rest>
-__device__ BaseOp<Config, Globals>* make_op_impl(int opcode, void* storage,
-                                                 const int* instruction) {
+template <typename Globals, typename Op, typename... Rest>
+__device__ BaseOp<Globals>* make_op_impl(int opcode, void* storage,
+                                         const int* instruction) {
     if (opcode == Op::opcode) {
         static_assert(std::is_trivially_destructible<Op>::value,
                       "megakernel ops must be trivially destructible");
-        static_assert(sizeof(Op) <= Config::kOpStorageBytes,
-                      "op exceeds Config::kOpStorageBytes");
+        static_assert(sizeof(Op) <= config::kOpStorageBytes,
+                      "op exceeds config::kOpStorageBytes");
         static_assert(alignof(Op) <= 16,
                       "op alignment exceeds the op storage alignment");
         return ::new (storage) Op(instruction);
     }
-    return make_op_impl<Config, Globals, Rest...>(opcode, storage,
-                                                  instruction);
+    return make_op_impl<Globals, Rest...>(opcode, storage, instruction);
 }
 
 }  // namespace detail
 
-template <typename Config, typename Globals, typename... Ops>
-__device__ BaseOp<Config, Globals>* make_op(int opcode, void* storage,
-                                            const int* instruction) {
-    return detail::make_op_impl<Config, Globals, Ops...>(opcode, storage,
-                                                         instruction);
+template <typename Globals, typename... Ops>
+__device__ BaseOp<Globals>* make_op(int opcode, void* storage,
+                                    const int* instruction) {
+    return detail::make_op_impl<Globals, Ops...>(opcode, storage,
+                                                 instruction);
 }
 
 }  // namespace dmk::mk

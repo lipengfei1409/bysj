@@ -14,9 +14,9 @@ namespace {
 // Concrete op pack for the demo. A real model edits this list (the reference
 // implementation does the same in llama.cu / its pybind instantiation).
 __global__ void demo_kernel(MkGlobals g) {
-    mk_internal<Config, MkGlobals, NoOp<Config, MkGlobals>,
-                ElementwiseOp<Config, MkGlobals>, GemmOp<Config, MkGlobals>,
-                EmbeddingOp<Config, MkGlobals>>(g);
+    mk_internal<MkGlobals, NoOp<MkGlobals>,
+                ElementwiseOp<MkGlobals>, GemmOp<MkGlobals>,
+                EmbeddingOp<MkGlobals>>(g);
 }
 
 bool report(const char* message) {
@@ -31,9 +31,9 @@ bool device_supports_launch() {
     hipDeviceProp_t properties{};
     if (hipGetDeviceProperties(&properties, device) != hipSuccess)
         return report("hipGetDeviceProperties failed");
-    if (properties.warpSize != Config::kWaveSize)
+    if (properties.warpSize != config::kWaveSize)
         return report("role partitioning requires 64-lane wavefronts");
-    if (properties.maxThreadsPerBlock < Config::kThreads)
+    if (properties.maxThreadsPerBlock < config::kThreads)
         return report("device cannot host all role waves in one block");
 
     hipFuncAttributes attributes{};
@@ -79,7 +79,7 @@ bool launch_mk(const MkGlobals& g, uint32_t blocks, hipStream_t stream) {
 
     if (!device_supports_launch()) return false;
 
-    hipLaunchKernelGGL(demo_kernel, dim3(blocks), dim3(Config::kThreads),
+    hipLaunchKernelGGL(demo_kernel, dim3(blocks), dim3(config::kThreads),
                        static_cast<uint32_t>(kLaunchBytes), stream, g);
     const hipError_t status = hipGetLastError();
     if (status != hipSuccess) {

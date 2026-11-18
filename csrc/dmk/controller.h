@@ -26,22 +26,22 @@ namespace dmk::mk {
 namespace controller {
 
 // Prepare one instruction. The caller sets instruction_index/instruction_ring.
-template <typename Config, typename Globals, typename... Ops>
-__device__ void prepare_instruction(const Globals& g, State<Config>& s) {
-    const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+template <typename Globals, typename... Ops>
+__device__ void prepare_instruction(const Globals& g, State& s) {
+    const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
     const int ring = s.instruction_ring;
-    InstructionState<Config>& slot = s.instruction_states[ring];
+    InstructionState& slot = s.instruction_states[ring];
 
     // Per-thread, per-call op storage. Ops are trivially destructible, so the
     // same buffer can be reused for the previous-op query and the current-op
     // initialization.
-    alignas(16) unsigned char op_storage[Config::kOpStorageBytes];
+    alignas(16) unsigned char op_storage[config::kOpStorageBytes];
 
     // Step 0: the slot was used kStages instructions ago; wait for its
     // consumers and retire the semaphores they may still be polling.
-    if (s.instruction_index >= Config::kStages) {
-        const int previous_index = s.instruction_index - Config::kStages;
-        const uint32_t parity = (previous_index / Config::kStages) & 1u;
+    if (s.instruction_index >= config::kStages) {
+        const int previous_index = s.instruction_index - config::kStages;
+        const uint32_t parity = (previous_index / config::kStages) & 1u;
         s.instruction_finished[ring].wait(parity);
 
         const int previous_semaphores = slot.num_semaphores;
@@ -50,7 +50,7 @@ __device__ void prepare_instruction(const Globals& g, State<Config>& s) {
     }
 
     // Step 1: instruction fetch (32 words, one per lane).
-    if (lane < Config::kInstructionWidth) {
+    if (lane < config::kInstructionWidth) {
         const tensor::Shape<3> at{
             {static_cast<size_t>(blockIdx.x),
              static_cast<size_t>(s.instruction_index),
@@ -64,32 +64,29 @@ __device__ void prepare_instruction(const Globals& g, State<Config>& s) {
     // receives the page that was logical page lid(q) of the previous
     // instruction; the previous op decides that permutation from its words.
     if (s.instruction_index == 0) {
-        if (lane < Config::kNumPages) slot.pid_order[lane] = lane;
+        if (lane < config::kNumPages) slot.pid_order[lane] = lane;
     } else {
-        const int previous_ring = ring_retreat<Config::kStages>(ring);
-        InstructionState<Config>& previous =
-            s.instruction_states[previous_ring];
-        if (lane < Config::kNumPages) {
-            BaseOp<Config, Globals>* previous_op =
-                make_op<Config, Globals, Ops...>(
-                    previous.instruction[0], op_storage,
-                    previous.instruction);
+        const int previous_ring = ring_retreat<config::kStages>(ring);
+        InstructionState& previous = s.instruction_states[previous_ring];
+        if (lane < config::kNumPages) {
+            BaseOp<Globals>* previous_op = make_op<Globals, Ops...>(
+                previous.instruction[0], op_storage, previous.instruction);
             if (previous_op == nullptr) __builtin_trap();
 
             const int lid = previous_op->release_lid(lane);
-            assert(lid >= 0 && lid < Config::kNumPages);
+            assert(lid >= 0 && lid < config::kNumPages);
             slot.pid_order[lane] = remap_page_order(previous.pid_order, lid);
         }
     }
 
     // Step 3: construct this instruction's op and dynamic semaphores.
     if (lane == 0) {
-        BaseOp<Config, Globals>* op = make_op<Config, Globals, Ops...>(
+        BaseOp<Globals>* op = make_op<Globals, Ops...>(
             slot.instruction[0], op_storage, slot.instruction);
         if (op == nullptr) __builtin_trap();
 
         const int count = op->init_semaphores(s, g);
-        assert(count >= 0 && count <= Config::kDynamicSemaphores);
+        assert(count >= 0 && count <= config::kDynamicSemaphores);
         slot.num_semaphores = count;
     }
 
@@ -100,25 +97,25 @@ __device__ void prepare_instruction(const Globals& g, State<Config>& s) {
     if (lane == 0) s.instruction_arrived[ring].arrive();
 }
 
-template <typename Config, typename Globals, typename... Ops>
-__device__ void main_loop(const Globals& g, State<Config>& s) {
-    const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+template <typename Globals, typename... Ops>
+__device__ void main_loop(const Globals& g, State& s) {
+    const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
     const int total = g.num_instructions;
 
     for (s.instruction_index = 0, s.instruction_ring = 0;
          s.instruction_index < total;
          ++s.instruction_index,
          s.instruction_ring =
-             ring_advance<Config::kStages>(s.instruction_ring)) {
-        prepare_instruction<Config, Globals, Ops...>(g, s);
+             ring_advance<config::kStages>(s.instruction_ring)) {
+        prepare_instruction<Globals, Ops...>(g, s);
     }
 
     // Drain the final uses of both pipeline slots.
-    for (int i = 0; i < Config::kStages; ++i) {
-        const int index = total - Config::kStages + i;
+    for (int i = 0; i < config::kStages; ++i) {
+        const int index = total - config::kStages + i;
         if (index < 0) continue;
-        const int ring = index % Config::kStages;
-        const uint32_t parity = (index / Config::kStages) & 1u;
+        const int ring = index % config::kStages;
+        const uint32_t parity = (index / config::kStages) & 1u;
         s.instruction_finished[ring].wait(parity);
 
         const int count = s.instruction_states[ring].num_semaphores;

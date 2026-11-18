@@ -19,7 +19,7 @@
 
 namespace {
 
-using dmk::mk::Config;
+namespace config = dmk::config;
 using dmk::mk::ElementwiseOp;
 using dmk::mk::EmbeddingOp;
 using dmk::mk::GemmOp;
@@ -32,8 +32,8 @@ using dmk::tensor::MemorySpace;
 using dmk::tensor::Shape;
 using dmk::tensor::Tensor;
 
-constexpr int kInstructionWidth = Config::kInstructionWidth;
-constexpr int kTileElements = ElementwiseOp<Config, MkGlobals>::kTileElements;
+constexpr int kInstructionWidth = config::kInstructionWidth;
+constexpr int kTileElements = ElementwiseOp<MkGlobals>::kTileElements;
 
 [[noreturn]] void fail(const char* message) {
     std::fprintf(stderr, "FAIL: %s\n", message);
@@ -59,7 +59,7 @@ void write_noop(int* words) {
 void write_elementwise(int* words, int tile, float scale, float bias,
                        int count) {
     write_noop(words);
-    words[0] = ElementwiseOp<Config, MkGlobals>::opcode;
+    words[0] = ElementwiseOp<MkGlobals>::opcode;
     words[1] = tile;
     words[2] = float_bits(scale);
     words[3] = float_bits(bias);
@@ -219,7 +219,7 @@ void run_gemm_case() {
     std::vector<int> words(kInstructions * kInstructionWidth, 0);
     write_noop(words.data());
     write_noop(words.data() + kInstructionWidth);
-    words[kInstructionWidth + 0] = GemmOp<Config, MkGlobals>::opcode;
+    words[kInstructionWidth + 0] = GemmOp<MkGlobals>::opcode;
     words[kInstructionWidth + 1] = 0;
     words[kInstructionWidth + 2] = 0;
     words[kInstructionWidth + 3] = 0;
@@ -309,7 +309,7 @@ void run_embedding_case() {
     constexpr int kInstructions = 3;
     std::vector<int> words(kInstructions * kInstructionWidth, 0);
     write_noop(words.data());
-    words[kInstructionWidth + 0] = EmbeddingOp<Config, MkGlobals>::opcode;
+    words[kInstructionWidth + 0] = EmbeddingOp<MkGlobals>::opcode;
     words[kInstructionWidth + 1] = 2;  // src row
     words[kInstructionWidth + 2] = 1;  // dst row
     words[kInstructionWidth + 3] = Width - 1;
@@ -378,9 +378,9 @@ int main() {
     std::printf(
         "wave=%d LDS/block=%zu static=%zu dynamic=%zu launch=%zu pages=%d x %d B\n",
         properties.warpSize, properties.sharedMemPerBlock, kStaticBytes,
-        kDynamicBytes, kLaunchBytes, Config::kNumPages, Config::kPageSize);
+        kDynamicBytes, kLaunchBytes, config::kNumPages, config::kPageSize);
 
-    if (properties.warpSize != Config::kWaveSize) {
+    if (properties.warpSize != config::kWaveSize) {
         std::fprintf(stderr,
                      "SKIP: role partitioning requires 64-lane wavefronts, "
                      "device reports %d\n",

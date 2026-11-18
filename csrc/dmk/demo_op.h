@@ -34,14 +34,14 @@
 
 namespace dmk::mk {
 
-template <typename Config, typename Globals>
-class ElementwiseOp final : public BaseOp<Config, Globals> {
+template <typename Globals>
+class ElementwiseOp final : public BaseOp<Globals> {
 public:
     static constexpr int opcode = 1;
-    static constexpr int kTileElements = Config::kPageSize / sizeof(float);
+    static constexpr int kTileElements = config::kPageSize / sizeof(float);
 
     static constexpr size_t kVector = sizeof(float4) / sizeof(float);
-    static constexpr size_t kWaveStride = Config::kWaveSize * kVector;
+    static constexpr size_t kWaveStride = config::kWaveSize * kVector;
 
     struct Instruction {
         int tile;
@@ -57,14 +57,14 @@ public:
     };
 
     __device__ explicit ElementwiseOp(const int* instruction)
-        : BaseOp<Config, Globals>(instruction) {}
+        : BaseOp<Globals>(instruction) {}
 
     __device__ int release_lid(int query) const override { return query; }
 
-    __device__ int init_semaphores(State<Config>& s,
+    __device__ int init_semaphores(State& s,
                                    const Globals&) const override {
         s.semaphores()[0].init(1);
-        s.semaphores()[1].init(Config::kConsumerWaves);
+        s.semaphores()[1].init(config::kConsumerWaves);
         return 2;
     }
 
@@ -78,9 +78,9 @@ public:
                    : static_cast<size_t>(kTileElements);
     }
 
-    __device__ void load(State<Config>& s, const Globals& g) const override {
+    __device__ void load(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
-        const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+        const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid = s.pid(0);
         s.wait_page_ready(pid);
 
@@ -103,10 +103,10 @@ public:
         }
         // Unaligned base or partial tile: scalar tail, then zero the page.
         for (size_t element = vector_end + lane; element < count;
-             element += Config::kWaveSize)
+             element += config::kWaveSize)
             page[element] = src[element];
         for (size_t element = count + lane; element < kTileElements;
-             element += Config::kWaveSize)
+             element += config::kWaveSize)
             page[element] = 0.0f;
 
         lds::wave_barrier();
@@ -114,17 +114,17 @@ public:
         if (lane == 0) s.semaphores()[0].arrive();
 
         // Release pages this op does not use, mirroring NoOp's load().
-        if (lane >= 1 && lane < Config::kNumPages) {
+        if (lane >= 1 && lane < config::kNumPages) {
             const int unused = s.pid(lane);
             s.wait_page_ready(unused);
-            s.finish_page(unused, Config::kConsumerWaves);
+            s.finish_page(unused, config::kConsumerWaves);
         }
     }
 
-    __device__ void run(State<Config>& s, const Globals&) const override {
+    __device__ void run(State& s, const Globals&) const override {
         const Instruction inst(this->instruction());
-        const int wave = static_cast<int>(threadIdx.x / Config::kWaveSize);
-        const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+        const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
+        const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid = s.pid(0);
 
         s.semaphores()[0].wait(0);
@@ -134,9 +134,9 @@ public:
                       "elementwise vector path needs a tile of whole vectors");
         const size_t vectors = kTileElements / kVector;
         const size_t worker =
-            static_cast<size_t>(wave) * Config::kWaveSize + lane;
+            static_cast<size_t>(wave) * config::kWaveSize + lane;
         const size_t workers =
-            static_cast<size_t>(Config::kConsumerWaves) * Config::kWaveSize;
+            static_cast<size_t>(config::kConsumerWaves) * config::kWaveSize;
         for (size_t vector = worker; vector < vectors; vector += workers) {
             float4 value = copy::load_vec<float4>(page + vector * kVector);
             value.x = inst.scale * value.x + inst.bias;
@@ -150,9 +150,9 @@ public:
         if (lane == 0) s.semaphores()[1].arrive();
     }
 
-    __device__ void store(State<Config>& s, const Globals& g) const override {
+    __device__ void store(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
-        const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+        const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid = s.pid(0);
 
         s.semaphores()[1].wait(0);
@@ -173,12 +173,12 @@ public:
             }
         }
         for (size_t element = vector_end + lane; element < count;
-             element += Config::kWaveSize)
+             element += config::kWaveSize)
             dst[element] = page[element];
 
         lds::wave_barrier();
         __threadfence_block();
-        if (lane == 0) s.finish_page(pid, Config::kConsumerWaves);
+        if (lane == 0) s.finish_page(pid, config::kConsumerWaves);
     }
 };
 

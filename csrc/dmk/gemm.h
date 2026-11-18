@@ -252,8 +252,8 @@ __device__ inline void run_gemm_wave(const GemmParams& params,
 // lifecycle and is what the controller sees.
 namespace dmk::mk {
 
-template <typename Config, typename Globals>
-class GemmOp final : public BaseOp<Config, Globals> {
+template <typename Globals>
+class GemmOp final : public BaseOp<Globals> {
 public:
     static constexpr int opcode = 2;
     static constexpr int kTile = 16;
@@ -273,11 +273,11 @@ public:
     };
 
     __device__ explicit GemmOp(const int* instruction)
-        : BaseOp<Config, Globals>(instruction) {}
+        : BaseOp<Globals>(instruction) {}
 
     __device__ int release_lid(int query) const override { return query; }
 
-    __device__ int init_semaphores(State<Config>& s,
+    __device__ int init_semaphores(State& s,
                                    const Globals&) const override {
         s.semaphores()[0].init(1);
         s.semaphores()[1].init(1);
@@ -295,7 +295,7 @@ public:
             dst_row_stride % kVector == 0 && src_row_stride % kVector == 0 &&
             copy::aligned<float4>(dst) && copy::aligned<float4>(src)) {
             for (size_t vector = static_cast<size_t>(lane);
-                 vector < kTileVectors; vector += Config::kWaveSize) {
+                 vector < kTileVectors; vector += config::kWaveSize) {
                 const size_t row = vector / kRowVectors;
                 const size_t col = (vector % kRowVectors) * kVector;
                 copy::store_vec<float4>(
@@ -304,7 +304,7 @@ public:
             }
             return;
         }
-        for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+        for (int i = lane; i < kTileElements; i += config::kWaveSize) {
             const int row = i / kTile;
             const int col = i % kTile;
             dst[row * dst_row_stride + col * dst_col_stride] =
@@ -312,9 +312,9 @@ public:
         }
     }
 
-    __device__ void load(State<Config>& s, const Globals& g) const override {
+    __device__ void load(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
-        const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+        const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
 
         const int pid_a = s.pid(0);
         const int pid_b = s.pid(1);
@@ -343,7 +343,7 @@ public:
                           static_cast<size_t>(inst.k0) * a.layout.strides[1],
                       a.layout.strides[0], a.layout.strides[1], lane);
         } else {
-            for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+            for (int i = lane; i < kTileElements; i += config::kWaveSize) {
                 const int row = i / kTile;
                 const int col = i % kTile;
                 const int ar = inst.m0 + row;
@@ -368,7 +368,7 @@ public:
                           static_cast<size_t>(inst.n0) * b.layout.strides[1],
                       b.layout.strides[0], b.layout.strides[1], lane);
         } else {
-            for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+            for (int i = lane; i < kTileElements; i += config::kWaveSize) {
                 const int row = i / kTile;
                 const int col = i % kTile;
                 const int bk = inst.k0 + row;
@@ -388,18 +388,18 @@ public:
         if (lane == 0) s.semaphores()[0].arrive();
 
         // Pages this op does not use.
-        if (lane >= 3 && lane < Config::kNumPages) {
+        if (lane >= 3 && lane < config::kNumPages) {
             const int unused = s.pid(lane);
             s.wait_page_ready(unused);
-            s.finish_page(unused, Config::kConsumerWaves);
+            s.finish_page(unused, config::kConsumerWaves);
         }
     }
 
-    __device__ void run(State<Config>& s, const Globals&) const override {
-        const int wave = static_cast<int>(threadIdx.x / Config::kWaveSize);
+    __device__ void run(State& s, const Globals&) const override {
+        const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
         if (wave != 0) return;  // only one consumer wave runs this tile
 
-        const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+        const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid_a = s.pid(0);
         const int pid_b = s.pid(1);
         const int pid_c = s.pid(2);
@@ -410,7 +410,7 @@ public:
         const float* b_page = static_cast<const float*>(s.pages[pid_b].ptr());
         float* c_page = static_cast<float*>(s.pages[pid_c].ptr());
 
-        for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+        for (int i = lane; i < kTileElements; i += config::kWaveSize) {
             const int row = i / kTile;
             const int col = i % kTile;
             float sum = 0.0f;
@@ -424,9 +424,9 @@ public:
         if (lane == 0) s.semaphores()[1].arrive();
     }
 
-    __device__ void store(State<Config>& s, const Globals& g) const override {
+    __device__ void store(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
-        const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+        const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid_a = s.pid(0);
         const int pid_b = s.pid(1);
         const int pid_c = s.pid(2);
@@ -448,7 +448,7 @@ public:
                       c.layout.strides[0], c.layout.strides[1], c_page, kTile,
                       1, lane);
         } else {
-            for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+            for (int i = lane; i < kTileElements; i += config::kWaveSize) {
                 const int row = i / kTile;
                 const int col = i % kTile;
                 const int cr = inst.m0 + row;
@@ -464,9 +464,9 @@ public:
         lds::wave_barrier();
         __threadfence_block();
         if (lane == 0) {
-            s.finish_page(pid_a, Config::kConsumerWaves);
-            s.finish_page(pid_b, Config::kConsumerWaves);
-            s.finish_page(pid_c, Config::kConsumerWaves);
+            s.finish_page(pid_a, config::kConsumerWaves);
+            s.finish_page(pid_b, config::kConsumerWaves);
+            s.finish_page(pid_c, config::kConsumerWaves);
         }
     }
 };

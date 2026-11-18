@@ -12,33 +12,33 @@
 
 namespace dmk::mk {
 
-template <typename Config, typename Globals>
-class NoOp final : public BaseOp<Config, Globals> {
+template <typename Globals>
+class NoOp final : public BaseOp<Globals> {
 public:
     static constexpr int opcode = 0;
 
     __device__ explicit NoOp(const int* instruction)
-        : BaseOp<Config, Globals>(instruction) {}
+        : BaseOp<Globals>(instruction) {}
 
     __device__ int release_lid(int query) const override { return query; }
 
-    __device__ int init_semaphores(State<Config>&,
+    __device__ int init_semaphores(State&,
                                    const Globals&) const override {
         return 0;
     }
 
-    __device__ void load(State<Config>& s, const Globals&) const override {
-        const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
-        if (lane < Config::kNumPages) {
+    __device__ void load(State& s, const Globals&) const override {
+        const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
+        if (lane < config::kNumPages) {
             const int pid = s.pid(lane);
             s.wait_page_ready(pid);
-            s.finish_page(pid, Config::kConsumerWaves);
+            s.finish_page(pid, config::kConsumerWaves);
         }
     }
 
-    __device__ void run(State<Config>&, const Globals&) const override {}
+    __device__ void run(State&, const Globals&) const override {}
 
-    __device__ void store(State<Config>&, const Globals&) const override {}
+    __device__ void store(State&, const Globals&) const override {}
 };
 
 }  // namespace dmk::mk

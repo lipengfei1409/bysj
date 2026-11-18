@@ -20,7 +20,7 @@ profile 结果（`dpa4_inference_profile_summary.json`、`dpa4_inference_trace.j
 | 0.9 | DUMMA FP32 支持 `m16n16k4`（gfx926/928/936/938）与 **`m16n16k8`（gfx928/936/938）**；当前代码只用了 k4，gfx928 上可以先把 MMA 指令数减半。 | `dtk_doc/DTK 26.04 DUMMA使用手册.pdf` 表 3.1 |
 | 0.10 | megakernel 脚手架仍是空壳：`megakernel.cpp` 里 `uint` 未定义、`WARP_SZIE` 拼写错误、`launch_mk()` 空实现；`rmsnorm.h` / `attention.h` 语法错误不能编译；`embedding.h` 为空；`setup.py` 不编译 dmk；`bindings.cpp` 无 dmk 入口。 | `csrc/megakernel.cpp`、`csrc/dmk/rmsnorm.h`、`csrc/setup.py` |
 | 0.11 | 已有可复用测试设施：GEMM 自带 rocBLAS 对照的 C++ 用例、hipcc 直编 runner。 | `tests/csrc/test_dmk_gemm_accuracy_perf.cpp`、`tests/csrc/run_dmk_gemm_test.py`、`tests/dcu/test_dcu_gemm_compare.py` |
-| 0.12 | 参考实现是五角色（controller / loader / consumer / storer / launcher）+ instruction pipeline 的持久化 megakernel；DMK 的 `BaseOp<Config, Globals>` 现在提供 release_lid / init_semaphores / load / run / store 五个多态 hook（`load/run/store` 与角色无关，由 kernel 把 role 映射过去），controller 与 worker 直接虚调用。 | `Megakernels/include/megakernel.cuh`、`csrc/dmk/op.h` |
+| 0.12 | 参考实现是五角色（controller / loader / consumer / storer / launcher）+ instruction pipeline 的持久化 megakernel；DMK 的 `BaseOp<Globals>` 现在提供 release_lid / init_semaphores / load / run / store 五个多态 hook（`load/run/store` 与角色无关，由 kernel 把 role 映射过去），controller 与 worker 直接虚调用。 | `Megakernels/include/megakernel.cuh`、`csrc/dmk/op.h` |
 | 0.13 | DCU 侧硬约束：无 TMA / mbarrier → 双缓冲与信号量要自己做；`hipLaunchCooperativeKernel` 在 DTK 26.04 手册中有，可作为 grid 同步候选；DUSHMEM 是多卡 PGAS，**不能**用来做单卡 CTA 间同步。 | `dtk_doc` 各手册 |
 
 > 关于 0.1：不能只凭 summary 判断。第一步要用显式 `DP_TRITON_INFER=1/2/3` 复测一次，排除

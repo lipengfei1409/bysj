@@ -20,11 +20,10 @@ namespace dmk::mk {
 
 // num_pages >= 1; each page is exactly kPageSize bytes and is aligned so vector
 // accesses and bank patterns stay predictable.
-template <typename Config>
 struct alignas(128) Page {
     // Raw storage: ops reinterpret it as float/float4/etc. A char array avoids
     // giving the page a fixed element type that vector accesses would alias.
-    char data[Config::kPageSize];
+    char data[config::kPageSize];
 
     __device__ void* ptr(size_t byte_offset = 0) { return data + byte_offset; }
     __device__ const void* ptr(size_t byte_offset = 0) const {
@@ -49,26 +48,25 @@ DMK_HOST_DEVICE constexpr int remap_page_order(const int* previous_order,
     return previous_order[lid];
 }
 
-template <typename Config>
 struct State {
-    InstructionState<Config>* instruction_states;
+    InstructionState* instruction_states;
     lds::Semaphore* instruction_arrived;
     lds::Semaphore* instruction_finished;
     lds::Semaphore* page_finished;  // [page][stage bit], flattened
     lds::Semaphore* semaphores_ready;
-    Page<Config>* pages;
+    Page* pages;
 
     int instruction_index;
     int instruction_ring;
     uint64_t start_clock;
 
-    static_assert(sizeof(Page<Config>) == Config::kPageSize,
+    static_assert(sizeof(Page) == config::kPageSize,
                   "Page must be exactly one page of LDS");
 
-    __device__ State(InstructionState<Config>* states,
+    __device__ State(InstructionState* states,
                      lds::Semaphore* arrived, lds::Semaphore* finished,
                      lds::Semaphore* pages_finished,
-                     lds::Semaphore* ready, Page<Config>* page_array,
+                     lds::Semaphore* ready, Page* page_array,
                      uint64_t clock)
         : instruction_states(states),
           instruction_arrived(arrived),
@@ -80,19 +78,19 @@ struct State {
           instruction_ring(0),
           start_clock(clock) {}
 
-    __device__ InstructionState<Config>& slot() const {
+    __device__ InstructionState& slot() const {
         return instruction_states[instruction_ring];
     }
 
-    __device__ int (&instruction() const)[Config::kInstructionWidth] {
+    __device__ int (&instruction() const)[config::kInstructionWidth] {
         return slot().instruction;
     }
 
-    __device__ int (&timings() const)[Config::kTimingWidth] {
+    __device__ int (&timings() const)[config::kTimingWidth] {
         return slot().timings;
     }
 
-    __device__ int (&pid_order() const)[Config::kNumPages] {
+    __device__ int (&pid_order() const)[config::kNumPages] {
         return slot().pid_order;
     }
 
@@ -108,36 +106,36 @@ struct State {
 
     __device__ void wait_page_ready(int pid) const {
 #pragma unroll
-        for (int bit = 0; bit < Config::kStageBits; ++bit) {
+        for (int bit = 0; bit < config::kStageBits; ++bit) {
             const uint32_t parity = (instruction_index >> bit) & 1u;
-            page_finished[pid * Config::kStageBits + bit].wait(parity);
+            page_finished[pid * config::kStageBits + bit].wait(parity);
         }
     }
 
     __device__ void finish_page(int pid, int count) const {
 #pragma unroll
-        for (int bit = 0; bit < Config::kStageBits; ++bit) {
-            page_finished[pid * Config::kStageBits + bit].arrive(
+        for (int bit = 0; bit < config::kStageBits; ++bit) {
+            page_finished[pid * config::kStageBits + bit].arrive(
                 static_cast<uint32_t>(count));
         }
     }
 
     __device__ void warp_finish_page(int pid, int count) const {
-        if (static_cast<int>(threadIdx.x % Config::kWaveSize) == 0)
+        if (static_cast<int>(threadIdx.x % config::kWaveSize) == 0)
             finish_page(pid, count);
     }
 
     __device__ void await_instruction() const {
         instruction_arrived[instruction_ring].wait(
-            (instruction_index / Config::kStages) & 1u);
+            (instruction_index / config::kStages) & 1u);
     }
 
     __device__ void next_instruction() {
         lds::wave_barrier();
-        if (static_cast<int>(threadIdx.x % Config::kWaveSize) == 0)
+        if (static_cast<int>(threadIdx.x % config::kWaveSize) == 0)
             instruction_finished[instruction_ring].arrive();
         ++instruction_index;
-        instruction_ring = ring_advance<Config::kStages>(instruction_ring);
+        instruction_ring = ring_advance<config::kStages>(instruction_ring);
     }
 
     __device__ void wait_semaphores_ready() const {
@@ -145,7 +143,7 @@ struct State {
     }
 
     __device__ void record(int event) const {
-        if constexpr (Config::kTimingRecordEnabled) {
+        if constexpr (config::kTimingRecordEnabled) {
             timings()[event] = static_cast<int>(clock64() - start_clock);
         }
     }
@@ -161,14 +159,14 @@ enum class Role { Loader, Storer, Consumer };
 // interface; the storage is reused after the call because ops are required to
 // be trivially destructible. One iteration is one tile: the hook it dispatches
 // to handles exactly the tile its instruction words name.
-template <Role R, typename Config, typename Globals, typename... Ops>
-__device__ inline void worker_loop(const Globals& g, State<Config>& s) {
-    alignas(16) unsigned char op_storage[Config::kOpStorageBytes];
+template <Role R, typename Globals, typename... Ops>
+__device__ inline void worker_loop(const Globals& g, State& s) {
+    alignas(16) unsigned char op_storage[config::kOpStorageBytes];
     for (s.instruction_index = 0, s.instruction_ring = 0;
          s.instruction_index < g.num_instructions; s.next_instruction()) {
         s.await_instruction();
 
-        BaseOp<Config, Globals>* op = make_op<Config, Globals, Ops...>(
+        BaseOp<Globals>* op = make_op<Globals, Ops...>(
             s.instruction()[0], op_storage, s.instruction());
         if (op == nullptr) __builtin_trap();
 

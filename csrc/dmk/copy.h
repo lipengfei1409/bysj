@@ -13,7 +13,7 @@
 //   constexpr size_t kVector = sizeof(float4) / sizeof(float);   // 4 elements
 //   if (copy::aligned<float4>(dst) && copy::aligned<float4>(src)) {
 //       const size_t vectors = count / kVector;
-//       for (size_t v = lane; v < vectors; v += Config::kWaveSize)
+//       for (size_t v = lane; v < vectors; v += kWaveSize)
 //           copy::store_vec<float4>(dst + v * kVector,
 //                                   copy::load_vec<float4>(src + v * kVector));
 //   }
