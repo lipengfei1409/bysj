@@ -85,10 +85,22 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(report["fused_dispatched"], 0)
         self.assertIn("bound but never dispatched", compare_fused_runs.render(report))
 
-    def test_a_different_command_is_flagged(self):
+    def test_an_ab_command_difference_is_not_flagged(self):
         baseline = _summary(1218.0, 2614, {"k": 10.0})
         patched = _summary(1218.0, 2614, {"k": 10.0}, fused={"softmax_hits": 3})
-        patched["command"] = ["python", "other.py"]
+        baseline["command"] = ["python", "p.py", "dpa4", "--warmup", "5",
+                               "--output-dir", "/out/base"]
+        patched["command"] = ["python", "p.py", "dpa4", "--warmup", "5",
+                              "--fused", "on", "--output-dir", "/out/fused"]
+        report = compare_fused_runs.compare(baseline, patched)
+        self.assertFalse(report["command_differs"])
+        self.assertNotIn("different invocations", compare_fused_runs.render(report))
+
+    def test_a_real_command_difference_is_flagged(self):
+        baseline = _summary(1218.0, 2614, {"k": 10.0})
+        patched = _summary(1218.0, 2614, {"k": 10.0}, fused={"softmax_hits": 3})
+        baseline["command"] = ["python", "p.py", "--warmup", "5"]
+        patched["command"] = ["python", "p.py", "--warmup", "20"]
         report = compare_fused_runs.compare(baseline, patched)
         self.assertTrue(report["command_differs"])
         self.assertIn("different invocations", compare_fused_runs.render(report))

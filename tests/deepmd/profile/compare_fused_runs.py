@@ -46,6 +46,30 @@ def _kernels(summary: dict) -> dict[str, float]:
     return table
 
 
+# The two runs of an A/B necessarily differ in these arguments, so they must not
+# be reported as "different invocations".
+_IGNORED_COMMAND_ARGUMENTS = ("--fused", "--output-dir")
+
+
+def _normalized_command(command) -> list[str]:
+    """Drop the arguments an A/B is supposed to vary, keep the rest comparable."""
+    if not command:
+        return []
+    kept: list[str] = []
+    skip_next = False
+    for token in command:
+        if skip_next:
+            skip_next = False
+            continue
+        if any(token == flag for flag in _IGNORED_COMMAND_ARGUMENTS):
+            skip_next = True
+            continue
+        if any(token.startswith(flag + "=") for flag in _IGNORED_COMMAND_ARGUMENTS):
+            continue
+        kept.append(token)
+    return kept
+
+
 def _short(name: str, width: int = 72) -> str:
     text = name.replace("void ", "").replace("at::native::", "")
     return text if len(text) <= width else text[: width - 1] + "…"
@@ -93,7 +117,8 @@ def compare(baseline: dict, patched: dict, *, top: int = 8) -> dict:
         "fused": fused,
         "fused_bound": bound,
         "fused_dispatched": dispatched,
-        "command_differs": baseline.get("command") != patched.get("command"),
+        "command_differs": _normalized_command(baseline.get("command"))
+        != _normalized_command(patched.get("command")),
         "baseline_command": baseline.get("command"),
         "patched_command": patched.get("command"),
         "kernel_deltas": deltas,
