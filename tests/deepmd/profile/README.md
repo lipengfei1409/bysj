@@ -45,7 +45,7 @@ python3 tests/deepmd/profile/test_dpa4_inference_profile.py generate-data \
 ```bash
 source /opt/dtk/env.sh && python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
   --model-file /models/water.pt --input-npz tests/deepmd/profile/water_spce_4500.npz \
-  --device cuda:0 --memory-fraction 0.70 --output-dir /tmp/profile-direct
+  --device cuda:0 --memory-fraction 0.70 --output-dir /root/private_data/lipengfei/test_result/profile-direct
 ```
 
 - 默认根据实际可用显存自动周期扩胞，适用于单卡 64 GB；使用 70% 可用显存作为增量预算，为 profiler 保留余量。探测超预算或 OOM 时回退，只接受预算内的候选；这不是全局最大原子数的保证。
@@ -65,7 +65,7 @@ DPA4/SeZM 的 Triton 算子按 `DP_TRITON_INFER` 分级启用，而默认值 `0`
 python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
   --model-file /models/water.pt --input-npz tests/deepmd/profile/water_spce_4500.npz \
   --fixed-input --no-profile --iterations 10 --triton-infer 2 \
-  --device cuda:0 --expected-dcu-name '' --output-dir /tmp/profile-triton2
+  --device cuda:0 --expected-dcu-name '' --output-dir /root/private_data/lipengfei/test_result/profile-triton2
 ```
 
 - `--triton-infer {0,1,2,3}` 与 `--triton-train {0,1}` 在构造模型之前设置对应环境变量，结束后恢复原值；不传则完全不干预环境，summary 的 `triton` 字段记录生效级别、来源（`cli`/`environment`/`unset`）以及 `TRITON_AVAILABLE`。
@@ -73,6 +73,9 @@ python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
 - LAMMPS 子命令不接受这两个开关：它们只影响直接推理路径。
 
 ### 融合算子：`--fused` 与两次运行的对比
+
+下面两组推理运行及其对比结果写到 `/root/private_data/lipengfei/test_result` 下（运行产物，不入库）；
+数据生成、LAMMPS 与 trace 分析示例仍用 `/tmp`。
 
 `dpa4` 子命令带 `--fused {off,on,softmax,envelope}`：在模型构造之后、warmup 之前调用
 `python/model/fused_deepmd.py::deepmd_patch`，先把模块树与将要替换的两个接缝打印出来，再把
@@ -83,17 +86,17 @@ python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
 ```bash
 # 基线
 python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
-  --model-file "$MODEL" --input-npz "$NPZ3000" --fixed-input --output-dir /tmp/base
+  --model-file "$MODEL" --input-npz "$NPZ3000" --fixed-input --output-dir /root/private_data/lipengfei/test_result/base
 
 # 打上融合接缝
 python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
-  --model-file "$MODEL" --input-npz "$NPZ3000" --fixed-input --fused on --output-dir /tmp/fused
+  --model-file "$MODEL" --input-npz "$NPZ3000" --fixed-input --fused on --output-dir /root/private_data/lipengfei/test_result/fused
 
 # 两份 summary 对比：设备总时间、launch 数、逐 kernel 增量
 python3 tests/deepmd/profile/compare_fused_runs.py \
-  --baseline /tmp/base/dpa4_*/dpa4_inference_profile_summary.json \
-  --patched  /tmp/fused/dpa4_*/dpa4_inference_profile_summary.json \
-  --json /tmp/fused_compare.json
+  --baseline /root/private_data/lipengfei/test_result/base/dpa4_*/dpa4_inference_profile_summary.json \
+  --patched  /root/private_data/lipengfei/test_result/fused/dpa4_*/dpa4_inference_profile_summary.json \
+  --json /root/private_data/lipengfei/test_result/fused_compare.json
 ```
 
 `compare_fused_runs.py` 只读 summary、不跑推理，因此任何机器都能用；设备总时间取

@@ -388,7 +388,7 @@ DPA4_RUN_SEGMENT_LATENCY=1 DPA4_SEGMENT_LATENCY_JSON=/tmp/segment_latency.json \
 
 # 端到端（同一协议，便于和 1218.6 ms 对齐）
 DP_TRITON_INFER=0 python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
-  --model-file <ckpt> --input-npz <npz> --fixed-input --device cuda:0 --output-dir /tmp/prof
+  --model-file <ckpt> --input-npz <npz> --fixed-input --device cuda:0 --output-dir /root/private_data/lipengfei/test_result/prof
 ```
 
 ---
