@@ -12,6 +12,7 @@ import contextlib
 import io
 import types
 import unittest
+from types import SimpleNamespace
 
 import torch
 
@@ -227,6 +228,53 @@ class FusedDispatchTests(unittest.TestCase):
         fused_deepmd.uninstall()
         self.assertIs(namespace.segment_envelope_gated_softmax, original)
         self.assertEqual(fused_deepmd.status(None), {})
+
+
+class WrapperResolutionTests(unittest.TestCase):
+    """A DeepPot is not an nn.Module: the tree sits under deep_eval."""
+
+    def setUp(self):
+        fused_deepmd._ACCEPT_ANY_DEVICE = True
+        self.addCleanup(fused_deepmd.uninstall)
+        self.addCleanup(setattr, fused_deepmd, "_ACCEPT_ANY_DEVICE", False)
+
+    def test_legacy_pt_tree_lives_under_deep_eval_dp(self):
+        root = FakeModel([FakeBlock(torch.zeros(2, 1, 1))])
+        wrapper = SimpleNamespace(deep_eval=SimpleNamespace(dp=root))
+        resolved, path = fused_deepmd._module_root(wrapper)
+        self.assertIs(resolved, root)
+        self.assertEqual(path, "deep_eval.dp")
+
+    def test_pt_expt_tree_lives_under_deep_eval_dpmodel(self):
+        root = FakeModel([])
+        wrapper = SimpleNamespace(deep_eval=SimpleNamespace(_dpmodel=root))
+        self.assertEqual(fused_deepmd._module_root(wrapper), (root, "deep_eval._dpmodel"))
+
+    def test_wrapper_without_a_tree_resolves_to_nothing(self):
+        self.assertEqual(
+            fused_deepmd._module_root(SimpleNamespace(deep_eval=SimpleNamespace())),
+            (None, ""),
+        )
+        lines = fused_deepmd.describe_module(SimpleNamespace(deep_eval=SimpleNamespace()))
+        self.assertIn("no nn.Module tree", "\n".join(lines))
+
+    def test_patch_finds_blocks_through_a_deeppot_wrapper(self):
+        cache = FakeEdgeCache([2, 1, 3], channels=4)
+        message = torch.randn(int(cache.dst.numel()), 2, 4)
+        block = FakeBlock(message)
+        wrapper = SimpleNamespace(deep_eval=SimpleNamespace(dp=FakeModel([block])))
+        stats = fused_deepmd.deepmd_patch(
+            wrapper, ops=FakeOps(), softmax=False, verbose=False
+        )
+        self.assertTrue(stats.bound_envelope)
+        self.assertEqual(stats.blocks, 1)
+        x = torch.randn(3, 2, 4)
+        actual = block.forward_envelope(x, cache, None)
+        fused_deepmd.uninstall()
+        expected = block.forward_envelope(x, cache, None)
+        budget = 1e-5 * float(expected.abs().max())
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=budget)
+        self.assertEqual(stats.envelope_hits, 1)
 
 
 class ModuleDumpTests(unittest.TestCase):

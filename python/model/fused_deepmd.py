@@ -278,6 +278,28 @@ def _blocks(model: Any) -> list[Any]:
     ]
 
 
+def _module_root(model: Any) -> tuple[Any | None, str]:
+    """Resolve the ``nn.Module`` tree behind a ``DeepPot``/``DeepEval`` wrapper.
+
+    The public inference object is not an ``nn.Module``: the legacy ``pt``
+    backend keeps its torch module at ``deep_eval.dp`` (a ``ModelWrapper``) and
+    the ``pt_expt`` backend keeps the deserialized graph at
+    ``deep_eval._dpmodel``. A caller may also hand in a module directly.
+    """
+    if callable(getattr(model, "modules", None)):
+        return model, "model"
+    deep_eval = getattr(model, "deep_eval", None)
+    if deep_eval is None:
+        return None, ""
+    for attribute in ("_dpmodel", "dp", "model"):
+        candidate = getattr(deep_eval, attribute, None)
+        if candidate is not None and callable(getattr(candidate, "modules", None)):
+            return candidate, f"deep_eval.{attribute}"
+    if callable(getattr(deep_eval, "modules", None)):
+        return deep_eval, "deep_eval"
+    return None, ""
+
+
 def describe_module(module: Any, *, max_depth: int = 2, max_rows: int = 40) -> list[str]:
     """Render the module tree and the patch targets as printable lines.
 
@@ -286,8 +308,21 @@ def describe_module(module: Any, *, max_depth: int = 2, max_rows: int = 40) -> l
     the caller is about to replace.
     """
     lines: list[str] = []
-    named = list(module.named_modules()) if hasattr(module, "named_modules") else []
-    lines.append(f"module: {type(module).__name__} ({len(named)} submodules)")
+    root, path = _module_root(module)
+    if root is None:
+        lines.append(
+            f"module: {type(module).__name__} (no nn.Module tree found -- "
+            "expected a module, or a DeepPot/DeepEval wrapper with "
+            "deep_eval.dp / deep_eval._dpmodel)"
+        )
+        lines.append("patch targets: 0 (nothing can be bound)")
+        return lines
+    named = list(root.named_modules()) if hasattr(root, "named_modules") else []
+    origin = "" if path == "model" else f" -> {path}"
+    lines.append(
+        f"module: {type(module).__name__}{origin} "
+        f"({type(root).__name__}, {len(named)} submodules)"
+    )
     for name, child in named[:max_rows]:
         depth = 0 if not name else name.count(".") + 1
         if depth > max_depth:
@@ -295,7 +330,7 @@ def describe_module(module: Any, *, max_depth: int = 2, max_rows: int = 40) -> l
         lines.append(f"  {'  ' * depth}{name or '<root>'}  {type(child).__name__}")
     if len(named) > max_rows:
         lines.append(f"  ... {len(named) - max_rows} more submodules")
-    targets = _blocks(module)
+    targets = _blocks(root)
     lines.append(f"patch targets: {len(targets)} SO(2) block(s)")
     for index, block in enumerate(targets):
         lines.append(
@@ -325,7 +360,16 @@ def deepmd_patch(module: Any, *, ops: Any = None, softmax: bool = True,
         for line in describe_module(module):
             print(f"[deepmd_patch] {line}", flush=True)
     uninstall(module)
-    module_list = list(blocks) if blocks is not None else list(_blocks(module))
+    root, path = _module_root(module)
+    if blocks is not None:
+        module_list = list(blocks)
+    elif root is None:
+        module_list = []
+    else:
+        module_list = list(_blocks(root))
+    if verbose and root is not None and path != "model":
+        print(f"[deepmd_patch] resolved module tree: {path} "
+              f"({type(root).__name__})", flush=True)
     stats.blocks = len(module_list)
     if ops is None:
         ops = _load_ops()
