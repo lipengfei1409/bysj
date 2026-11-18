@@ -129,7 +129,7 @@
         <article class="path">
           <p class="tag">DPA4 / SeZM inference</p>
           <h3>DeepMD adapter</h3>
-          <p class="flow">DPA4Model → DeepPot → DeepMD pt_expt → native GIE/RMSNorm + optional SO(2) envelope reduction</p>
+          <p class="flow">DPA4Model → DeepPot → DeepMD → fused= (segment_sum / segment_softmax) envelope reduction</p>
           <p>模型图、邻居图、能量和导数由 DeepMD-kit 执行；适配器默认仅将受支持的 GIE 和 plain RMSNorm 阶段替换为原生 HIP/DCU 算子；SO(2) 的 destination envelope reduction 由 <code>fused=("envelope",)</code> 的 <code>segment_sum</code> 替换，其余卷积仍由 DeepMD 执行。</p>
         </article>
       </div>
@@ -169,9 +169,9 @@
 
     <section id="integration">
       <div class="section-head">
-        <p class="section-id">DeepMD pt_expt</p>
+        <p class="section-id">DeepMD</p>
         <h2>接入 DPA4 模型</h2>
-        <p class="lead"><code>DPA4Model</code> 是 DeepMD <code>DeepPot</code> 的薄适配层，不复制模型图。默认在 eager <code>pt_expt</code> 模型构造后 patch 当前模型实例的 GIE 与 RMSNorm；融合分段算子由 <code>fused=</code> 单独开关。</p>
+        <p class="lead"><code>DPA4Model</code> 是 DeepMD <code>DeepPot</code> 的薄适配层，不复制模型图。不带 <code>fused=</code> 时它只是透传；带 <code>fused=</code> 时通过 <code>model.fused_deepmd</code> 把融合分段算子绑进 DeepMD 自己的分派接缝，并保留逐调用回退。</p>
       </div>
       <div class="columns">
         <article class="panel">
@@ -179,27 +179,27 @@
           <div class="code-wrap">
             <pre><code>from model import DPA4Model
 
-# Default: native HIP/DCU GIE + RMSNorm patches.
-with DPA4Model("water_pt_expt.pt") as model:
+# DeepMD baseline：不绑定任何算子
+with DPA4Model("water.pt") as model:
     energy, force, virial = model.eval(coords, cells, atom_types)
 
-# Explicit DeepMD baseline:
-with DPA4Model("water_pt_expt.pt", native_ops=()) as baseline:
-    energy, force, virial = baseline.eval(coords, cells, atom_types)</code></pre>
+# 绑定融合接缝（softmax / envelope），报告命中与回退
+with DPA4Model("water.pt", fused=True) as fused:
+    energy, force, virial = fused.eval(coords, cells, atom_types)
+    print(fused.fused_ops)</code></pre>
           </div>
-          <p>先安装 DeepMD-kit，并让项目的 <code>python/</code> 目录可导入。原生 patch 要求 HIP 扩展和受支持的 DCU，以及可访问 <code>deep_eval._dpmodel</code> 的 eager <code>pt_expt</code> <code>.pt</code> 模型；其他模型需显式传 <code>native_ops=()</code> 使用 DeepMD baseline。</p>
-          <p>attention-free 模型的 destination envelope reduction 通过 <code>fused=("envelope",)</code> 接入；它只替换这一步归约，不接管边几何、旋转或 SO(2) mixing stack。</p>
+          <p>先安装 DeepMD-kit，并让项目的 <code>python/</code> 目录可导入。融合接缝需要 HIP 扩展和受支持的 DCU；没有扩展时 <code>deepmd_patch</code> 什么都不绑，<code>bound_*=false</code>，这次运行就等于 DeepMD baseline —— 不会留下"半个补丁"的状态。</p>
         </article>
         <article class="panel">
           <h3>选择规则</h3>
-          <p><code>native_ops=None</code> 默认选择 <code>("gie", "rmsnorm")</code>；传入 <code>native_ops=()</code> 明确运行 DeepMD baseline，也可只选择一个原生算子；SO(2) 的 destination reduction 由 <code>fused=</code> 的 <code>segment_sum</code> 加速，不替换完整卷积。TileLang 分派已从本项目与对应 DeepMD-kit checkout 移除，旧的 <code>tilelang_ops</code> 参数会显式报错。</p>
-          <p>原生 patch 需要 eager <code>pt_expt</code> <code>.pt</code> 模型和受支持的 HIP/DCU。缺失扩展、后端或目标模块会报错并关闭已加载模型；单次输入不满足原生算子条件时则调用原始 DeepMD 方法。旧 <code>pt</code>、导出的 <code>.pt2</code>/<code>.pte</code> 不支持加载后 patch；导出 artifact 已固定的算子图也不会被 <code>native_ops=()</code> 改写。融合分段算子由 <code>fused=</code> 单独开关，命中/回退计数写进模型报告。</p>
-          <p>默认只替换 plain RMSNorm 和受支持的 GIE scatter 阶段；可选 SO(2) selector 仅替换 edge message 后的 destination aggregation。其余图构建、旋转、radial mixing、SO(2) mixing stack、通用线性层和 fitting 仍由 DeepMD/PyTorch 执行。当前 native wrapper 面向 float32 HIP/DCU 推理。</p>
+          <p><code>fused=True</code> 装全部接缝；<code>fused=("softmax",)</code> / <code>fused=("envelope",)</code> 只装一个；也可以传 <code>{"softmax": True, "envelope": False}</code>。SFPG（source gate 非空）的 softmax 与非 fp32 输入会回退原实现并计入 <code>*_fallbacks</code>。</p>
+          <p>旧的 <code>native_ops</code>（GIE / RMSNorm patcher，只支持带 <code>_dpmodel</code> 的 <code>pt_expt</code> 模型）与 <code>tilelang_ops</code> 都已删除，传旧参数会显式报错。SO(2) 的 destination reduction 由 <code>fused=("envelope",)</code> 的 <code>segment_sum</code> 提供，不替换完整卷积。</p>
+          <p>其余图构建、旋转、radial mixing、SO(2) mixing stack、通用线性层与 fitting 仍由 DeepMD/PyTorch 执行；力/维里仍在 autograd 图内装配。细节见 <a href="deepmd-fused-dispatch.md">融合算子接入方式</a>。</p>
         </article>
       </div>
       <div class="source-links">
         <a href="../python/model/dpa4.py">DPA4Model 实现</a>
-        <a href="../python/model/__init__.py">模型 API</a>
+        <a href="../python/model/fused_deepmd.py">deepmd_patch</a>
         <a href="../tests/python/test_dpa4_model.py">适配器测试</a>
         <a href="deepmd-fused-dispatch.md">融合算子接入方式</a>
       </div>

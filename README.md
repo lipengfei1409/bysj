@@ -8,7 +8,7 @@ The optional HIP extension in this checkout builds standalone RMSNorm, GIE (`zon
 - `python/reference/`: explicit PyTorch oracles, including the GEMM oracle; these are not imported as production fallbacks.
 - `csrc/rmsnorm.cpp`, `csrc/gie.cpp`, `csrc/segment_sum.cpp`, `csrc/segment_softmax.cpp` and `csrc/force_assembly.cpp`: native HIP operator sources included by the optional extension build.
 - `tests/`: Python contracts, host-side helper contracts, and opt-in DTK/DCU accuracy tests.
-- `docs/kernel-model.html`: architecture overview for the native GIE/RMSNorm operators and the DeepMD adapter.
+- `docs/kernel-model.html`: architecture overview for the native operators and the DeepMD adapter.
 
 ## Python API
 
@@ -27,7 +27,7 @@ The retained GEMM wrapper requires two contiguous 2D FP32 tensors on the same su
 
 ## Adapter scope
 
-The DPA4/SeZM `DPA4Model` adapter uses native HIP GIE/RMSNorm by default for eager `pt_expt` `.pt` inference. `fused=` additionally binds the fused segmented operators (`segment_sum`, `segment_softmax`) into DeepMD's own dispatch seams -- including the destination aggregation of attention-free SO2Convolution, which the removed `so2_envelope_reduce` selector used to cover; see [docs/deepmd-fused-dispatch.md](docs/deepmd-fused-dispatch.md). Edge geometry, rotations, radial mixing, and the SO(2) mixing stack remain in DeepMD. DeepMD-kit still owns the model graph and all unpatched stages. Training, higher-order force-loss gradients, stress/virial-specific kernels, and multi-rank ghost/halo exchange remain outside this native slice.
+The DPA4/SeZM `DPA4Model` adapter is a pass-through facade unless `fused=` is given, in which case it binds the fused segmented operators (`segment_sum`, `segment_softmax`) into DeepMD's own dispatch seams -- including the destination aggregation of attention-free SO2Convolution, which the removed `so2_envelope_reduce` selector used to cover; see [docs/deepmd-fused-dispatch.md](docs/deepmd-fused-dispatch.md). Edge geometry, rotations, radial mixing, the SO(2) mixing stack and the force assembly inside autograd remain in DeepMD. Training, higher-order force-loss gradients, stress/virial-specific kernels, and multi-rank ghost/halo exchange remain outside this native slice.
 
 Run the Python contract and reference tests:
 
@@ -46,34 +46,32 @@ in this repository. It forwards DeepMD's public `DeepPot.eval` inputs and output
 ```python
 from model import DPA4Model
 
-with DPA4Model("water_pt_expt.pt") as model:  # native GIE + RMSNorm by default
+with DPA4Model("water.pt") as model:            # stock DeepMD, untouched
     energy, force, virial = model.eval(coords, cells, atom_types)
 
-# Explicit DeepMD baseline, without native patches:
-with DPA4Model("water_pt_expt.pt", native_ops=()) as baseline:
-    energy, force, virial = baseline.eval(coords, cells, atom_types)
+with DPA4Model("water.pt", fused=True) as fused:  # bind the fused seams
+    energy, force, virial = fused.eval(coords, cells, atom_types)
+    print(fused.fused_ops)                       # hits / fallbacks / bound flags
 ```
 
 Install DeepMD-kit separately and make this project's `python/` directory
-importable (for example, put it first on `PYTHONPATH`). By default, `DPA4Model`
-patches matching GIE and plain RMSNorm modules per model instance using the
-existing native HIP/DCU operators. Unsupported individual inputs retain
-DeepMD's original implementation. Pass `native_ops=()` to explicitly use the
-DeepMD baseline, or pass `native_ops=("gie",)` / `("rmsnorm",)` to select one
-primitive. For an attention-free configuration, `fused=("envelope",)`
-accelerates SO2Convolution's envelope destination-reduction seam; edge-message
-construction and the rest of the convolution remain in DeepMD. TileLang dispatch was removed from
-this project, so the legacy `tilelang_ops` argument now raises with an explicit
-message instead of being forwarded to DeepMD.
+importable (for example, put it first on `PYTHONPATH`). Without `fused=`, the
+facade is a pass-through and DeepMD runs its own operators. `fused=` installs
+this project's fused segmented operators into DeepMD's own dispatch seams via
+`model.fused_deepmd`, which keeps a per-call fallback to the stock
+implementation; `fused=("softmax",)` or `("envelope",)` select a single seam.
+Neither the legacy `tilelang_ops` nor the removed `native_ops` selector is
+accepted any more -- both raise with an explicit message instead of being
+forwarded to DeepMD.
 
-Native patches require the HIP extension, a supported DCU, and an eager
-`pt_expt` checkpoint ending in `.pt`; an unavailable extension, unsupported
-backend, or missing target module raises clearly instead of silently falling
-back for the whole model. These wrappers use PyTorch's `device="cuda"` tensors
-on the HIP backend; they are not NVIDIA CUDA kernels. Native post-load patching
-is not available for legacy `pt` or exported `.pt2`/`.pte` artifacts. Exported
-artifacts keep their operator choices fixed at export; `native_ops=()` does not
-rewrite an already-exported graph. The default replaces only plain RMSNorm and supported GIE scatter stages; the optional `fused` switch adds the fused segment operators, including the SO(2) envelope reduction. Other SeZM operations remain in DeepMD.
+The fused seams require the HIP extension and a supported DCU; without them
+`deepmd_patch` binds nothing and reports `bound_*=false`, so the run is simply
+the DeepMD baseline (no silent partial state). These wrappers use PyTorch's
+`device="cuda"` tensors on the HIP backend; they are not NVIDIA CUDA kernels.
+Edge geometry, rotations, radial mixing, the SO(2) mixing stack and the force
+assembly inside ``autograd`` still run in DeepMD; see
+[docs/deepmd-fused-dispatch.md](docs/deepmd-fused-dispatch.md) for the exact
+seams and the three sites that remain on DeepMD's path.
 
 An optional integration test accepts a `.npz` containing `coords`, `atom_types`,
 and optional `cells` arrays:

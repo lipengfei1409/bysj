@@ -1,6 +1,6 @@
 """Inference-oriented HIP RMSNorm with gradients for energy/force propagation.
 
-This is a standalone primitive; the current DPA4Model adapter delegates its
+This is a standalone primitive with no DeepMD dispatch wired; the adapter used to
 model graph to external DeepMD and does not dispatch this operator.
 """
 from __future__ import annotations
