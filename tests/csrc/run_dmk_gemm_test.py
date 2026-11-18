@@ -78,6 +78,7 @@ def main() -> int:
             str(source),
             "-o",
             str(executable),
+            "-lrocblas",
         ]
         print(f"Building direct DUMMA GEMM test for {gpu_arch}...", flush=True)
         built = subprocess.run(command, check=False)

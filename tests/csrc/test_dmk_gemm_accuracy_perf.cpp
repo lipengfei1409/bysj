@@ -1,6 +1,7 @@
 // Direct DUMMA GemmOp accuracy and kernel-only performance test.
 // Build/run with tests/csrc/run_dmk_gemm_test.py on a DTK 26.04 DCU host.
 #include "gemm.h"
+#include <rocblas/rocblas.h>
 
 #include <cmath>
 #include <cstdio>
@@ -14,6 +15,14 @@ namespace {
 void check(hipError_t status, const char* name) {
     if (status != hipSuccess) {
         std::fprintf(stderr, "%s: %s\n", name, hipGetErrorString(status));
+        std::exit(1);
+    }
+}
+
+void check_rocblas(rocblas_status status, const char* name) {
+    if (status != rocblas_status_success) {
+        std::fprintf(stderr, "%s: rocBLAS status %d\n", name,
+                     static_cast<int>(status));
         std::exit(1);
     }
 }
@@ -151,6 +160,80 @@ void run_case(size_t m, size_t n, size_t k, bool column_b,
         const double gflops = (2.0 * m * n * k) / (average_ms * 1.0e6);
         std::printf("kernel-only: %.4f ms/launch, %.2f GFLOP/s (%d runs)\n",
                     average_ms, gflops, repeats);
+
+        // The measured case is row-major. rocBLAS is column-major, so
+        // C^T = B^T * A^T uses the same buffers with swapped operands.
+        if (!column_b && !column_c) {
+            const size_t max_rocblas_int =
+                static_cast<size_t>(std::numeric_limits<rocblas_int>::max());
+            if (m > max_rocblas_int || n > max_rocblas_int ||
+                k > max_rocblas_int) {
+                std::fprintf(stderr, "matrix dimension exceeds rocblas_int\n");
+                std::exit(1);
+            }
+            rocblas_handle handle = nullptr;
+            check_rocblas(rocblas_create_handle(&handle), "rocblas_create_handle");
+            check_rocblas(rocblas_set_stream(handle, 0), "rocblas_set_stream");
+            check_rocblas(rocblas_set_pointer_mode(handle,
+                            rocblas_pointer_mode_host), "rocblas_set_pointer_mode");
+            const float alpha = 1.0f, beta = 0.0f;
+            const rocblas_int rm = static_cast<rocblas_int>(m);
+            const rocblas_int rn = static_cast<rocblas_int>(n);
+            const rocblas_int rk = static_cast<rocblas_int>(k);
+            auto run_rocblas = [&]() {
+                check_rocblas(rocblas_sgemm(
+                    handle, rocblas_operation_none, rocblas_operation_none,
+                    rn, rm, rk, &alpha,
+                    device_b.data<float>(), rn,
+                    device_a.data<float>(), rk,
+                    &beta, device_c.data<float>(), rn),
+                    "rocblas_sgemm");
+            };
+            run_rocblas();
+            check(hipDeviceSynchronize(), "rocBLAS correctness execution");
+            std::vector<float> rocblas_c(c_count);
+            check(hipMemcpy(rocblas_c.data(), device_c.ptr,
+                            c_count * sizeof(float), hipMemcpyDeviceToHost),
+                  "copy rocBLAS C");
+            size_t mismatches = 0;
+            double max_difference = 0.0;
+            for (size_t index = 0; index < c_count; ++index) {
+                const double expected = host_c[index];
+                const double actual = rocblas_c[index];
+                const double difference = std::fabs(actual - expected);
+                if (difference > max_difference) max_difference = difference;
+                if (!std::isfinite(actual) ||
+                    difference > 2e-3 + 1e-3 * std::fabs(expected)) {
+                    if (mismatches++ < 5)
+                        std::fprintf(stderr,
+                                     "rocBLAS C[%zu,%zu] got %.8g, DMK %.8g\n",
+                                     index / n, index % n, actual, expected);
+                }
+            }
+            std::printf("rocBLAS vs DMK: %s, max_abs_diff=%.3g\n",
+                        mismatches ? "FAIL" : "PASS", max_difference);
+            if (mismatches) std::exit(1);
+
+            for (int warmup = 0; warmup < 5; ++warmup) run_rocblas();
+            check(hipDeviceSynchronize(), "rocBLAS warmup");
+            Event rocblas_start, rocblas_stop;
+            check(hipEventRecord(rocblas_start.event), "rocBLAS start event");
+            for (int i = 0; i < repeats; ++i) run_rocblas();
+            check(hipEventRecord(rocblas_stop.event), "rocBLAS stop event");
+            check(hipEventSynchronize(rocblas_stop.event), "rocBLAS timed execution");
+            float rocblas_total_ms = 0.0f;
+            check(hipEventElapsedTime(&rocblas_total_ms,
+                                      rocblas_start.event, rocblas_stop.event),
+                  "rocBLAS elapsed time");
+            const double rocblas_average_ms = rocblas_total_ms / repeats;
+            const double rocblas_gflops =
+                (2.0 * m * n * k) / (rocblas_average_ms * 1.0e6);
+            std::printf("rocBLAS SGEMM: %.4f ms/launch, %.2f GFLOP/s (%d runs)\n",
+                        rocblas_average_ms, rocblas_gflops, repeats);
+            std::printf("rocBLAS / DMK throughput: %.2fx\n",
+                        average_ms / rocblas_average_ms);
+            check_rocblas(rocblas_destroy_handle(handle), "rocblas_destroy_handle");
+        }
     }
 }
 
