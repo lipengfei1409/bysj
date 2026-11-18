@@ -57,6 +57,35 @@ source /opt/dtk/env.sh && python3 tests/deepmd/profile/test_dpa4_inference_profi
 - 始终使用原始 `DeepPot.eval`，支持当前 DeepMD 安装可读取的 `.pt/.pth/.pt2/.pte` 等模型；不要求 eager `pt_expt`，不需要编译本仓库扩展，也没有 `--native-ops` 参数。`--expected-dcu-name ''` 可关闭默认 K500SM_AI 名称检查。
 - NPZ 包含 `coords`、`atom_types` 和可选 `cells`，只使用第一帧。geometry 支持显式标注 `Atoms # atomic/charge/molecular/full` 的正交 LAMMPS 数据，正确跳过 image flags。`--input-type-map O,H` 可显式指定输入编号对应的元素，优先于 NPZ 内嵌的 `type_map` 和旁边同名 `.metadata.json` 的 `type_map`（依次读取）；都没有时，按模型自身编号解释并检查范围。报告保存模型类型顺序和重映射表。
 
+### 选择 Triton 推理路径（`--triton-infer` / `--triton-train`）
+
+DPA4/SeZM 的 Triton 算子按 `DP_TRITON_INFER` 分级启用，而默认值 `0` 会走稠密参考实现；不显式设置时，profile 结果无法说明测的是哪条路径。
+
+```bash
+python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
+  --model-file /models/water.pt --input-npz tests/deepmd/profile/water_spce_4500.npz \
+  --fixed-input --no-profile --iterations 10 --triton-infer 2 \
+  --device cuda:0 --expected-dcu-name '' --output-dir /tmp/profile-triton2
+```
+
+- `--triton-infer {0,1,2,3}` 与 `--triton-train {0,1}` 在构造模型之前设置对应环境变量，结束后恢复原值；不传则完全不干预环境，summary 的 `triton` 字段记录生效级别、来源（`cli`/`environment`/`unset`）以及 `TRITON_AVAILABLE`。
+- `DP_TRITON_CONFIG_LOG=1` 让每次 launch 配置解析打印一行 `[dp-triton-config]`（含设备表名、来源与最终配置）。设备名没有内置表时会静默回落到保守默认，这一行是唯一能把"没调优"和"调优过"分开的证据。
+- LAMMPS 子命令不接受这两个开关：它们只影响直接推理路径。
+
+### 辅助脚本：可行性冒烟与 trace 归因
+
+```bash
+# 1) Triton 能否在该 DCU 上出 kernel、tl.dot 是否走到矩阵指令
+TRITON_ALWAYS_COMPILE=1 python3 tests/deepmd/profile/triton_smoke.py --json /tmp/smoke.json
+
+# 2) 把一次 trace 归因到 kernel 家族、roofline 等价量与 cast 分组
+python3 tests/deepmd/profile/analyze_trace.py /tmp/profile-triton2/dpa4_*/dpa4_inference_trace.json \
+  --json /tmp/lv2.json
+```
+
+- `triton_smoke.py` 打印设备参数（wave 大小、线程上限、LDS 预算）、每个 kernel 的 LDS 字节与寄存器数，以及源码里出现的指令标记；非零退出码表示 Triton 在本机不可用或结果不正确。
+- `analyze_trace.py` 按 `triton` / `aten` / `gemm` / `other` 分类统计设备时间，并给每个 kernel 一个 roofline 等价量（访存型按等效字节、GEMM 按等效 GFLOP）。**如果 trace 里没有 triton kernel，脚本会明确提示：该次测的是稠密参考路径，不能据此下调优结论。** `cast_report` 按"输入 dtype + 维度"分组 cast/copy；注意 CPU op 的耗时包含等待设备，单次远高于同组的调用是同步点而非拷贝成本。
+
 ### 确认 `.pt` 实际使用的推理后端
 
 直接模式由 DeepMD 根据模型内容选择 `pt` 或 `pt_expt`，不能仅凭 `.pt` 后缀判断。profiling 脚本加载模型后会立即打印 `DeepMD backend` 和 `lower_input_kind`，即使后续推理在生成 summary 前失败也能看到。也可在同一容器及 Python 环境中单独加载模型检查；下面的命令不执行 `eval`：
