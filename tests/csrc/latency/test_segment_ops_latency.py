@@ -116,11 +116,25 @@ class SegmentLatencyTests(unittest.TestCase):
 
                 fused = _median_ms(lambda: segment_sum(src, dst, offsets, None, node_scale))
                 reference = _median_ms(eager)
-                expected = eager()
-                torch.testing.assert_close(
-                    segment_sum(src, dst, offsets, None, node_scale), expected, rtol=2e-5, atol=2e-6
-                )
                 self._record("segment_sum", fused, reference, {"channels": channels})
+                # The fused kernel accumulates in ascending edge order while
+                # index_add_ sums with row atomics, so the two disagree by fp32
+                # summation order over a ~60-edge segment: ~1e-6 absolute on a
+                # sum of magnitude ~10, and an arbitrarily large *relative*
+                # error wherever the sum cancels. Check against a float64 ground
+                # truth with an fp32 error budget instead of the atomic baseline.
+                expected = torch.zeros(
+                    (_ATOMS, channels), dtype=torch.float64, device=src.device
+                )
+                expected.index_add_(0, dst, src.double())
+                expected = (expected * node_scale.double().unsqueeze(1)).float()
+                budget = 1e-5 * float(expected.abs().max())
+                torch.testing.assert_close(
+                    segment_sum(src, dst, offsets, None, node_scale),
+                    expected,
+                    rtol=1e-5,
+                    atol=budget,
+                )
 
     def test_segment_softmax_against_eager_chain(self):
         dst, offsets = self._grouped_graph()

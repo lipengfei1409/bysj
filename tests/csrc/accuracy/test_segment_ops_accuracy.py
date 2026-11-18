@@ -124,6 +124,25 @@ class SegmentOperatorAccuracyTests(unittest.TestCase):
         torch.testing.assert_close(virial, expected_virial, rtol=2e-5, atol=2e-6)
         self.assertEqual(force[3].count_nonzero().item(), 0)
 
+    def test_large_graph_segment_sum_matches_float64_ground_truth(self):
+        # At ~60 edges per atom the ATen reference is not a bit baseline: it
+        # sums with row atomics while the kernel sums in ascending order, so an
+        # fp32 comparison has to be made against a float64 accumulation with an
+        # fp32 error budget (~sqrt(K) * eps * sum|terms|).
+        torch.manual_seed(11)
+        atoms, edges, channels = 64, 4096, 32
+        dst = torch.sort(torch.randint(0, atoms, (edges,), device=self.device)).values
+        offsets = segment_offsets(dst, atoms)
+        src = torch.randn(edges, channels, device=self.device)
+        node_scale = torch.rand(atoms, device=self.device) + 0.5
+        actual = segment_sum(src, dst, offsets, None, node_scale)
+
+        expected = torch.zeros((atoms, channels), dtype=torch.float64, device=self.device)
+        expected.index_add_(0, dst, src.double())
+        expected = (expected * node_scale.double().unsqueeze(1)).float()
+        budget = 1e-5 * float(expected.abs().max())
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=budget)
+
     def test_large_grouped_graph_matches_reference(self):
         torch.manual_seed(7)
         atoms, edges, channels = 64, 4096, 32
