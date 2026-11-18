@@ -127,7 +127,7 @@ public:
                                      b_col * params_.b.layout.strides[1]]
                     : 0.0f;
         }
-        __syncwarp();
+        __syncthreads();
     }
 
     // Each call performs one MMA. The first call primes the register fragment;
@@ -165,7 +165,7 @@ public:
     __device__ void storer() override {
         dumma::store_matrix(shared_.output_tile, *current_, tile_n,
                             dumma::native::mem_row_major);
-        __syncwarp();
+        __syncthreads();
         const size_t lane = threadIdx.x;
         for (size_t index = lane; index < tile_m * tile_n; index += wave_size) {
             size_t row, col;

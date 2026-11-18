@@ -9,11 +9,38 @@ HIP compiler and a Torch installation providing ATen headers.
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+
+SUPPORTED_DUMMA_ARCHES = {"gfx926", "gfx928", "gfx936", "gfx938"}
+
+
+def select_gpu_arch(torch_module) -> str:
+    override = os.environ.get("DMK_GPU_ARCH")
+    if override:
+        arch_name = override
+    else:
+        try:
+            arch_name = torch_module.cuda.get_device_properties(0).gcnArchName
+        except (AttributeError, RuntimeError) as error:
+            raise RuntimeError(
+                "Cannot detect DCU architecture; set DMK_GPU_ARCH=gfx928 "
+                "for a K100_AI device"
+            ) from error
+    match = re.match(r"^(gfx[0-9a-f]+)(?::.*)?$", arch_name)
+    arch = match.group(1) if match else None
+    if arch not in SUPPORTED_DUMMA_ARCHES:
+        raise RuntimeError(
+            f"DUMMA does not support architecture {arch_name!r}; "
+            f"expected one of {sorted(SUPPORTED_DUMMA_ARCHES)}"
+        )
+    return arch
 
 
 def main() -> int:
@@ -25,9 +52,16 @@ def main() -> int:
         print("hipcc not found; source the DTK environment first", file=sys.stderr)
         return 2
     try:
+        import torch
         from torch.utils.cpp_extension import include_paths
     except ImportError as error:
         print(f"Torch headers unavailable: {error}", file=sys.stderr)
+        return 2
+
+    try:
+        gpu_arch = select_gpu_arch(torch)
+    except RuntimeError as error:
+        print(error, file=sys.stderr)
         return 2
 
     root = Path(__file__).resolve().parents[2]
@@ -38,13 +72,14 @@ def main() -> int:
             hipcc,
             "-O3",
             "-std=c++17",
+            f"--offload-arch={gpu_arch}",
             f"-I{root / 'csrc' / 'dmk'}",
             *(f"-I{path}" for path in include_paths()),
             str(source),
             "-o",
             str(executable),
         ]
-        print("Building direct DUMMA GEMM test...", flush=True)
+        print(f"Building direct DUMMA GEMM test for {gpu_arch}...", flush=True)
         built = subprocess.run(command, check=False)
         if built.returncode:
             return built.returncode
