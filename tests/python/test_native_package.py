@@ -29,7 +29,6 @@ class NativePackageTests(unittest.TestCase):
             kernels.__all__,
             [
                 "force_assembly",
-                "gemm",
                 "gie_available",
                 "gie_zonal_scatter",
                 "group_by_source",

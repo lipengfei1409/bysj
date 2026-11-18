@@ -19,7 +19,7 @@ profile 结果（`dpa4_inference_profile_summary.json`、`dpa4_inference_trace.j
 | 0.8 | DMK GEMM 现状：16×16×4 单 wave 一块、k 步长 4、**每批 12 个 k（3 个 stage）一次 `__syncthreads`**（k=2048 时单块 171 次屏障、512 次 MMA）、标量 4B 访存、`tile_indices()` 里每元素做 **64-bit 除/取模**、epilogue 也是标量；`ShmemSwizzleLayout` 已实现但 `lds_to_fragment` 用 `static_assert` 挡掉了 swizzle。 | `csrc/dmk/gemm.h`、`csrc/dmk/tensor.h`、`csrc/dmk/copy.h` |
 | 0.9 | DUMMA FP32 支持 `m16n16k4`（gfx926/928/936/938）与 **`m16n16k8`（gfx928/936/938）**；当前代码只用了 k4，gfx928 上可以先把 MMA 指令数减半。 | `dtk_doc/DTK 26.04 DUMMA使用手册.pdf` 表 3.1 |
 | 0.10 | megakernel 脚手架仍是空壳：`megakernel.cpp` 里 `uint` 未定义、`WARP_SZIE` 拼写错误、`launch_mk()` 空实现；`rmsnorm.h` / `attention.h` 语法错误不能编译；`embedding.h` 为空；`setup.py` 不编译 dmk；`bindings.cpp` 无 dmk 入口。 | `csrc/megakernel.cpp`、`csrc/dmk/rmsnorm.h`、`csrc/setup.py` |
-| 0.11 | 已有可复用测试设施：GEMM 自带 rocBLAS 对照的 C++ 用例、hipcc 直编 runner、DUMMA/rocBLAS/PyTorch 三方对比脚本。 | `tests/csrc/test_dmk_gemm_accuracy_perf.cpp`、`tests/csrc/run_dmk_gemm_test.py`、`tests/dcu/test_dcu_gemm_compare.py` |
+| 0.11 | 已有可复用测试设施：GEMM 自带 rocBLAS 对照的 C++ 用例、hipcc 直编 runner。 | `tests/csrc/test_dmk_gemm_accuracy_perf.cpp`、`tests/csrc/run_dmk_gemm_test.py`、`tests/dcu/test_dcu_gemm_compare.py` |
 | 0.12 | 参考实现是五角色（controller / loader / consumer / storer / launcher）+ instruction pipeline 的持久化 megakernel；DMK 的 `BaseOp<Config, Globals>` 现在提供 release_lid / init_semaphores / loader / consumer / storer 五个多态 hook，controller 与 worker 直接虚调用。 | `Megakernels/include/megakernel.cuh`、`csrc/dmk/op.h` |
 | 0.13 | DCU 侧硬约束：无 TMA / mbarrier → 双缓冲与信号量要自己做；`hipLaunchCooperativeKernel` 在 DTK 26.04 手册中有，可作为 grid 同步候选；DUSHMEM 是多卡 PGAS，**不能**用来做单卡 CTA 间同步。 | `dtk_doc` 各手册 |
 
@@ -178,7 +178,7 @@ P1/P2 是"在现有结构里榨 1.2–1.8x"。如果 P3 的目标算子用 Trito
 - **L2 复用**：block 按 8~16 列一组的 snake 顺序走，把 A/B 的 HBM 流量压到理论值附近。
 - **验收**：`test_dmk_gemm_accuracy_perf` 全 PASS（含 rocBLAS 对照）；2048³ ≥ 8 TFLOP/s；
   DPA4 形状 ≥55%；把 GFLOP/s 写成断言，防止回退。
-- **顺带**：把 DMK GEMM 接进 `tests/dcu/test_dcu_gemm_compare.py` 的三方对比，长期看曲线。
+- **顺带**：DMK GEMM 的对照基准现在只有 `tests/csrc/run_dmk_gemm_test.py`（kernel-only vs rocBLAS）；原 `tests/dcu/test_dcu_gemm_compare.py` 依赖的 `kernels.gemm` 已删除，需要时在新入口上重建三方对比。
 
 ### M2（1 周）Op 抽象与调度器
 

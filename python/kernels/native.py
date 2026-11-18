@@ -45,41 +45,18 @@ def require_dcu(*tensors):
     return torch.device("cuda", index)
 
 
-def _extension(required_symbol="gemm"):
+def _extension(required_symbol: str):
     """Load the optional native module and require the requested operator."""
     _require_hip_runtime()
     try:
         extension = importlib.import_module("kernels._C")
     except (ImportError, OSError) as exc:
-        if required_symbol == "gemm":
-            guidance = (
-                "native GEMM is not included in this extension; the local HIP "
-                "build provides RMSNorm and GIE only"
-            )
-        else:
-            guidance = (
-                "build the default HIP extension on a supported DCU "
-                "(RMSNorm and GIE)"
-            )
-        raise RuntimeError(guidance) from exc
+        raise RuntimeError(
+            "build the default HIP extension on a supported DCU "
+            "(RMSNorm, GIE and the fused segment operators)"
+        ) from exc
     if not hasattr(extension, required_symbol):
-        if required_symbol == "gemm":
-            detail = (
-                "the loaded kernels._C extension has no native GEMM entry point; "
-                "this project build provides RMSNorm and GIE only"
-            )
-        else:
-            detail = (
-                f"the loaded kernels._C extension has no {required_symbol!r} entry point"
-            )
-        raise RuntimeError(detail)
+        raise RuntimeError(
+            f"the loaded kernels._C extension has no {required_symbol!r} entry point"
+        )
     return extension
-
-
-def native_available():
-    try:
-        require_dcu()
-        _extension()
-    except (ImportError, OSError, RuntimeError):
-        return False
-    return True

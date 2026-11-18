@@ -1,6 +1,5 @@
 """Standalone native DCU operators."""
 
-from .gemm import gemm
 from .gie import gie_available, gie_zonal_scatter, zonal_scatter
 from .rmsnorm import rmsnorm, rmsnorm_available
 from .segment import (
@@ -14,7 +13,6 @@ from .segment import (
 
 __all__ = [
     "force_assembly",
-    "gemm",
     "gie_available",
     "gie_zonal_scatter",
     "group_by_source",

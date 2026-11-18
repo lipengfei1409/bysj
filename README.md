@@ -1,29 +1,36 @@
 # DCU DPA4 Native Operators
 
-The optional HIP extension in this checkout builds standalone RMSNorm, GIE (`zonal_scatter`) and the fused segmented operators (`segment_sum`, `segment_softmax`, `force_assembly`) for DCU. The C++/HIP DUMMA GEMM source is not present in `csrc`; the Python `kernels.gemm` wrapper, PyTorch oracle, and DUMMA comparison benchmark are retained, but this extension does not export `kernels._C.gemm`. For DPA4/SeZM inference, `python/model/dpa4.py` adapts DeepMD-kit rather than reimplementing its model graph; DeepMD owns checkpoint loading, neighbor-list handling, energy, forces, and virial. The adapter patches GIE and RMSNorm with the existing HIP/DCU operators by default for eager `pt_expt` `.pt` models, and can bind the fused segmented operators with `fused=`. TileLang has been removed from this project.
+The optional HIP extension in this checkout builds standalone RMSNorm, GIE (`zonal_scatter`) and the fused segmented operators (`segment_sum`, `segment_softmax`, `force_assembly`) for DCU. For DPA4/SeZM inference, `python/model/dpa4.py` adapts DeepMD-kit rather than reimplementing its model graph; DeepMD owns checkpoint loading, neighbor-list handling, energy, forces, and virial. The adapter patches GIE and RMSNorm with the existing HIP/DCU operators by default for eager `pt_expt` `.pt` models, and can bind the fused segmented operators with `fused=`. TileLang has been removed from this project.
 
 ## Scope
 
-- `python/kernels/`: native RMSNorm/GIE/fused-segment APIs and the retained Python GEMM wrapper with DCU extension checks.
-- `python/reference/`: explicit PyTorch oracles, including the GEMM oracle; these are not imported as production fallbacks.
+- `python/kernels/`: native RMSNorm/GIE/fused-segment APIs with DCU extension checks.
+- `python/reference/`: explicit PyTorch oracles; these are not imported as production fallbacks.
 - `csrc/rmsnorm.cpp`, `csrc/gie.cpp`, `csrc/segment_sum.cpp`, `csrc/segment_softmax.cpp` and `csrc/force_assembly.cpp`: native HIP operator sources included by the optional extension build.
 - `tests/`: Python contracts, host-side helper contracts, and opt-in DTK/DCU accuracy tests.
 - `docs/kernel-model.html`: architecture overview for the native operators and the DeepMD adapter.
 
 ## Python API
 
+Each operator exposes a thin DCU wrapper next to a pure PyTorch oracle, so the
+same shape can be checked on a CPU host:
+
 ```python
 import torch
-from kernels import gemm
-from reference import gemm as reference_gemm
+from kernels import segment_sum, segment_offsets
+from reference import segment_sum_reference
 
-a = torch.randn(19, 7, device="cuda", dtype=torch.float32)
-b = torch.randn(7, 23, device="cuda", dtype=torch.float32)
-y = gemm(a, b)                 # requires a separately provided kernels._C.gemm entry point
-expected = reference_gemm(a, b)  # explicit PyTorch oracle
+src = torch.randn(6, 4, device="cuda", dtype=torch.float32)
+dst = torch.tensor([0, 0, 1, 2, 2, 2], device="cuda")
+offsets = segment_offsets(dst, 3)
+y = segment_sum(src, dst, offsets, None, None)          # requires the HIP extension
+expected = segment_sum_reference(src, dst, offsets)     # explicit oracle
 ```
 
-The retained GEMM wrapper requires two contiguous 2D FP32 tensors on the same supported DCU, with matching inner dimensions. It is forward-only and does not support batching, transposes, bias, alpha/beta/C, or autograd. The oracle is available through `PYTHONPATH=python`; `kernels.gemm` never calls it implicitly. The local HIP extension build below does not provide the GEMM entry point.
+The same pairing exists for GIE (`kernels.gie` / `reference.gie`), RMSNorm
+(`kernels.rmsnorm` / `reference.rmsnorm`) and the softmax/force seals. The
+wrappers validate dtype, shape, device and contiguity before touching the DCU
+and never fall back to the oracle implicitly.
 
 ## Adapter scope
 
