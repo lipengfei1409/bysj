@@ -109,9 +109,9 @@ def _validate_segment_sum(src, dst, offsets, edge_scale, node_scale, order=None)
         if node_scale.numel() != n_nodes:
             raise ValueError("segment sum node_scale must have one value per segment")
     _validate_order(order, int(src.shape[0]), "segment sum")
-    tensors = [src, dst, offsets, order] + [
-        t for t in (edge_scale, node_scale) if t is not None
-    ]
+    # ``order`` and the two scales are optional, so the contiguity/device sweep
+    # must skip the ones the caller left out.
+    tensors = [t for t in (src, dst, offsets, order, edge_scale, node_scale) if t is not None]
     if any(not tensor.is_contiguous() for tensor in tensors):
         raise ValueError("segment sum inputs must be contiguous")
     if len({tensor.device for tensor in tensors}) != 1:
@@ -140,7 +140,7 @@ def _validate_segment_softmax(logit, env, offsets, null_logit, order=None):
         if null_logit.shape != (n_nodes, channels):
             raise ValueError("segment softmax null_logit must have shape (n_nodes, channels)")
     _validate_order(order, int(logit.shape[0]), "segment softmax")
-    tensors = [logit, env, offsets, order] + [t for t in (null_logit,) if t is not None]
+    tensors = [t for t in (logit, env, offsets, order, null_logit) if t is not None]
     if any(not tensor.is_contiguous() for tensor in tensors):
         raise ValueError("segment softmax inputs must be contiguous")
     if len({tensor.device for tensor in tensors}) != 1:
