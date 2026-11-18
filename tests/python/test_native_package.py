@@ -39,8 +39,6 @@ class NativePackageTests(unittest.TestCase):
                 "segment_offsets",
                 "segment_softmax",
                 "segment_sum",
-                "so2_envelope_reduce",
-                "so2_envelope_reduce_available",
                 "zonal_scatter",
             ],
         )

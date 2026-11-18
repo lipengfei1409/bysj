@@ -12,7 +12,6 @@ import torch
 
 from reference.gie import zonal_scatter_reference
 from reference.rmsnorm import rmsnorm as rmsnorm_reference
-from reference.so2 import so2_envelope_reduce_reference
 
 from model import dpa4
 from model.dpa4 import DPA4Model
@@ -32,6 +31,85 @@ class _FakePtBackend:
     def __init__(self, model_tree=None):
         if model_tree is not None:
             self._dpmodel = model_tree
+
+
+class _FakeDeepPot:
+    def __init__(self, backend_type=_FakePtExptBackend, model_tree=None):
+        self.deep_eval = backend_type(model_tree)
+        self.closed = False
+        self.result = (np.array([[1.25]]), np.zeros((1, 2, 3)), np.zeros((1, 9)))
+
+    def eval(self, *args, **kwargs):
+        self.eval_args = args
+        self.eval_kwargs = kwargs
+        return self.result
+
+    def get_rcut(self):
+        return 6.0
+
+    def get_type_map(self):
+        return ["O", "H"]
+
+    def get_ntypes(self):
+        return 2
+
+    def get_model_def_script(self):
+        return {"model": {"type": "dpa4"}}
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeModelTree:
+    def __init__(self, *modules):
+        self.child_modules = modules
+
+    def modules(self):
+        return iter((self, *self.child_modules))
+
+
+class _FakeGIE(torch.nn.Module):
+    __module__ = "deepmd.dpmodel.descriptor.dpa4_nn.embedding"
+
+    def __init__(self):
+        super().__init__()
+        self.lmax = 1
+        self.channels = 2
+        self.radial_slot_index_for_row = np.array([0, 0, 0], dtype=np.int64)
+        self.training = False
+        self.original_calls = 0
+
+    def call(self, *args, **kwargs):
+        self.original_calls += 1
+        return "deepmd-gie"
+
+    def forward(self, *args, **kwargs):
+        return self.call(*args, **kwargs)
+
+
+_FakeGIE.__name__ = "GeometricInitialEmbedding"
+
+
+class _FakeRMSNorm(torch.nn.Module):
+    __module__ = "deepmd.dpmodel.descriptor.dpa4_nn.norm"
+
+    def __init__(self):
+        super().__init__()
+        self.channels = 3
+        self.eps = 1.0e-7
+        self.precision = "float32"
+        self.adam_scale = torch.tensor([0.8, 1.1, 1.3], requires_grad=True)
+        self.original_calls = 0
+
+    def call(self, x):
+        self.original_calls += 1
+        return x + 1.0
+
+    def forward(self, x):
+        return self.call(x)
+
+
+_FakeRMSNorm.__name__ = "RMSNorm"
 
 
 class _FakeDeepPot:
@@ -199,66 +277,6 @@ class DPA4ModelAdapterTests(unittest.TestCase):
         self.assertEqual(fake_model.eval_args, (coords, cells, atom_types))
         model.close()
         self.assertTrue(fake_model.closed)
-
-    def test_so2_envelope_reduction_patches_only_the_supported_reduction_seam(self):
-        so2 = _FakeSO2Convolution().eval()
-        fake_model = _FakeDeepPot(model_tree=_FakeModelTree(so2))
-        with mock.patch.object(
-            dpa4, "_create_deep_pot", return_value=fake_model
-        ), mock.patch.object(
-            dpa4,
-            "_load_native_operator",
-            return_value=(lambda: True, so2_envelope_reduce_reference),
-        ):
-            model = DPA4Model("model.pt", native_ops=("so2_envelope_reduce",))
-
-        message = torch.randn(4, 3, 2, requires_grad=True)
-        edge_env = torch.tensor([[0.2], [0.5], [0.0], [0.8]], requires_grad=True)
-        inverse = torch.tensor([0.5, 0.75, 1.0], requires_grad=True).reshape(3, 1, 1)
-        inverse.retain_grad()
-        dst = torch.tensor([1, 0, 2, 1], dtype=torch.int64)
-        edge_cache = SimpleNamespace(
-            edge_env=edge_env,
-            edge_src_gate=None,
-            inv_sqrt_deg=inverse,
-            dst=dst,
-        )
-        x = torch.randn(3, 3, 2)
-        with mock.patch.object(dpa4, "_native_fp32_tensor", return_value=True):
-            with mock.patch.object(dpa4, "_native_device_tensor", return_value=True):
-                with mock.patch.object(dpa4, "_native_dcu_tensors", return_value=True):
-                    with mock.patch.object(
-                        dpa4, "_is_fp32_compute_precision", return_value=True
-                    ):
-                        actual = so2.forward_envelope(x, edge_cache, message)
-        expected = so2_envelope_reduce_reference(
-            message, edge_env.reshape(-1), dst, inverse
-        )
-        torch.testing.assert_close(actual, expected)
-        self.assertEqual(so2.edge_message_calls, 1)
-        self.assertEqual(so2.original_forward_calls, 0)
-        self.assertEqual(model.native_ops_patched, {"so2_envelope_reduce": 1})
-        grads = torch.autograd.grad(actual.sum(), (message, edge_env, inverse))
-        self.assertTrue(all(torch.isfinite(grad).all() for grad in grads))
-
-    def test_so2_envelope_reduction_falls_back_for_unsupported_inputs(self):
-        so2 = _FakeSO2Convolution().eval()
-        fake_model = _FakeDeepPot(model_tree=_FakeModelTree(so2))
-        with mock.patch.object(
-            dpa4, "_create_deep_pot", return_value=fake_model
-        ), mock.patch.object(
-            dpa4,
-            "_load_native_operator",
-            return_value=(lambda: True, so2_envelope_reduce_reference),
-        ):
-            DPA4Model("model.pt", native_ops=("so2_envelope_reduce",))
-        with mock.patch.object(dpa4, "_native_fp32_tensor", return_value=False):
-            result = so2.forward_envelope(
-                torch.zeros(1, 1, 1), SimpleNamespace(), torch.zeros(0, 1, 1)
-            )
-        self.assertEqual(result.item(), -1.0)
-        self.assertEqual(so2.original_forward_calls, 1)
-        self.assertEqual(so2.edge_message_calls, 0)
 
     def test_empty_native_selection_forces_baseline(self):
         fake_model = _FakeDeepPot(backend_type=_FakePtBackend)
@@ -451,37 +469,6 @@ class DPA4ModelAdapterTests(unittest.TestCase):
         self.assertEqual(result, "deepmd-gie")
         self.assertEqual(gie.original_calls, 1)
         self.assertEqual(native_called, [])
-
-    def test_so2_gate_vector_cannot_broadcast_over_edges(self):
-        module = _FakeSO2Convolution().eval()
-        module.compute_precision = "float32"
-        x = torch.ones(3, 4, 2)
-        message = torch.arange(24, dtype=torch.float32).reshape(3, 4, 2)
-        cache = SimpleNamespace(dst=torch.tensor([0, 1, 0]),
-            edge_env=torch.tensor([[0.2], [0.5], [0.8]]),
-            edge_src_gate=torch.tensor([1., 0., 0.5]),
-            inv_sqrt_deg=torch.ones(3, 1, 1))
-        with mock.patch.object(dpa4, "_native_fp32_tensor", return_value=True), \
-             mock.patch.object(dpa4, "_native_device_tensor", return_value=True), \
-             mock.patch.object(dpa4, "_native_dcu_tensors", return_value=True), \
-             mock.patch.object(dpa4, "_is_fp32_compute_precision", return_value=True):
-            actual = dpa4._make_so2_envelope_reduce(module, so2_envelope_reduce_reference)(x, cache, message)
-        expected = so2_envelope_reduce_reference(message, torch.tensor([.2, 0., .4]), cache.dst, cache.inv_sqrt_deg)
-        torch.testing.assert_close(actual, expected)
-
-    def test_so2_non_fp32_accumulation_retains_deepmd(self):
-        module = _FakeSO2Convolution().eval()
-        module.compute_precision = "float64"
-        native = mock.Mock()
-        cache = SimpleNamespace(dst=torch.tensor([0]), edge_env=torch.ones(1, 1),
-            inv_sqrt_deg=torch.ones(2, 1, 1), edge_src_gate=None)
-        with mock.patch.object(dpa4, "_is_fp32_compute_precision", return_value=True), \
-             mock.patch.object(dpa4, "_native_fp32_tensor", return_value=True), \
-             mock.patch.object(dpa4, "_native_device_tensor", return_value=True), \
-             mock.patch.object(dpa4, "_native_dcu_tensors", return_value=True):
-            result = dpa4._make_so2_envelope_reduce(module, native)(torch.ones(2,4,3), cache, torch.ones(1,4,3))
-        self.assertEqual(module.original_forward_calls, 1)
-        native.assert_not_called()
 
     def test_native_rmsnorm_falls_back_on_unsupported_cpu_input(self):
         rmsnorm = _FakeRMSNorm()

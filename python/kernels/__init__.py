@@ -11,7 +11,6 @@ from .segment import (
     segment_softmax,
     segment_sum,
 )
-from .so2_reduce import so2_envelope_reduce, so2_envelope_reduce_available
 
 __all__ = [
     "force_assembly",
@@ -25,7 +24,5 @@ __all__ = [
     "segment_offsets",
     "segment_softmax",
     "segment_sum",
-    "so2_envelope_reduce",
-    "so2_envelope_reduce_available",
     "zonal_scatter",
 ]

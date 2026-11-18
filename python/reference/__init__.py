@@ -8,7 +8,6 @@ from .segment import (
     segment_softmax_reference,
     segment_sum_reference,
 )
-from .so2 import so2_envelope_reduce_reference
 
 __all__ = [
     "force_assembly_reference",
@@ -17,6 +16,5 @@ __all__ = [
     "rmsnorm",
     "segment_softmax_reference",
     "segment_sum_reference",
-    "so2_envelope_reduce_reference",
     "zonal_scatter_reference",
 ]

@@ -18,7 +18,6 @@ sources = [
     "csrc/bindings.cpp",
     "csrc/rmsnorm.cpp",
     "csrc/gie.cpp",
-    "csrc/so2_reduce.cpp",
     "csrc/segment_sum.cpp",
     "csrc/segment_softmax.cpp",
     "csrc/force_assembly.cpp",

@@ -209,7 +209,7 @@ P1/P2 是"在现有结构里榨 1.2–1.8x"。如果 P3 的目标算子用 Trito
 - descriptor 的每层都走同一个 megakernel（先"每层一次 launch"，再往"整个 descriptor 一次 launch"推）。
 - 构建与入口：`setup.py` 编 `kernels._dmk`；新增 `csrc/dmk_bindings.cpp` 暴露
   `dmk_forward(coords, atom_types, cell, params_ptr)`；`python/model/dpa4.py` 加
-  `native_ops=("megakernel",)`，与现有 `gie` / `rmsnorm` / `so2_envelope_reduce` 并存、可单独选择。
+  `native_ops=("megakernel",)`，与现有 `gie` / `rmsnorm` 并存、可单独选择（SO(2) envelope 归约已并入 `fused` 的 `segment_sum`）。
 - 验证矩阵：3000 / 12000 / 36000 原子 ×（数值 / 性能）；用 `rocprof` 确认 launch 数与 kernel 时间。
 
 ### 任务二验收指标

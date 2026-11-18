@@ -130,7 +130,7 @@
           <p class="tag">DPA4 / SeZM inference</p>
           <h3>DeepMD adapter</h3>
           <p class="flow">DPA4Model → DeepPot → DeepMD pt_expt → native GIE/RMSNorm + optional SO(2) envelope reduction</p>
-          <p>模型图、邻居图、能量和导数由 DeepMD-kit 执行；适配器默认仅将受支持的 GIE 和 plain RMSNorm 阶段替换为原生 HIP/DCU 算子；可选 SO(2) 算子仅替换 attention-free convolution 的 destination envelope reduction，其余卷积仍由 DeepMD 执行。</p>
+          <p>模型图、邻居图、能量和导数由 DeepMD-kit 执行；适配器默认仅将受支持的 GIE 和 plain RMSNorm 阶段替换为原生 HIP/DCU 算子；SO(2) 的 destination envelope reduction 由 <code>fused=("envelope",)</code> 的 <code>segment_sum</code> 替换，其余卷积仍由 DeepMD 执行。</p>
         </article>
       </div>
       <p class="callout">DPA4 的一般数据流由 DeepMD-kit 负责：坐标、类型与邻居图 → 边几何和径向特征 → SeZM 交互块与读出 → 原子能量及总能量；力和 virial 由模型导数得到。该模型图不是本仓库重新实现的内核清单。</p>
@@ -188,11 +188,11 @@ with DPA4Model("water_pt_expt.pt", native_ops=()) as baseline:
     energy, force, virial = baseline.eval(coords, cells, atom_types)</code></pre>
           </div>
           <p>先安装 DeepMD-kit，并让项目的 <code>python/</code> 目录可导入。原生 patch 要求 HIP 扩展和受支持的 DCU，以及可访问 <code>deep_eval._dpmodel</code> 的 eager <code>pt_expt</code> <code>.pt</code> 模型；其他模型需显式传 <code>native_ops=()</code> 使用 DeepMD baseline。</p>
-          <p>attention-free 模型可单独选择 <code>native_ops=("so2_envelope_reduce",)</code>；该算子只替换 destination envelope reduction，不接管边几何、旋转或 SO(2) mixing stack。</p>
+          <p>attention-free 模型的 destination envelope reduction 通过 <code>fused=("envelope",)</code> 接入；它只替换这一步归约，不接管边几何、旋转或 SO(2) mixing stack。</p>
         </article>
         <article class="panel">
           <h3>选择规则</h3>
-          <p><code>native_ops=None</code> 默认选择 <code>("gie", "rmsnorm")</code>；传入 <code>native_ops=()</code> 明确运行 DeepMD baseline，也可只选择一个原生算子；<code>native_ops=("so2_envelope_reduce",)</code> 只加速 attention-free SO2Convolution 的 destination reduction，不替换完整卷积。TileLang 分派已从本项目与对应 DeepMD-kit checkout 移除，旧的 <code>tilelang_ops</code> 参数会显式报错。</p>
+          <p><code>native_ops=None</code> 默认选择 <code>("gie", "rmsnorm")</code>；传入 <code>native_ops=()</code> 明确运行 DeepMD baseline，也可只选择一个原生算子；SO(2) 的 destination reduction 由 <code>fused=</code> 的 <code>segment_sum</code> 加速，不替换完整卷积。TileLang 分派已从本项目与对应 DeepMD-kit checkout 移除，旧的 <code>tilelang_ops</code> 参数会显式报错。</p>
           <p>原生 patch 需要 eager <code>pt_expt</code> <code>.pt</code> 模型和受支持的 HIP/DCU。缺失扩展、后端或目标模块会报错并关闭已加载模型；单次输入不满足原生算子条件时则调用原始 DeepMD 方法。旧 <code>pt</code>、导出的 <code>.pt2</code>/<code>.pte</code> 不支持加载后 patch；导出 artifact 已固定的算子图也不会被 <code>native_ops=()</code> 改写。融合分段算子由 <code>fused=</code> 单独开关，命中/回退计数写进模型报告。</p>
           <p>默认只替换 plain RMSNorm 和受支持的 GIE scatter 阶段；可选 SO(2) selector 仅替换 edge message 后的 destination aggregation。其余图构建、旋转、radial mixing、SO(2) mixing stack、通用线性层和 fitting 仍由 DeepMD/PyTorch 执行。当前 native wrapper 面向 float32 HIP/DCU 推理。</p>
         </article>
