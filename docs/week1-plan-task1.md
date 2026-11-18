@@ -298,3 +298,31 @@ python -m deepmd.pt_expt.kernels.triton.sezm.sweep_tile_configs \
 D1 的两处代码改动（`--triton-infer` 透传、`_lookup` resolve 日志）、D0 的 `triton_smoke.py`、
 D2 的 `analyze_trace.py`，以及 D3 的 LDS 守卫，都是纯 CPU 可写、可 review 的改动。
 提前写好，D1 就只剩"跑命令 + 看结果"，一天能压到半天。
+
+---
+
+## 附：GEMM 对照基准（Triton vs rocBLAS）
+
+`tests/dcu/test_triton_gemm_compare.py` 用同一份张量、同一个 stream，把 `tl.dot` 的
+tiled GEMM 与直接 `rocblas_sgemm` 逐形状对比：ms、TFLOP/s、`triton/rocblas` 比值，
+以及每个形状的数值对照（防止"快但算错"的配置胜出）。覆盖五类：
+
+| `--kinds` | 覆盖 |
+| --- | --- |
+| `square` | 128 … 8192 的 `N×N×N` |
+| `rect` | 长宽比极端（tall-skinny / wide-short）与奇数尺寸 |
+| `ktail` | `K` 落在 tile 边界附近（1、3、31、33、100、1000、4097） |
+| `dpa4` | 模型实际发出的 `(E,C)×(C,C)`：E ∈ {3000, 36000, 181838}，C ∈ {32…512} |
+| `batch` | `bmm`，batch 8 / 64 / 512 |
+
+```bash
+python tests/dcu/test_triton_gemm_compare.py --kinds all --precision ieee \
+  --output-json /tmp/triton-vs-rocblas.json
+# 只看某几个形状，或与 tf32 对照
+python tests/dcu/test_triton_gemm_compare.py --cases 2048,2048,2048;181838,128,128
+python tests/dcu/test_triton_gemm_compare.py --kinds dpa4 --precision tf32
+```
+
+用途：D2 的 roofline 列可以直接用它给出的"同一形状下厂商库能跑多快"当分母，避免用
+2048³ 的峰值去套所有形状；`--precision ieee` 与 `tf32` 的差值是 `tl.dot` 是否走到
+矩阵指令的量化证据（也正是任务二 GEMM 要跨过的那道坎）。
