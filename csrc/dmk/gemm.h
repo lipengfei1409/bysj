@@ -3,6 +3,7 @@
 #include "tensor.h"
 #include "dumma.h"
 #include "op.h"
+#include "state.h"
 
 namespace dmk::gemm {
 
@@ -36,7 +37,7 @@ struct alignas(16) GemmShared {
     float output_tile[16 * 16];
 };
 
-class GemmOp final : public BaseOp {
+class GemmWave final {
 public:
     static constexpr size_t tile_m = 16;
     static constexpr size_t tile_n = 16;
@@ -53,11 +54,11 @@ public:
     using Accumulator = ::du::dumma::DUFragment<::du::dumma::accumulator,
                                                  tile_m, tile_n, tile_k, float>;
 
-    __device__ GemmOp(const GemmParams& params, GemmShared& shared)
+    __device__ GemmWave(const GemmParams& params, GemmShared& shared)
         : params_(params), shared_(shared) {}
-    __device__ ~GemmOp() override = default;
+    __device__ ~GemmWave() = default;
 
-    __device__ void shard() override {
+    __device__ void shard() {
         row_start_ = static_cast<size_t>(blockIdx.y) * tile_m;
         col_start_ = static_cast<size_t>(blockIdx.x) * tile_n;
     }
@@ -84,7 +85,7 @@ public:
 
     // Last logical GEMM tile in row-major output-tile order. This does not
     // imply that other blocks have finished storing their output.
-    __device__ bool is_last() const override {
+    __device__ bool is_last() const {
         return row_start_ < params_.c.shape.dims[0] &&
                col_start_ < params_.c.shape.dims[1] &&
                k_start_ < params_.a.shape.dims[1] &&
@@ -95,7 +96,7 @@ public:
 
     // Stage up to three consecutive K tiles. Adjacent lanes visit adjacent HBM
     // addresses along the smallest-stride dimension, including transposed views.
-    __device__ void loader() override {
+    __device__ void loader() {
         batch_start_ = k_start_;
         const size_t k = params_.a.shape.dims[1];
         assert(batch_start_ < k);
@@ -132,7 +133,7 @@ public:
 
     // Each call performs one MMA. The first call primes the register fragment;
     // each subsequent call uses the fragment loaded by the preceding call.
-    __device__ void consumer() override {
+    __device__ void consumer() {
         assert(batch_consumed_ < batch_count_);
         const size_t stage = batch_consumed_;
         if (!fragments_ready_) {
@@ -162,7 +163,7 @@ public:
         }
     }
 
-    __device__ void storer() override {
+    __device__ void storer() {
         dumma::store_matrix(shared_.output_tile, *current_, tile_n,
                             dumma::native::mem_row_major);
         __syncthreads();
@@ -223,15 +224,15 @@ private:
 // block; grid=(ceil(N/16), ceil(M/16)). Every lane follows the same K loop.
 __device__ inline void run_gemm_wave(const GemmParams& params,
                                      GemmShared& shared) {
-    assert(blockDim.x == GemmOp::wave_size &&
+    assert(blockDim.x == GemmWave::wave_size &&
            blockDim.y == 1 && blockDim.z == 1);
     if (!params.valid()) return;
-    GemmOp op(params, shared);
+    GemmWave op(params, shared);
     op.shard();
     if (!op.has_output()) return;
     op.prepare();
     for (size_t k_start = 0; k_start < params.a.shape.dims[1];
-         k_start += GemmOp::tile_k * GemmOp::stage_count) {
+         k_start += GemmWave::tile_k * GemmWave::stage_count) {
         op.set_k_tile(k_start);
         op.loader();
         for (size_t tile = 0; tile < op.batch_tiles(); ++tile)
@@ -241,3 +242,155 @@ __device__ inline void run_gemm_wave(const GemmParams& params,
 }
 
 }  // namespace dmk::gemm
+
+// Page-based concrete GEMM operation for the megakernel VM. The low-level
+// GemmWave/run_gemm_wave above remain the standalone DUMMA microbenchmark;
+// this class owns the page/semaphore lifecycle and is what the controller sees.
+namespace dmk::mk {
+
+template <typename Config, typename Globals>
+class GemmOp final : public BaseOp<Config, Globals> {
+public:
+    static constexpr int opcode = 2;
+    static constexpr int kTile = 16;
+    static constexpr int kTileElements = kTile * kTile;
+
+    struct Instruction {
+        int m0;
+        int n0;
+        int k0;
+
+        __device__ explicit Instruction(const int* words)
+            : m0(words[1]), n0(words[2]), k0(words[3]) {}
+    };
+
+    __device__ explicit GemmOp(const int* instruction)
+        : BaseOp<Config, Globals>(instruction) {}
+
+    __device__ int release_lid(int query) const override { return query; }
+
+    __device__ int init_semaphores(State<Config>& s,
+                                   const Globals&) const override {
+        s.semaphores()[0].init(1);
+        s.semaphores()[1].init(1);
+        return 2;
+    }
+
+    __device__ void loader(State<Config>& s,
+                           const Globals& g) const override {
+        const Instruction inst(this->instruction());
+        const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+
+        const int pid_a = s.pid(0);
+        const int pid_b = s.pid(1);
+        const int pid_c = s.pid(2);
+        s.wait_page_ready(pid_a);
+        s.wait_page_ready(pid_b);
+        s.wait_page_ready(pid_c);
+
+        float* a_page = static_cast<float*>(s.pages[pid_a].ptr());
+        float* b_page = static_cast<float*>(s.pages[pid_b].ptr());
+        const auto a = g.matrix_a;
+        const auto b = g.matrix_b;
+        for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+            const int row = i / kTile;
+            const int col = i % kTile;
+
+            const int ar = inst.m0 + row;
+            const int ak = inst.k0 + col;
+            a_page[i] =
+                ar < static_cast<int>(a.shape.dims[0]) &&
+                        ak < static_cast<int>(a.shape.dims[1])
+                    ? a.data[static_cast<size_t>(ar) * a.layout.strides[0] +
+                             static_cast<size_t>(ak) * a.layout.strides[1]]
+                    : 0.0f;
+
+            const int bk = inst.k0 + row;
+            const int bn = inst.n0 + col;
+            b_page[i] =
+                bk < static_cast<int>(b.shape.dims[0]) &&
+                        bn < static_cast<int>(b.shape.dims[1])
+                    ? b.data[static_cast<size_t>(bk) * b.layout.strides[0] +
+                             static_cast<size_t>(bn) * b.layout.strides[1]]
+                    : 0.0f;
+        }
+        lds::wave_barrier();
+        __threadfence_block();
+        if (lane == 0) s.semaphores()[0].arrive();
+
+        // Pages this op does not use.
+        if (lane >= 3 && lane < Config::kNumPages) {
+            const int unused = s.pid(lane);
+            s.wait_page_ready(unused);
+            s.finish_page(unused, Config::kConsumerWaves);
+        }
+    }
+
+    __device__ void consumer(State<Config>& s,
+                             const Globals&) const override {
+        const int wave = static_cast<int>(threadIdx.x / Config::kWaveSize);
+        if (wave != 0) return;  // only one consumer wave runs this tile
+
+        const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+        const int pid_a = s.pid(0);
+        const int pid_b = s.pid(1);
+        const int pid_c = s.pid(2);
+
+        s.semaphores()[0].wait(0);
+
+        const float* a_page = static_cast<const float*>(s.pages[pid_a].ptr());
+        const float* b_page = static_cast<const float*>(s.pages[pid_b].ptr());
+        float* c_page = static_cast<float*>(s.pages[pid_c].ptr());
+
+        for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+            const int row = i / kTile;
+            const int col = i % kTile;
+            float sum = 0.0f;
+#pragma unroll
+            for (int kk = 0; kk < kTile; ++kk) {
+                sum += a_page[row * kTile + kk] *
+                       b_page[kk * kTile + col];
+            }
+            c_page[i] = sum;
+        }
+        lds::wave_barrier();
+        __threadfence_block();
+        if (lane == 0) s.semaphores()[1].arrive();
+    }
+
+    __device__ void storer(State<Config>& s,
+                           const Globals& g) const override {
+        const Instruction inst(this->instruction());
+        const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
+        const int pid_a = s.pid(0);
+        const int pid_b = s.pid(1);
+        const int pid_c = s.pid(2);
+
+        s.semaphores()[1].wait(0);
+
+        const float* c_page =
+            static_cast<const float*>(s.pages[pid_c].ptr());
+        auto c = g.matrix_c;
+        for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+            const int row = i / kTile;
+            const int col = i % kTile;
+            const int cr = inst.m0 + row;
+            const int cc = inst.n0 + col;
+            if (cr < static_cast<int>(c.shape.dims[0]) &&
+                cc < static_cast<int>(c.shape.dims[1])) {
+                c.data[static_cast<size_t>(cr) * c.layout.strides[0] +
+                       static_cast<size_t>(cc) * c.layout.strides[1]] =
+                    c_page[i];
+            }
+        }
+        lds::wave_barrier();
+        __threadfence_block();
+        if (lane == 0) {
+            s.finish_page(pid_a, Config::kConsumerWaves);
+            s.finish_page(pid_b, Config::kConsumerWaves);
+            s.finish_page(pid_c, Config::kConsumerWaves);
+        }
+    }
+};
+
+}  // namespace dmk::mk

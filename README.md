@@ -107,6 +107,20 @@ python -m unittest discover -s tests/csrc -v
 
 Native tests require a supported DCU; a non-DCU environment can run the Python oracle and host header tests but cannot verify the kernels.
 
+## DCU megakernel LDS management
+
+The DCU megakernel follows the HazyResearch Megakernels structure: a static LDS region holds `Config::kStages` instruction pipeline slots (`InstructionState`: 32 instruction words, `pid_order`, per-instruction semaphores, scratch), while dynamic LDS is carved into `Config::kNumPages` fixed 8 KiB pages. A controller wave fetches each instruction, permutes logical page ids into physical ids from the previous op's `release_lid` mapping, constructs the op's dynamic semaphores, and publishes the instruction. Consumer/loader/storer waves dispatch on the opcode and use per-page parity semaphores (`lds::Semaphore`, an mbarrier-compatible replacement) for backpressure. The 64 KiB DCU budget supports 6 pages: 10,416 B static + 49,152 B dynamic + 128 B alignment = 59,696 B, checked by `static_assert` and again at launch.
+
+`csrc/dmk/config.h`, `lds.h`, `state.h`, `op.h`, `controller.h`, `noop.h`, `demo_op.h`, `gemm.h` and `embedding.h` implement the framework and concrete ops. Every op derives from `BaseOp<Config, Globals>` (`op.h`) and implements `release_lid`, `init_semaphores`, `loader`, `consumer`, `storer`; the controller and worker waves construct the op for each instruction and dispatch through the virtual interface. `csrc/dmk/megakernel.h` and `csrc/megakernel.cpp` wire up the demo kernel (`NoOp`, `ElementwiseOp`, `GemmOp`, `EmbeddingOp`). The block runs four role classes (controller + loader + storer + 4 consumer waves, 448 threads); the Blackwell reference launcher wave is intentionally omitted because DCU DUMMA is wave-synchronous. The scaffold is not part of the `kernels._C` extension yet; the test runner compiles `csrc/megakernel.cpp` directly.
+
+```bash
+source /opt/dtk/env.sh
+python tests/csrc/run_dmk_lds_test.py            # host logic + DCU device test
+python tests/csrc/run_dmk_lds_test.py --host-only
+```
+
+Set `DMK_GPU_ARCH=gfx928` if the architecture cannot be detected through Torch. Design notes, page/semaphore protocol, the op interface and the H100-to-DCU mapping are in [docs/lds-management.md](docs/lds-management.md).
+
 ## DPA4 hotspot profiling
 
 The three supported scenarios (single-card DeepMD inference, single-card LAMMPS,

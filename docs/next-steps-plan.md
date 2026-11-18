@@ -20,7 +20,7 @@ profile 结果（`dpa4_inference_profile_summary.json`、`dpa4_inference_trace.j
 | 0.9 | DUMMA FP32 支持 `m16n16k4`（gfx926/928/936/938）与 **`m16n16k8`（gfx928/936/938）**；当前代码只用了 k4，gfx928 上可以先把 MMA 指令数减半。 | `dtk_doc/DTK 26.04 DUMMA使用手册.pdf` 表 3.1 |
 | 0.10 | megakernel 脚手架仍是空壳：`megakernel.cpp` 里 `uint` 未定义、`WARP_SZIE` 拼写错误、`launch_mk()` 空实现；`rmsnorm.h` / `attention.h` 语法错误不能编译；`embedding.h` 为空；`setup.py` 不编译 dmk；`bindings.cpp` 无 dmk 入口。 | `csrc/megakernel.cpp`、`csrc/dmk/rmsnorm.h`、`csrc/setup.py` |
 | 0.11 | 已有可复用测试设施：GEMM 自带 rocBLAS 对照的 C++ 用例、hipcc 直编 runner、DUMMA/rocBLAS/PyTorch 三方对比脚本。 | `tests/csrc/test_dmk_gemm_accuracy_perf.cpp`、`tests/csrc/run_dmk_gemm_test.py`、`tests/dcu/test_dcu_gemm_compare.py` |
-| 0.12 | 参考实现是五角色（controller / loader / consumer / storer / launcher）+ instruction pipeline 的持久化 megakernel；DMK 的 `BaseOp::shard/loader/consumer/storer/is_last` 已经是同一套角色模型的雏形。 | `Megakernels/include/megakernel.cuh`、`csrc/dmk/op.h` |
+| 0.12 | 参考实现是五角色（controller / loader / consumer / storer / launcher）+ instruction pipeline 的持久化 megakernel；DMK 的 `BaseOp<Config, Globals>` 现在提供 release_lid / init_semaphores / loader / consumer / storer 五个多态 hook，controller 与 worker 直接虚调用。 | `Megakernels/include/megakernel.cuh`、`csrc/dmk/op.h` |
 | 0.13 | DCU 侧硬约束：无 TMA / mbarrier → 双缓冲与信号量要自己做；`hipLaunchCooperativeKernel` 在 DTK 26.04 手册中有，可作为 grid 同步候选；DUSHMEM 是多卡 PGAS，**不能**用来做单卡 CTA 间同步。 | `dtk_doc` 各手册 |
 
 > 关于 0.1：不能只凭 summary 判断。第一步要用显式 `DP_TRITON_INFER=1/2/3` 复测一次，排除
@@ -140,13 +140,24 @@ P1/P2 是"在现有结构里榨 1.2–1.8x"。如果 P3 的目标算子用 Trito
 1. 让脚手架可编译可运行：`megakernel.cpp` 用 `uint32_t`、修 `WARP_SIZE`、实现 4 角色空跑 +
    LDS 邮箱 + 计数，`launch_mk()` 真启动；新增 `tests/csrc/run_dmk_megakernel_test.py`
    （复用 GEMM runner 的 hipcc 直编 + arch 检测）。
-2. 修 `rmsnorm.h` / `attention.h` 的语法错误，`embedding.h` 补桩或删掉，避免"头文件存在但不可编译"。
+2. 修 `rmsnorm.h` / `attention.h` 的语法错误（仍是旧坏桩，未纳入 op pack）；
+   `embedding.h` 已按 `BaseOp` 补成页面版 `EmbeddingOp`。
 3. **三个 μbench（最重要）**，它们是后续所有优化的判决器：
    - 纯 MMA 循环（同 tile 形状、无访存）→ DUMMA 的实际上限 FLOP/s；
    - HBM→LDS 16 B 向量拷贝 → 有效带宽 + bank 冲突计数；
    - `ld_matrix` / `store_matrix` 单独计时（不同 ld / 不同 LDS 布局）→ 定位第 5 条。
 4. 顺带把 0.1–0.8 的根因逐条量出来（例如把 `tile_indices` 换成编译期常量再跑一次），
    形成"谁贡献了多少"的清单，作为 M1 的设计输入。
+
+> 状态：M0 的第 1 条已部分落地——按 HazyResearch Megakernels 的结构实现了
+> `csrc/dmk/config.h`（静态 LDS + page 预算）、`lds.h`（mbarrier parity 替代）、
+> `state.h`（state/pid/page semaphore）、`op.h`（虚基类 + `make_op` 工厂）、
+> `controller.h`（取指 / page 置换 / 动态 semaphore）、`noop.h` /
+> `demo_op.h` / `gemm.h` / `embedding.h`、`megakernel.h` 与
+> `tests/csrc/run_dmk_lds_test.py`；按 DCU 同步 DUMMA 的实际情况去掉了
+> launcher 波（controller + loader + storer + 4 consumer waves，448 threads），
+> 设计说明见 `docs/lds-management.md`。
+> `rmsnorm.h` / `attention.h` 修复、三个 μbench 与真实 op 的 page 规划仍待做。
 
 ### M1（1–1.5 周）GEMM 打到 roofline
 
@@ -169,8 +180,9 @@ P1/P2 是"在现有结构里榨 1.2–1.8x"。如果 P3 的目标算子用 Trito
 
 ### M2（1 周）Op 抽象与调度器
 
-- **去虚函数**：`BaseOp` 的 vtable 在 device 上每次调用都要访存，持久化 megakernel 里更想要
-  可内联的静态分发 → 改成 `OpId + 模板分发`，`BaseOp` 退化为 host 侧描述。
+- **虚函数边界**：当前 `BaseOp` 的虚调用只在每条指令每个 role 发生一次，op 内部数据循环
+  仍然内联，因此先保留多态接口；如果 profile 显示 indirect call / vtable 访存有影响，
+  再在保持 `BaseOp` 接口的前提下加 compile-time `OpId + 模板分发` 快路径。
 - **op 描述表**：类型 / 参数指针 / 输入输出 buffer 索引 / 依赖位图 / shard 维度 / epilogue 变体。
 - **buffer 与 arena**：单块 HBM arena + 静态 lifetime 规划（现在峰值分配 30.7 GB，每次 eval 都在
   申请释放；megakernel 必须零分配）。
