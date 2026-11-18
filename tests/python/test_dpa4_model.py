@@ -139,11 +139,11 @@ _FakeSO2Convolution.__name__ = "SO2Convolution"
 
 
 class DPA4ModelAdapterTests(unittest.TestCase):
-    def test_nonempty_tilelang_selector_is_rejected_before_loading(self):
+    def test_removed_tilelang_selector_fails_loudly_before_loading(self):
+        # TileLang dispatch was deleted; an old call site must not be forwarded
+        # to DeepPot as an unknown keyword argument.
         with mock.patch.object(dpa4, "_create_deep_pot") as create:
-            with self.assertRaisesRegex(
-                RuntimeError, "TileLang operators are disabled"
-            ):
+            with self.assertRaisesRegex(RuntimeError, "TileLang dispatch was removed"):
                 DPA4Model("water.pt", tilelang_ops=("radial_basis",))
         create.assert_not_called()
 
@@ -152,7 +152,7 @@ class DPA4ModelAdapterTests(unittest.TestCase):
         rmsnorm = _FakeRMSNorm()
         fake_model = _FakeDeepPot(model_tree=_FakeModelTree(gie, rmsnorm))
         seen = {}
-        legacy_flags = ("DP_TILELANG_DPA4", "DP_TILELANG_RADIAL_BASIS")
+        legacy_flags = ("DP_TRITON_INFER", "DP_TRITON_TRAIN")
 
         def create_deep_pot(model_file, **kwargs):
             seen["flags"] = {name: os.environ.get(name) for name in legacy_flags}
@@ -184,8 +184,7 @@ class DPA4ModelAdapterTests(unittest.TestCase):
         self.assertEqual(model.native_ops, ("gie", "rmsnorm"))
         self.assertTrue(model.uses_native_ops)
         self.assertEqual(model.native_ops_patched, {"gie": 1, "rmsnorm": 1})
-        self.assertEqual(model.tilelang_ops, ())
-        self.assertFalse(model.uses_tilelang)
+        self.assertFalse(hasattr(model, "tilelang_ops"))
         self.assertEqual(
             [call.args[0] for call in load_native_mock.call_args_list],
             ["gie", "rmsnorm"],
@@ -268,8 +267,7 @@ class DPA4ModelAdapterTests(unittest.TestCase):
         self.assertEqual(model.backend, "pt")
         self.assertEqual(model.native_ops, ())
         self.assertFalse(model.uses_native_ops)
-        self.assertFalse(model.uses_tilelang)
-        self.assertEqual(model.tilelang_ops, ())
+        self.assertFalse(hasattr(model, "tilelang_ops"))
 
     def test_native_selector_is_validated_before_loading(self):
         with mock.patch.object(dpa4, "_create_deep_pot") as create:

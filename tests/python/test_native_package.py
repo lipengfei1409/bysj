@@ -1,4 +1,5 @@
-"""Package-boundary checks for the optional TileLang development area."""
+"""Package contracts for the native operator module after the TileLang removal."""
+from __future__ import annotations
 
 import importlib
 import sys
@@ -11,15 +12,19 @@ from setuptools import find_packages
 ROOT = Path(__file__).resolve().parents[2]
 
 
-class TileLangOpsPackageTests(unittest.TestCase):
-    def test_package_is_discovered(self):
+class NativePackageTests(unittest.TestCase):
+    def test_kernels_package_is_discovered(self):
         packages = find_packages(str(ROOT / "python"))
-        self.assertIn("kernels.tilelang_ops", packages)
+        self.assertIn("kernels", packages)
+        self.assertTrue((ROOT / "python" / "kernels" / "segment.py").is_file())
 
-    def test_package_import_does_not_require_tilelang(self):
+    def test_tilelang_ops_package_is_gone(self):
+        packages = find_packages(str(ROOT / "python"))
+        self.assertNotIn("kernels.tilelang_ops", packages)
+
+    def test_package_imports_without_tilelang_and_exports_the_native_ops(self):
         with patch.dict(sys.modules, {"tilelang": None}):
             kernels = importlib.import_module("kernels")
-            package = importlib.import_module("kernels.tilelang_ops")
         self.assertEqual(
             kernels.__all__,
             [
@@ -39,7 +44,7 @@ class TileLangOpsPackageTests(unittest.TestCase):
                 "zonal_scatter",
             ],
         )
-        self.assertIn("tilelang_bessel_radial_basis", package.__all__)
+        self.assertFalse(hasattr(kernels, "tilelang_ops"))
 
 
 if __name__ == "__main__":

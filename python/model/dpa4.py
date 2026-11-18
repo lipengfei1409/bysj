@@ -2,9 +2,9 @@
 
 This module delegates DPA4 architecture, checkpoint loading, neighbor-list
 handling, and force/virial evaluation to DeepMD-kit. It patches matching GIE
-and RMSNorm modules per-instance with this project's HIP/DCU operators. The
-adapter does not dispatch TileLang operators or mutate their legacy environment
-variables.
+and RMSNorm modules per-instance with this project's HIP/DCU operators, and can
+additionally bind the fused segmented operators (``fused=``). TileLang dispatch
+was removed from this project.
 """
 
 from __future__ import annotations
@@ -15,24 +15,6 @@ from types import MethodType
 from typing import Any, Callable, Iterable, Optional
 
 _NATIVE_OPS = frozenset(("gie", "rmsnorm", "so2_envelope_reduce"))
-
-
-def _normalize_tilelang_ops(
-    tilelang_ops: Optional[Iterable[str]],
-) -> tuple[str, ...]:
-    """Reject non-empty legacy selections while preserving the old keyword."""
-    if tilelang_ops is None:
-        return ()
-    values = (tilelang_ops,) if isinstance(tilelang_ops, str) else tilelang_ops
-    for value in values:
-        if not isinstance(value, str):
-            raise TypeError("tilelang_ops entries must be strings")
-        if value.strip():
-            raise RuntimeError(
-                "TileLang operators are disabled in DPA4Model; use the existing "
-                "native GIE/RMSNorm operators or pass tilelang_ops=()"
-            )
-    return ()
 
 
 def _normalize_native_ops(native_ops: Optional[Iterable[str]]) -> tuple[str, ...]:
@@ -508,19 +490,21 @@ class DPA4Model:
     inside attention-free SO(2) convolution; the rest of the convolution stays in
     DeepMD and unsupported layouts fall back unchanged.
 
-    ``tilelang_ops`` remains as a deprecated compatibility guard: ``None`` or
-    an empty iterable is accepted, while non-empty selections raise. The
-    adapter does not mutate environment variables; standalone TileLang
-    operators remain independent of this model adapter.
+    TileLang dispatch was removed from this project: the legacy ``tilelang_ops``
+    keyword now raises instead of silently doing nothing, so an old call site
+    fails loudly rather than appearing to select an operator that no longer
+    exists. The adapter does not mutate environment variables.
 
     Parameters
     ----------
     model_file
         A model artifact supported by ``deepmd.infer.DeepPot``. Native patches
         require an eager ``pt_expt`` checkpoint ending in ``.pt``.
-    tilelang_ops
-        Deprecated compatibility guard. Only ``None`` and an empty iterable
-        are accepted; this adapter never dispatches TileLang operators.
+    fused
+        Bind this project's fused segmented HIP operators into the loaded model;
+        see :mod:`model.fused_deepmd`. ``True`` installs every seam, a string or
+        sequence selects seams, a mapping sets each one, ``None``/``False``
+        leaves DeepMD untouched.
     native_ops
         Project HIP/DCU operators to patch. Defaults to ``("gie", "rmsnorm")``;
         pass an empty iterable to opt out, or select one operator including the
@@ -543,13 +527,16 @@ class DPA4Model:
         self,
         model_file: str | os.PathLike[str],
         *,
-        tilelang_ops: Optional[Iterable[str]] = None,
         native_ops: Optional[Iterable[str]] = None,
         fused: Any = None,
         **deepmd_kwargs: Any,
     ) -> None:
         self.model_file = str(Path(model_file).expanduser())
-        _normalize_tilelang_ops(tilelang_ops)
+        if "tilelang_ops" in deepmd_kwargs:
+            raise RuntimeError(
+                "TileLang dispatch was removed from this project; drop the "
+                "tilelang_ops argument and use native_ops / fused instead"
+            )
         selected_native = _normalize_native_ops(native_ops)
         artifact_suffix = Path(self.model_file).suffix.lower()
         if selected_native and artifact_suffix != ".pt":
@@ -572,8 +559,6 @@ class DPA4Model:
             )
 
         self.backend = _backend_name(self._deep_pot)
-        self.tilelang_ops = ()
-        self.uses_tilelang = False
         self.native_ops = selected_native
         self.uses_native_ops = bool(selected_native)
         self.native_ops_patched: dict[str, int] = {}
@@ -645,8 +630,7 @@ class DPA4Model:
     def __repr__(self) -> str:
         return (
             f"DPA4Model(model_file={self.model_file!r}, backend={self.backend!r}, "
-            f"tilelang_ops={self.tilelang_ops!r}, native_ops={self.native_ops!r}, "
-            f"fused_ops={self.fused_ops!r})"
+            f"native_ops={self.native_ops!r}, fused_ops={self.fused_ops!r})"
         )
 
 
