@@ -1,15 +1,14 @@
 # DCU DPA4 Native Operators
 
-The optional HIP extension in this checkout builds standalone RMSNorm, GIE (`zonal_scatter`), and SO(2) envelope-reduction operators for DCU. The C++/HIP DUMMA GEMM source is not present in `csrc`; the Python `kernels.gemm` wrapper, PyTorch oracle, and DUMMA comparison benchmark are retained, but this extension does not export `kernels._C.gemm`. For DPA4/SeZM inference, `python/model/dpa4.py` adapts DeepMD-kit rather than reimplementing its model graph; DeepMD owns checkpoint loading, neighbor-list handling, energy, forces, and virial. The adapter patches GIE and RMSNorm with the existing HIP/DCU operators by default for eager `pt_expt` `.pt` models; TileLang remains standalone and is not dispatched by this adapter.
+The optional HIP extension in this checkout builds standalone RMSNorm, GIE (`zonal_scatter`), and SO(2) envelope-reduction operators for DCU. The C++/HIP DUMMA GEMM source is not present in `csrc`; the Python `kernels.gemm` wrapper, PyTorch oracle, and DUMMA comparison benchmark are retained, but this extension does not export `kernels._C.gemm`. For DPA4/SeZM inference, `python/model/dpa4.py` adapts DeepMD-kit rather than reimplementing its model graph; DeepMD owns checkpoint loading, neighbor-list handling, energy, forces, and virial. The adapter patches GIE and RMSNorm with the existing HIP/DCU operators by default for eager `pt_expt` `.pt` models, and can bind the fused segmented operators with `fused=`. TileLang has been removed from this project.
 
 ## Scope
 
 - `python/kernels/`: native RMSNorm/GIE/SO(2) reduction APIs and the retained Python GEMM wrapper with DCU extension checks.
-- `python/kernels/tilelang_ops/`: optional standalone TileLang operators for DPA4/SeZM, each with a PyTorch reference and (where needed) autograd wrapper.
 - `python/reference/`: explicit PyTorch oracles, including the GEMM oracle; these are not imported as production fallbacks.
 - `csrc/rmsnorm.cpp`, `csrc/gie.cpp`, and `csrc/so2_reduce.cpp`: native HIP operator sources included by the optional extension build.
 - `tests/`: Python contracts, host-side helper contracts, and opt-in DTK/DCU accuracy tests.
-- `doc/kernel-model.html`: architecture overview for standalone TileLang operators and the native GIE/RMSNorm DPA4 adapter.
+- `docs/kernel-model.html`: architecture overview for the native GIE/RMSNorm operators and the DeepMD adapter.
 
 ## Python API
 
@@ -26,9 +25,9 @@ expected = reference_gemm(a, b)  # explicit PyTorch oracle
 
 The retained GEMM wrapper requires two contiguous 2D FP32 tensors on the same supported DCU, with matching inner dimensions. It is forward-only and does not support batching, transposes, bias, alpha/beta/C, or autograd. The oracle is available through `PYTHONPATH=python`; `kernels.gemm` never calls it implicitly. The local HIP extension build below does not provide the GEMM entry point.
 
-## TileLang operator development
+## Adapter scope
 
-The DPA4/SeZM `DPA4Model` adapter uses native HIP GIE/RMSNorm by default for eager `pt_expt` `.pt` inference. The opt-in `so2_envelope_reduce` selector accelerates only the destination aggregation of attention-free SO2Convolution; edge geometry, rotations, radial mixing, and the SO(2) mixing stack remain in DeepMD. It does not dispatch TileLang operators; the standalone TileLang package remains available for separate kernel work. DeepMD-kit still owns the model graph and all unpatched stages. Fusion, training, higher-order force-loss gradients, stress/virial-specific kernels, and multi-rank ghost/halo exchange remain outside this initial native SO(2) slice.
+The DPA4/SeZM `DPA4Model` adapter uses native HIP GIE/RMSNorm by default for eager `pt_expt` `.pt` inference. The opt-in `so2_envelope_reduce` selector accelerates only the destination aggregation of attention-free SO2Convolution; edge geometry, rotations, radial mixing, and the SO(2) mixing stack remain in DeepMD. `fused=` additionally binds the fused segmented operators (`segment_sum`, `segment_softmax`) into DeepMD's own dispatch seams; see [docs/deepmd-fused-dispatch.md](docs/deepmd-fused-dispatch.md). DeepMD-kit still owns the model graph and all unpatched stages. Training, higher-order force-loss gradients, stress/virial-specific kernels, and multi-rank ghost/halo exchange remain outside this native slice.
 
 Run the Python contract and reference tests:
 
@@ -64,12 +63,9 @@ DeepMD baseline, or pass `native_ops=("gie",)` / `("rmsnorm",)` to select one
 primitive. For an attention-free configuration, the opt-in
 `native_ops=("so2_envelope_reduce",)` accelerates only SO2Convolution's
 native envelope destination-reduction seam; edge-message construction and the
-rest of the convolution remain in DeepMD. The adapter does not mutate
-`DP_TILELANG_*` environment variables;
-use a DeepMD-kit checkout with the DPA4 TileLang dispatch removed. The legacy
-`tilelang_ops` argument accepts only `None` or an empty iterable and rejects
-non-empty selections. The standalone TileLang package remains available but is
-not registered into the DeepMD DPA4 path.
+rest of the convolution remain in DeepMD. TileLang dispatch was removed from
+this project, so the legacy `tilelang_ops` argument now raises with an explicit
+message instead of being forwarded to DeepMD.
 
 Native patches require the HIP extension, a supported DCU, and an eager
 `pt_expt` checkpoint ending in `.pt`; an unavailable extension, unsupported
