@@ -55,6 +55,38 @@ def _normalize_native_ops(native_ops: Optional[Iterable[str]]) -> tuple[str, ...
     return tuple(selected)
 
 
+_FUSED_SEAMS = ("softmax", "envelope")
+
+
+def _normalize_fused(fused: Any) -> dict[str, bool] | None:
+    """Translate the ``fused`` switch into the per-seam switches."""
+    if not fused:
+        return None
+    if fused is True:
+        return {name: True for name in _FUSED_SEAMS}
+    if isinstance(fused, str):
+        fused = (fused,)
+    if isinstance(fused, Iterable) and not isinstance(fused, dict):
+        selected = {}
+        for value in fused:
+            if not isinstance(value, str) or value.strip().lower() not in _FUSED_SEAMS:
+                raise ValueError(
+                    f"unknown fused seam {value!r}; choose from: "
+                    f"{', '.join(_FUSED_SEAMS)}"
+                )
+            selected[value.strip().lower()] = True
+        return selected
+    if isinstance(fused, dict):
+        unknown = set(fused) - set(_FUSED_SEAMS)
+        if unknown:
+            raise ValueError(
+                f"unknown fused seams: {', '.join(sorted(map(str, unknown)))}; "
+                f"choose from: {', '.join(_FUSED_SEAMS)}"
+            )
+        return {name: bool(fused.get(name, False)) for name in _FUSED_SEAMS}
+    raise TypeError("fused must be a bool, a seam name, a sequence of names or a mapping")
+
+
 def _create_deep_pot(model_file: str, **kwargs: Any) -> Any:
     """Load DeepMD lazily so importing this adapter has no DeepMD dependency."""
     try:
@@ -513,6 +545,7 @@ class DPA4Model:
         *,
         tilelang_ops: Optional[Iterable[str]] = None,
         native_ops: Optional[Iterable[str]] = None,
+        fused: Any = None,
         **deepmd_kwargs: Any,
     ) -> None:
         self.model_file = str(Path(model_file).expanduser())
@@ -527,6 +560,16 @@ class DPA4Model:
             )
 
         self._deep_pot = _create_deep_pot(self.model_file, **deepmd_kwargs)
+
+        self.fused_seams = _normalize_fused(fused)
+        self.fused_ops: dict[str, Any] = {}
+        if self.fused_seams:
+            from .fused_deepmd import install as _install_fused
+            from .fused_deepmd import status as _fused_status
+
+            self.fused_ops = _fused_status(
+                _install_fused(self._deep_pot, **self.fused_seams)
+            )
 
         self.backend = _backend_name(self._deep_pot)
         self.tilelang_ops = ()
@@ -584,6 +627,11 @@ class DPA4Model:
         return self._deep_pot.get_model_def_script()
 
     def close(self) -> None:
+        if self.fused_ops:
+            from .fused_deepmd import uninstall as _uninstall_fused
+
+            _uninstall_fused(self._deep_pot)
+            self.fused_ops = {}
         close = getattr(self._deep_pot, "close", None)
         if callable(close):
             close()
@@ -597,7 +645,8 @@ class DPA4Model:
     def __repr__(self) -> str:
         return (
             f"DPA4Model(model_file={self.model_file!r}, backend={self.backend!r}, "
-            f"tilelang_ops={self.tilelang_ops!r}, native_ops={self.native_ops!r})"
+            f"tilelang_ops={self.tilelang_ops!r}, native_ops={self.native_ops!r}, "
+            f"fused_ops={self.fused_ops!r})"
         )
 
 
