@@ -564,11 +564,11 @@ class DPA4Model:
         self.fused_seams = _normalize_fused(fused)
         self.fused_ops: dict[str, Any] = {}
         if self.fused_seams:
-            from .fused_deepmd import install as _install_fused
+            from .fused_deepmd import deepmd_patch as _deepmd_patch
             from .fused_deepmd import status as _fused_status
 
             self.fused_ops = _fused_status(
-                _install_fused(self._deep_pot, **self.fused_seams)
+                _deepmd_patch(self._deep_pot, **self.fused_seams)
             )
 
         self.backend = _backend_name(self._deep_pot)

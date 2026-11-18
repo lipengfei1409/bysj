@@ -30,9 +30,9 @@ see ``docs/deepmd-fused-dispatch.md`` for what is left and why.
 
 Usage::
 
-    from model.fused_deepmd import install, uninstall, status
+    from model.fused_deepmd import deepmd_patch, status, uninstall
 
-    stats = install(deep_pot)          # or install(deep_pot, softmax=False)
+    stats = deepmd_patch(deep_pot)     # prints the module tree first
     ...                                # run inference
     print(status(stats))
     uninstall(deep_pot)
@@ -278,9 +278,39 @@ def _blocks(model: Any) -> list[Any]:
     ]
 
 
-def install(model: Any, *, ops: Any = None, softmax: bool = True,
-            envelope: bool = True, blocks: Iterable[Any] | None = None,
-            namespaces: Iterable[Any] | None = None) -> FusedStats:
+def describe_module(module: Any, *, max_depth: int = 2, max_rows: int = 40) -> list[str]:
+    """Render the module tree and the patch targets as printable lines.
+
+    The tree stops at ``max_depth`` so a real descriptor does not flood the
+    console; the patch targets are listed in full because those are the rows
+    the caller is about to replace.
+    """
+    lines: list[str] = []
+    named = list(module.named_modules()) if hasattr(module, "named_modules") else []
+    lines.append(f"module: {type(module).__name__} ({len(named)} submodules)")
+    for name, child in named[:max_rows]:
+        depth = 0 if not name else name.count(".") + 1
+        if depth > max_depth:
+            continue
+        lines.append(f"  {'  ' * depth}{name or '<root>'}  {type(child).__name__}")
+    if len(named) > max_rows:
+        lines.append(f"  ... {len(named) - max_rows} more submodules")
+    targets = _blocks(module)
+    lines.append(f"patch targets: {len(targets)} SO(2) block(s)")
+    for index, block in enumerate(targets):
+        lines.append(
+            f"  [{index}] {type(block).__name__}  "
+            f"n_atten_head={getattr(block, 'n_atten_head', '?')}  "
+            f"seams: forward_envelope -> segment_sum, "
+            f"attention softmax -> segment_softmax"
+        )
+    return lines
+
+
+def deepmd_patch(module: Any, *, ops: Any = None, softmax: bool = True,
+                 envelope: bool = True, blocks: Iterable[Any] | None = None,
+                 namespaces: Iterable[Any] | None = None,
+                 verbose: bool = True) -> FusedStats:
     """Bind the fused operators on ``model`` (a ``DeepPot`` or an ``nn.Module``).
 
     ``ops`` may be an operator bundle exposing ``segment_sum`` and
@@ -291,12 +321,24 @@ def install(model: Any, *, ops: Any = None, softmax: bool = True,
     """
     global _SESSION
     stats = FusedStats()
-    uninstall(model)
-    module_list = list(blocks) if blocks is not None else list(_blocks(model))
+    if verbose:
+        for line in describe_module(module):
+            print(f"[deepmd_patch] {line}", flush=True)
+    uninstall(module)
+    module_list = list(blocks) if blocks is not None else list(_blocks(module))
     stats.blocks = len(module_list)
     if ops is None:
         ops = _load_ops()
+    if verbose:
+        source = "kernels.segment" if ops is not None else "unavailable"
+        print(
+            f"[deepmd_patch] operators: {source}; "
+            f"softmax={softmax} envelope={envelope}",
+            flush=True,
+        )
     if ops is None:
+        if verbose:
+            print("[deepmd_patch] no fused extension on this host -> nothing replaced", flush=True)
         return stats
 
     namespace_list: list[Any] = []
@@ -304,7 +346,7 @@ def install(model: Any, *, ops: Any = None, softmax: bool = True,
     if softmax:
         namespace_list = list(namespaces) if namespaces is not None else _softmax_namespaces()
         if not namespace_list:
-            raise ValueError("install requires at least one module namespace to patch")
+            raise ValueError("deepmd_patch requires one module namespace to patch")
         reference = namespace_list[0].segment_envelope_gated_softmax
     _SESSION = _Session(ops=ops, stats=stats, reference_softmax=reference)
 
@@ -320,6 +362,12 @@ def install(model: Any, *, ops: Any = None, softmax: bool = True,
             if hasattr(namespace, name):
                 _SAVED[f"{namespace.__name__}.{name}"] = (namespace, getattr(namespace, name))
                 setattr(namespace, name, bound_softmax)
+                if verbose:
+                    print(
+                        f"[deepmd_patch] replace {namespace.__name__}.{name} "
+                        f"-> model.fused_deepmd.bound_softmax",
+                        flush=True,
+                    )
         stats.bound_softmax = True
 
     if envelope:
@@ -335,10 +383,22 @@ def install(model: Any, *, ops: Any = None, softmax: bool = True,
 
             block.forward_envelope = MethodType(patched, block)
         stats.bound_envelope = bool(module_list)
+        if verbose:
+            print(
+                f"[deepmd_patch] replace SO2Convolution.forward_envelope on "
+                f"{len(module_list)} block(s) -> model.fused_deepmd.patched",
+                flush=True,
+            )
+    if verbose:
+        print(
+            f"[deepmd_patch] installed: softmax={stats.bound_softmax} "
+            f"envelope={stats.bound_envelope} blocks={stats.blocks}",
+            flush=True,
+        )
     return stats
 
 
-def uninstall(model: Any = None) -> None:
+def uninstall(module: Any = None) -> None:
     """Restore every rebound name; safe to call when nothing is installed."""
     global _SESSION
     for key, (owner, original) in list(_SAVED.items()):
@@ -354,8 +414,8 @@ def uninstall(model: Any = None) -> None:
 
 
 def status(stats: FusedStats | None) -> dict[str, Any]:
-    """Report the counters of an install (``None`` when it never ran)."""
+    """Report the counters of a patch (``None`` when it never ran)."""
     return {} if stats is None else stats.as_dict()
 
 
-__all__ = ["FusedStats", "install", "status", "uninstall"]
+__all__ = ["FusedStats", "deepmd_patch", "describe_module", "status", "uninstall"]

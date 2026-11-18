@@ -8,6 +8,8 @@ are faster -- lives in ``tests/csrc/accuracy/test_fused_deepmd_parity.py``.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import types
 import unittest
 
@@ -129,7 +131,9 @@ class FusedDispatchTests(unittest.TestCase):
         namespace = _namespace("fake.attention")
         ops = FakeOps()
         model = FakeModel([])
-        stats = fused_deepmd.install(model, ops=ops, namespaces=[namespace], envelope=False)
+        stats = fused_deepmd.deepmd_patch(
+            model, ops=ops, namespaces=[namespace], envelope=False, verbose=False
+        )
         self.assertTrue(stats.bound_softmax)
 
         dst, _ = _grouped_dst([2, 0, 3])
@@ -147,7 +151,9 @@ class FusedDispatchTests(unittest.TestCase):
     def test_source_gated_softmax_falls_back(self):
         namespace = _namespace("fake.attention")
         ops = FakeOps()
-        fused_deepmd.install(FakeModel([]), ops=ops, namespaces=[namespace], envelope=False)
+        fused_deepmd.deepmd_patch(
+            FakeModel([]), ops=ops, namespaces=[namespace], envelope=False, verbose=False
+        )
         dst, _ = _grouped_dst([2, 0, 3])
         logits = torch.randn(5, 2, 3)
         env = torch.rand(5, 1) + 0.1
@@ -163,7 +169,9 @@ class FusedDispatchTests(unittest.TestCase):
         message = torch.randn(int(cache.dst.numel()), 2, 4)
         block = FakeBlock(message)
         ops = FakeOps()
-        stats = fused_deepmd.install(FakeModel([block]), ops=ops, softmax=False)
+        stats = fused_deepmd.deepmd_patch(
+            FakeModel([block]), ops=ops, softmax=False, verbose=False
+        )
         self.assertTrue(stats.bound_envelope)
 
         x = torch.randn(3, 2, 4)
@@ -184,7 +192,9 @@ class FusedDispatchTests(unittest.TestCase):
         cache = FakeEdgeCache([1, 2])
         block = FakeBlock(torch.randn(int(cache.dst.numel()), 2, 4))
         installed = block.forward_envelope
-        fused_deepmd.install(FakeModel([block]), ops=FakeOps(), namespaces=[namespace])
+        fused_deepmd.deepmd_patch(
+            FakeModel([block]), ops=FakeOps(), namespaces=[namespace], verbose=False
+        )
         self.assertIsNot(namespace.segment_envelope_gated_softmax, original)
         self.assertIn("forward_envelope", block.__dict__)
 
@@ -196,7 +206,7 @@ class FusedDispatchTests(unittest.TestCase):
 
     def test_install_is_a_noop_without_the_extension(self):
         model = FakeModel([FakeBlock(torch.zeros(2, 1, 1))])
-        stats = fused_deepmd.install(model, ops=None)
+        stats = fused_deepmd.deepmd_patch(model, ops=None, verbose=False)
         self.assertFalse(stats.bound_softmax or stats.bound_envelope)
         self.assertEqual(fused_deepmd.status(stats)["blocks"], 1)
 
@@ -204,8 +214,12 @@ class FusedDispatchTests(unittest.TestCase):
         namespace = _namespace("fake.attention")
         original = namespace.segment_envelope_gated_softmax
         model = FakeModel([])
-        first = fused_deepmd.install(model, ops=FakeOps(), namespaces=[namespace], envelope=False)
-        second = fused_deepmd.install(model, ops=FakeOps(), namespaces=[namespace], envelope=False)
+        first = fused_deepmd.deepmd_patch(
+            model, ops=FakeOps(), namespaces=[namespace], envelope=False, verbose=False
+        )
+        second = fused_deepmd.deepmd_patch(
+            model, ops=FakeOps(), namespaces=[namespace], envelope=False, verbose=False
+        )
         patched = [key for key in fused_deepmd._SAVED if key.endswith(".segment_envelope_gated_softmax")]
         self.assertEqual(len(patched), 1)
         self.assertEqual(first.softmax_hits, 0)
@@ -213,6 +227,29 @@ class FusedDispatchTests(unittest.TestCase):
         fused_deepmd.uninstall()
         self.assertIs(namespace.segment_envelope_gated_softmax, original)
         self.assertEqual(fused_deepmd.status(None), {})
+
+
+class ModuleDumpTests(unittest.TestCase):
+    def test_describe_module_lists_the_tree_and_the_targets(self):
+        cache = FakeEdgeCache([2, 1])
+        block = FakeBlock(torch.randn(int(cache.dst.numel()), 2, 4))
+        lines = fused_deepmd.describe_module(FakeModel([block]))
+        text = "\n".join(lines)
+        self.assertIn("module: FakeModel", text)
+        self.assertIn("patch targets: 1 SO(2) block(s)", text)
+        self.assertIn("forward_envelope -> segment_sum", text)
+
+    def test_verbose_patch_prints_the_dump(self):
+        namespace = _namespace("fake.attention")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            fused_deepmd.deepmd_patch(
+                FakeModel([]), ops=FakeOps(), namespaces=[namespace], envelope=False
+            )
+        output = buffer.getvalue()
+        self.assertIn("[deepmd_patch] module:", output)
+        self.assertIn("segment_envelope_gated_softmax", output)
+        fused_deepmd.uninstall()
 
 
 class FusedSwitchTests(unittest.TestCase):

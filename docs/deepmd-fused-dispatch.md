@@ -22,7 +22,7 @@ model.close()                                     # 自动 uninstall
 | S2 | `SO2Convolution.forward_envelope(self, x, edge_cache, radial_feat)` | `block.py` 的 SO(2) unit（`n_atten_head == 0` 的无注意力路径） | `kernels.segment.segment_sum` | 推理模式、fp32、`dst` int64、`edge_env`/`inv_sqrt_deg` 形状匹配 |
 
 两个接缝都是**官方结构**，不是硬改：S1 是 DeepMD 自己在没有 Triton 时调用的参考实现（`attention.py`），
-S2 是 `SO2Convolution` 的公开方法。`install()` 只是把这两个名字绑成我们的包装器，并保留原实现用于回退。
+S2 是 `SO2Convolution` 的公开方法。`deepmd_patch()` 只是把这两个名字绑成我们的包装器，并保留原实现用于回退。
 
 ### S1 的对应关系
 
@@ -83,7 +83,26 @@ DeepMD 自己也为我们准备好了 CSR 视图：`edge_cache.py::cached_edge_c
 
 ---
 
-## 3. 回退策略：宁可慢，不能错
+## 3. 打印什么、怎么调
+
+`deepmd_patch(module, softmax=True, envelope=True, verbose=True)` 先调用 `describe_module()` 打印：
+
+```
+[deepmd_patch] module: DeepPot (341 submodules)
+[deepmd_patch]   model  SeZMModel
+[deepmd_patch]     descriptor  DescrptDPA4
+[deepmd_patch] patch targets: 3 SO(2) block(s)
+[deepmd_patch]   [0] SO2Convolution  n_atten_head=8  seams: forward_envelope -> segment_sum, attention softmax -> segment_softmax
+[deepmd_patch] operators: kernels.segment; softmax=True envelope=True
+[deepmd_patch] replace deepmd.pt.model.descriptor.sezm_nn.attention.segment_envelope_gated_softmax -> model.fused_deepmd.bound_softmax
+[deepmd_patch] replace SO2Convolution.forward_envelope on 3 block(s) -> model.fused_deepmd.patched
+[deepmd_patch] installed: softmax=True envelope=True blocks=3
+```
+
+模块树只展开到深度 2（`max_depth` 可调），以免真实 descriptor 刷屏；**patch 目标会逐个列出**，
+因为那才是要替换的东西。之后返回 `FusedStats`，`status(stats)` 转成 dict。
+
+## 4. 回退策略：宁可慢，不能错
 
 每个包装器在**每次调用**上检查前置条件，任一不满足就调用原实现，并计数：
 
@@ -96,11 +115,11 @@ DeepMD 自己也为我们准备好了 CSR 视图：`edge_cache.py::cached_edge_c
 
 典型回退原因：`src_weight` 非空（SFPG 桥接模式，参考实现里有一个"线性 source ratio"，
 不能简单塞进 log 空间）、非 fp32、非 CUDA、`dst` 不是 int64、形状不匹配。
-`install()` 在没有可用扩展时是**纯 no-op**，`fused_ops` 会如实显示 `bound_* = false`。
+`deepmd_patch()` 在没有可用扩展时是**纯 no-op**（只打印模块树和"nothing replaced"），`fused_ops` 会如实显示 `bound_* = false`。
 
 ---
 
-## 4. 还没接的三处（以及为什么）
+## 5. 还没接的三处（以及为什么）
 
 | 位置 | 状态 | 原因 / 需要的下一步 |
 | --- | --- | --- |
@@ -114,7 +133,7 @@ DeepMD 自己也为我们准备好了 CSR 视图：`edge_cache.py::cached_edge_c
 
 ---
 
-## 5. 验证
+## 6. 验证
 
 主机（不需要 DCU/DeepMD，用假模块 + 参考实现对照，10 个用例）：
 
@@ -148,7 +167,7 @@ PY
 
 ---
 
-## 6. 文件
+## 7. 文件
 
 | 文件 | 作用 |
 | --- | --- |
