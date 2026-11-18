@@ -777,7 +777,22 @@ def _run_dpa4(args) -> int:
     triton_report = _triton_report(args)
     print("Requested Triton path: " + json.dumps(triton_report), flush=True)
     model = _construct_deepmd_model(args)
+    fused_report: dict[str, Any] = {}
+    fused_patched = False
     try:
+        if getattr(args, "fused", "off") != "off":
+            from model.fused_deepmd import deepmd_patch
+
+            seams = (
+                {"softmax": True, "envelope": True}
+                if args.fused == "on"
+                else {args.fused: True}
+            )
+            stats = deepmd_patch(model, **seams)
+            fused_report = dict(stats.as_dict())
+            fused_report["requested"] = args.fused
+            fused_patched = True
+            print("Fused DeepMD dispatch: " + json.dumps(fused_report, sort_keys=True), flush=True)
         backend = model.deep_eval
         lower_input_kind = (getattr(backend, "metadata", None) or {}).get(
             "lower_input_kind"
@@ -873,6 +888,7 @@ def _run_dpa4(args) -> int:
             "profiled": profiled,
             "compile_requested": bool(getattr(args, "compile", False)),
             "triton": triton_report,
+            "fused": fused_report,
             "model_file": str(Path(args.model_file).resolve()),
             "input_source": input_source,
             "backend": _deepmd_backend_name(model),
@@ -915,6 +931,10 @@ def _run_dpa4(args) -> int:
         print(json.dumps(report, sort_keys=True), flush=True)
         return 0
     finally:
+        if fused_patched:
+            from model.fused_deepmd import uninstall as _uninstall_fused
+
+            _uninstall_fused(model)
         close = getattr(model, "close", None)
         if callable(close):
             close()
@@ -1389,6 +1409,12 @@ def build_parser() -> argparse.ArgumentParser:
     dpa4.add_argument(
         "--compile", action="store_true",
         help="request DeepMD compiled inference via DP_COMPILE_INFER (default off)",
+    )
+    dpa4.add_argument(
+        "--fused", default="off",
+        choices=("off", "on", "softmax", "envelope"),
+        help="bind this project's fused HIP operators into the loaded DeepMD "
+             "model before profiling (off by default); 'on' installs every seam",
     )
     dpa4.add_argument(
         "--triton-infer", type=int, choices=(0, 1, 2, 3), default=None,

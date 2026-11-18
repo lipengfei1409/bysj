@@ -72,26 +72,50 @@ python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
 - `DP_TRITON_CONFIG_LOG=1` 让每次 launch 配置解析打印一行 `[dp-triton-config]`（含设备表名、来源与最终配置）。设备名没有内置表时会静默回落到保守默认，这一行是唯一能把"没调优"和"调优过"分开的证据。
 - LAMMPS 子命令不接受这两个开关：它们只影响直接推理路径。
 
-### 辅助脚本：可行性冒烟与 trace 归因
+### 融合算子：`--fused` 与两次运行的对比
+
+`dpa4` 子命令带 `--fused {off,on,softmax,envelope}`：在模型构造之后、warmup 之前调用
+`python/model/fused_deepmd.py::deepmd_patch`，先把模块树与将要替换的两个接缝打印出来，再把
+`segment_softmax` / `segment_sum` 绑进 DeepMD 的调用点。summary 的 `fused` 字段记录命中与回退计数
+（`softmax_hits` / `softmax_fallbacks` / `envelope_hits` / `envelope_fallbacks` / `bound_*` / `last_error`），
+没有可用扩展时整段为 `bound_*=false`、不会假装生效。
 
 ```bash
-# 1) Triton 能否在该 DCU 上出 kernel、tl.dot 是否走到矩阵指令
-TRITON_ALWAYS_COMPILE=1 python3 tests/deepmd/profile/triton_smoke.py --json /tmp/smoke.json
+# 基线
+python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
+  --model-file "$MODEL" --input-npz "$NPZ3000" --fixed-input --output-dir /tmp/base
 
-# 2) 把一次 trace 归因到 kernel 家族、roofline 等价量与 cast 分组
-python3 tests/deepmd/profile/analyze_trace.py /tmp/profile-triton2/dpa4_*/dpa4_inference_trace.json \
+# 打上融合接缝
+python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
+  --model-file "$MODEL" --input-npz "$NPZ3000" --fixed-input --fused on --output-dir /tmp/fused
+
+# 两份 summary 对比：设备总时间、launch 数、逐 kernel 增量
+python3 tests/deepmd/profile/compare_fused_runs.py \
+  --baseline /tmp/base/dpa4_*/dpa4_inference_profile_summary.json \
+  --patched  /tmp/fused/dpa4_*/dpa4_inference_profile_summary.json \
+  --json /tmp/fused_compare.json
+```
+
+`compare_fused_runs.py` 只读 summary、不跑推理，因此任何机器都能用；设备总时间取
+`top_profiler_events` 里 `dpa4/...` 的那条注解，逐 kernel 增量取自 `trace_analysis`。
+能量/力的数值一致性不在 summary 里，需跑 DCU 上的
+`tests/csrc/accuracy/test_fused_deepmd_parity.py`。
+
+### 辅助脚本：trace 归因与相邻算子链
+
+```bash
+# 1) 把一次 trace 归因到 kernel 家族、roofline 等价量与 cast 分组
+python3 tests/deepmd/profile/analyze_trace.py /tmp/profile/dpa4_*/dpa4_inference_trace.json \
   --json /tmp/lv2.json
 
-# 3) 找可融合的相邻算子链（n-gram），并核对前向/反向分区与总时长
+# 2) 找可融合的相邻算子链（n-gram），并核对前向/反向分区与总时长
 python3 tests/deepmd/profile/scan_fusion_patterns.py \
   --trace /path/to/dpa4_inference_trace.json --top 25 --max-len 5 \
   --json docs/fusion-patterns.json
 ```
 
-- `scan_fusion_patterns.py` 用 `cuda_runtime` 的 `correlation` 把每次 launch 对回 `cpu_op`，得到"算子名 + 形状"的 launch 序列；它先打印与 summary 的自动比对（总数、前向/反向分区），再给出按时间排序的签名、2–5 元相邻链与形状分类。链上的 `saving_ms` 是"每项 3 路流 × 最大 numel"的粗估，只用于排序。
-
-- `triton_smoke.py` 打印设备参数（wave 大小、线程上限、LDS 预算）、每个 kernel 的 LDS 字节与寄存器数，以及源码里出现的指令标记；非零退出码表示 Triton 在本机不可用或结果不正确。
 - `analyze_trace.py` 按 `triton` / `aten` / `gemm` / `other` 分类统计设备时间，并给每个 kernel 一个 roofline 等价量（访存型按等效字节、GEMM 按等效 GFLOP）。**如果 trace 里没有 triton kernel，脚本会明确提示：该次测的是稠密参考路径，不能据此下调优结论。** `cast_report` 按"输入 dtype + 维度"分组 cast/copy；注意 CPU op 的耗时包含等待设备，单次远高于同组的调用是同步点而非拷贝成本。
+- `scan_fusion_patterns.py` 用 `cuda_runtime` 的 `correlation` 把每次 launch 对回 `cpu_op`，得到"算子名 + 形状"的 launch 序列；它先打印与 summary 的自动比对（总数、前向/反向分区），再给出按时间排序的签名、2–5 元相邻链与形状分类。链上的 `saving_ms` 是"每项 3 路流 × 最大 numel"的粗估，只用于排序。
 
 ### 确认 `.pt` 实际使用的推理后端
 
@@ -168,7 +192,6 @@ LAMMPS 扩胞使用 `--replicate`，不自动试跑最大体系；可先在单�
 
 ```bash
 python3 -m unittest discover -s tests/deepmd -p 'test*.py' -v
-python3 tests/deepmd/profile/check_backend_profiler.py
 ```
 
 CPU 检查不证明 HIP、实际模型或 MPI 已通过。设备验收需运行上述三个命令，确认每个 rank 使用不同 GPU、窗口有 10 个模型范围、无非有限能量/力或 lost atoms，并检查轨迹移动。

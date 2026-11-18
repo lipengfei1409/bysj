@@ -70,7 +70,8 @@
    python -c "import triton;print('triton', triton.__version__)"
    python -c "import deepmd;print(deepmd.__file__)"
    ```
-2. **Triton 冒烟脚本**（新文件 `tests/deepmd/profile/triton_smoke.py`，约 60 行）：一个 pointwise
+2. **Triton 冒烟脚本**（`tests/deepmd/profile/triton_smoke.py`，**D0 判负后已删除**，结论见
+   `docs/task2-hip-fusion-plan.md` 附录）：一个 pointwise
    kernel + 一个 64×64×64 `tl.dot`，然后打印：
    - `kernel.metadata.shared`（LDS 字节数，对照 64 KB 上限）
    - `kernel.asm['ttgir']` 里是否出现 `mfma` / `buffer_load` / `ds_write`，`tl.dot` 是否退化
@@ -273,7 +274,7 @@ python -m deepmd.pt_expt.kernels.triton.sezm.sweep_tile_configs \
 | `deepmd/pt_expt/kernels/triton/sezm/tile_configs.py` | `_lookup` resolve 日志 | ~10 行 |
 | `deepmd/pt_expt/kernels/triton/sezm/tile_config_data.py` | 新增 DCU 设备表（由 sweep 生成） | 表数据 |
 | `deepmd/pt_expt/kernels/triton/sezm/sweep_tile_configs.py` | LDS ≤64 KB 候选守卫 | ~15 行 |
-| `tests/deepmd/profile/triton_smoke.py`（新） | Triton 冒烟 + TTGIR/LDS 检查 | ~60 行 |
+| ~~`tests/deepmd/profile/triton_smoke.py`~~（已删除） | Triton 冒烟 + TTGIR/LDS 检查 | D0 判负后移除 |
 | `tests/deepmd/profile/analyze_trace.py`（新） | trace 全量聚合 + roofline 计算 | ~50 行 |
 | `so2_value_path.py` / `so2_rotation.py` / `segment_softmax.py` / `force_assembly.py` | D4 选中的 2–3 项 | 每项 ~10–30 行 |
 | `docs/week1-env.md` / `week1-triton-report.md`（新） | 报告 | — |
