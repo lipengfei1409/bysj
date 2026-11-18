@@ -111,70 +111,55 @@ void test_page_permutation() {
     CHECK(dmk::mk::ring_retreat<Config::kStages>(1) == 0);
 }
 
-void test_vector_io() {
+void test_vector_access() {
     constexpr size_t kCount = 1000;
+    constexpr size_t kVector = sizeof(float4) / sizeof(float);
+    constexpr size_t kWaveStride = 64 * kVector;  // Config::kWaveSize * kVector
+
     alignas(16) float src[kCount];
     alignas(16) float dst[kCount];
     for (size_t i = 0; i < kCount; ++i) {
         src[i] = static_cast<float>(i) * 0.5f;
         dst[i] = -1.0f;
     }
-    for (size_t worker = 0; worker < 4; ++worker)
-        CHECK(dmk::copy::global_to_lds_vec<float4>(dst, src, kCount, worker, 4));
-    for (size_t i = 0; i < kCount; ++i) CHECK(dst[i] == src[i]);
 
-    // Misaligned pointers force the scalar fallback but must stay correct.
-    alignas(16) float misaligned_src[kCount + 1];
-    alignas(16) float misaligned_dst[kCount + 1];
-    for (size_t i = 0; i < kCount + 1; ++i) {
-        misaligned_src[i] = static_cast<float>(i + 1);
-        misaligned_dst[i] = -1.0f;
+    CHECK(dmk::copy::aligned<float4>(src));
+    CHECK(dmk::copy::aligned<float2>(src + 2));
+    CHECK(!dmk::copy::aligned<float4>(src + 1));
+    CHECK(!dmk::copy::aligned<float4>(src + 3));
+
+    // Exactly the loop an op's load()/store() runs: lane i owns the 16 B chunk
+    // starting at element i * kVector, and the tail below kVector * vectors is
+    // left for the scalar path.
+    const size_t vector_end = kCount / kVector * kVector;
+    for (size_t lane = 0; lane < 64; ++lane) {
+        for (size_t element = lane * kVector; element < vector_end;
+             element += kWaveStride) {
+            dmk::copy::store_vec<float4>(
+                dst + element, dmk::copy::load_vec<float4>(src + element));
+        }
     }
-    for (size_t worker = 0; worker < 4; ++worker)
-        CHECK(!dmk::copy::global_to_lds_vec<float4>(
-            misaligned_dst + 1, misaligned_src + 1, kCount, worker, 4));
-    for (size_t i = 0; i < kCount; ++i)
-        CHECK(misaligned_dst[i + 1] == misaligned_src[i + 1]);
+    for (size_t i = 0; i < vector_end; ++i) CHECK(dst[i] == src[i]);
+    for (size_t i = vector_end; i < kCount; ++i) CHECK(dst[i] == -1.0f);
 
-    // Unaligned fill head, vector middle.
-    alignas(16) float fill[100];
-    for (float& value : fill) value = -1.0f;
-    CHECK(dmk::copy::zero_lds_vec<float4>(fill + 1, 95, 0, 1));
-    CHECK(fill[0] == -1.0f);
-    for (size_t i = 1; i <= 95; ++i) CHECK(fill[i] == 0.0f);
-    for (size_t i = 96; i < 100; ++i) CHECK(fill[i] == -1.0f);
-
-    // Row copy with padded destination and row strides that satisfy float4.
-    constexpr size_t kRows = 3;
-    constexpr size_t kCols = 8;
-    alignas(16) float rows_src[kRows * kCols];
-    alignas(16) float rows_dst[kRows * 12];
-    for (size_t i = 0; i < kRows * kCols; ++i)
-        rows_src[i] = static_cast<float>(i);
-    for (float& value : rows_dst) value = -1.0f;
-    for (size_t worker = 0; worker < 2; ++worker)
-        CHECK(dmk::copy::global_rows_to_lds_vec<float4>(
-            rows_dst, 12, rows_src, kCols, kRows, kCols, worker, 2));
-    for (size_t row = 0; row < kRows; ++row) {
-        for (size_t col = 0; col < kCols; ++col)
-            CHECK(rows_dst[row * 12 + col] == rows_src[row * kCols + col]);
-        for (size_t col = kCols; col < 12; ++col)
-            CHECK(rows_dst[row * 12 + col] == -1.0f);
+    // The narrow vector sees the same data with a different width.
+    alignas(16) float narrow[kCount];
+    for (size_t i = 0; i < kCount; ++i) narrow[i] = 0.0f;
+    const size_t narrow_end = kCount / 2 * 2;
+    for (size_t element = 0; element < narrow_end; element += 2) {
+        dmk::copy::store_vec<float2>(narrow + element,
+                                     dmk::copy::load_vec<float2>(src + element));
     }
+    for (size_t i = 0; i < narrow_end; ++i) CHECK(narrow[i] == src[i]);
 
-    // Columns/row strides that are not multiples of the vector width force the
-    // scalar row path.
-    constexpr size_t kOddCols = 7;
-    alignas(16) float odd_src[kRows * kOddCols];
-    alignas(16) float odd_dst[kRows * 9];
-    for (size_t i = 0; i < kRows * kOddCols; ++i)
-        odd_src[i] = static_cast<float>(i + 3);
-    for (float& value : odd_dst) value = -1.0f;
-    CHECK(!dmk::copy::global_rows_to_lds_vec<float4>(
-        odd_dst, 9, odd_src, kOddCols, kRows, kOddCols, 0, 1));
-    for (size_t row = 0; row < kRows; ++row)
-        for (size_t col = 0; col < kOddCols; ++col)
-            CHECK(odd_dst[row * 9 + col] == odd_src[row * kOddCols + col]);
+    // Zero fill with the same primitive.
+    alignas(16) float page[256];
+    for (float& value : page) value = -1.0f;
+    const float4 zero{0.0f, 0.0f, 0.0f, 0.0f};
+    for (size_t element = 3; element + kVector <= 256; element += kVector)
+        dmk::copy::store_vec<float4>(page + element, zero);
+    for (size_t i = 0; i < 3; ++i) CHECK(page[i] == -1.0f);
+    for (size_t i = 3; i < 255; ++i) CHECK(page[i] == 0.0f);
 }
 
 void test_globals_contract() {
@@ -224,7 +209,7 @@ int main() {
     test_config_budget();
     test_phase_arithmetic();
     test_page_permutation();
-    test_vector_io();
+    test_vector_access();
     test_globals_contract();
     if (failures != 0) {
         std::fprintf(stderr, "%d LDS host check(s) failed\n", failures);

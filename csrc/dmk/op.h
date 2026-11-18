@@ -2,19 +2,32 @@
 
 // Operation interface for the page-based megakernel.
 //
-// Every op derives from BaseOp<Config, Globals> and implements the five hooks
-// the VM needs:
+// Every op derives from BaseOp<Config, Globals> and describes one instruction
+// of work with three data hooks plus the two controller hooks:
 //
-//   release_lid(query)        controller: page-allocator permutation for the
-//                             *previous* instruction (logical page -> new slot)
-//   init_semaphores(s, g)     controller: construct this instruction's dynamic
-//                             semaphores, return their count
-//   loader/consumer/storer    worker waves: run this role for the current
-//                             instruction
+//   load(s, g)           bring this instruction's inputs from HBM into its
+//   run(s, g)            pages, do the arithmetic in LDS,
+//   store(s, g)          write the pages back to HBM
+//   release_lid(query)   controller: page-allocator permutation for the
+//                        *previous* instruction (logical page -> new slot)
+//   init_semaphores(s, g) controller: construct this instruction's dynamic
+//                        semaphores, return their count
+//
+// load/run/store know nothing about roles. The kernel decides which wave runs
+// which hook (Role::Loader calls load, Role::Consumer calls run, Role::Storer
+// calls store), so an op can be tested as a plain sequence load -> run -> store
+// and a new op never has to think about wave numbering.
+//
+// Granularity: one instruction is one tile, and load(), run() and store() each
+// handle that same tile. An op never loops over several tiles and never keeps
+// per-tile state between calls; a stream that needs N tiles contains N
+// instructions. The controller, the page allocator and the retire counter are
+// therefore all tile-grained, and an op only has to describe the single tile
+// its 32 instruction words identify.
 //
 // The op object carries only a pointer to the current 32-word instruction; the
-// role methods receive the per-wave State and the kernel Globals, so an op does
-// not capture thread-local state or a particular wave.
+// hooks receive the per-wave State and the kernel Globals, so an op does not
+// capture thread-local state or a particular wave.
 //
 // Construction rules on HIP/DCU:
 //   - A polymorphic object must be constructed in device code; a host-created
@@ -35,6 +48,10 @@
 //   3. the five overrides below,
 //   4. adding the type to the kernel's op pack (the list passed to make_op /
 //      mk_internal). Controller code does not need to change.
+//
+// An op's load/store is also the right place for its vectorization: the tile
+// shape, alignment and tail behaviour are op-specific, so the copy loops live
+// there and only the 16-byte load/store primitives come from copy.h.
 
 #include "utils.h"
 
@@ -58,12 +75,12 @@ public:
     __device__ virtual int init_semaphores(State<Config>& state,
                                            const Globals& globals) const = 0;
 
-    __device__ virtual void loader(State<Config>& state,
-                                   const Globals& globals) const = 0;
-    __device__ virtual void consumer(State<Config>& state,
-                                     const Globals& globals) const = 0;
-    __device__ virtual void storer(State<Config>& state,
-                                   const Globals& globals) const = 0;
+    __device__ virtual void load(State<Config>& state,
+                                 const Globals& globals) const = 0;
+    __device__ virtual void run(State<Config>& state,
+                                const Globals& globals) const = 0;
+    __device__ virtual void store(State<Config>& state,
+                                  const Globals& globals) const = 0;
 
 protected:
     __device__ explicit BaseOp(const int* instruction)

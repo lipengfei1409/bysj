@@ -2,7 +2,7 @@
 
 // NoOp: instruction-stream filler and page-release operation.
 //
-// It is the DCU port of Megakernels' NoOp. Its loader releases every page
+// It is the DCU port of Megakernels' NoOp. Its load() releases every page
 // immediately, which advances each page's phase exactly once for this
 // instruction; this is what lets the next instruction reuse a page. It must be
 // present in every kernel's op pack because opcode 0 is used as padding.
@@ -27,7 +27,7 @@ public:
         return 0;
     }
 
-    __device__ void loader(State<Config>& s, const Globals&) const override {
+    __device__ void load(State<Config>& s, const Globals&) const override {
         const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
         if (lane < Config::kNumPages) {
             const int pid = s.pid(lane);
@@ -36,9 +36,9 @@ public:
         }
     }
 
-    __device__ void consumer(State<Config>&, const Globals&) const override {}
+    __device__ void run(State<Config>&, const Globals&) const override {}
 
-    __device__ void storer(State<Config>&, const Globals&) const override {}
+    __device__ void store(State<Config>&, const Globals&) const override {}
 };
 
 }  // namespace dmk::mk

@@ -2,11 +2,10 @@
 
 // Page-based embedding gather for the megakernel VM.
 //
-// One instruction copies one table row into one output row:
+// One instruction is one tile, and the tile is one table row:
 //     out[dst_row, 0:count] = table[src_row, 0:count]
-// It is a concrete BaseOp example with a single data page and no consumer-side
-// compute (the consumer hook is intentionally empty; a real embedding op can
-// add scaling, positional encoding, etc.).
+// It is a concrete BaseOp example with a single data page and no arithmetic, so
+// run() is empty and the work is entirely load() -> store().
 //
 // Instruction words:
 //   [0] opcode (3)
@@ -15,10 +14,13 @@
 //   [3] count (elements, <= kPageElements)
 //
 // Pages:
-//   lid 0  the row, lid 1..N unused and released by the loader
+//   lid 0  the row, lid 1..N unused and released by load()
 //
 // Dynamic semaphores:
-//   [0] data_ready   loader arrives once; storer waits
+//   [0] data_ready   load arrives once; store waits
+//
+// A row is contiguous only when its column stride is 1; a strided table row is
+// gathered element by element, so load()/store() each carry both paths.
 //
 // Globals must provide:
 //   Tensor<const float, 2, HBM> embedding_table;
@@ -35,6 +37,9 @@ class EmbeddingOp final : public BaseOp<Config, Globals> {
 public:
     static constexpr int opcode = 3;
     static constexpr int kPageElements = Config::kPageSize / sizeof(float);
+
+    static constexpr size_t kVector = sizeof(float4) / sizeof(float);
+    static constexpr size_t kWaveStride = Config::kWaveSize * kVector;
 
     struct Instruction {
         int src_row;
@@ -77,36 +82,44 @@ public:
         return count;
     }
 
-    __device__ void loader(State<Config>& s,
-                           const Globals& g) const override {
+    __device__ void load(State<Config>& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
         const int pid = s.pid(0);
         s.wait_page_ready(pid);
 
         float* page = static_cast<float*>(s.pages[pid].ptr());
-        const int count = valid_count(g);
         const auto table = g.embedding_table;
-        if (table.layout.strides[1] == 1 && count > 0) {
-            copy::global_to_lds_vec<float4>(
-                page,
-                table.data + static_cast<size_t>(inst.src_row) *
-                                 table.layout.strides[0],
-                static_cast<size_t>(count), static_cast<size_t>(lane),
-                Config::kWaveSize);
-            copy::zero_lds_vec<float4>(page + count, kPageElements - count,
-                                       static_cast<size_t>(lane),
-                                       Config::kWaveSize);
-        } else {
-            for (int i = lane; i < kPageElements; i += Config::kWaveSize) {
-                page[i] = i < count
-                              ? table.data[static_cast<size_t>(inst.src_row) *
-                                               table.layout.strides[0] +
-                                           static_cast<size_t>(i) *
-                                               table.layout.strides[1]]
-                              : 0.0f;
+        const size_t row =
+            static_cast<size_t>(inst.src_row) * table.layout.strides[0];
+        const int count = valid_count(g);
+
+        if (table.layout.strides[1] != 1) {
+            // Row gather through the column stride; no vector access applies.
+            for (int i = lane; i < count; i += Config::kWaveSize) {
+                page[i] = table.data[row + static_cast<size_t>(i) *
+                                                table.layout.strides[1]];
             }
+        } else {
+            const float* src = table.data + row;
+            size_t vector_end = 0;
+            if (copy::aligned<float4>(src) && copy::aligned<float4>(page)) {
+                vector_end = static_cast<size_t>(count) / kVector * kVector;
+                for (size_t element = static_cast<size_t>(lane) * kVector;
+                     element < vector_end; element += kWaveStride) {
+                    copy::store_vec<float4>(
+                        page + element,
+                        copy::load_vec<float4>(src + element));
+                }
+            }
+            for (size_t element = vector_end + lane;
+                 element < static_cast<size_t>(count);
+                 element += Config::kWaveSize)
+                page[element] = src[element];
         }
+        for (int i = count + lane; i < kPageElements; i += Config::kWaveSize)
+            page[i] = 0.0f;
+
         lds::wave_barrier();
         __threadfence_block();
         if (lane == 0) s.semaphores()[0].arrive();
@@ -118,11 +131,9 @@ public:
         }
     }
 
-    __device__ void consumer(State<Config>&,
-                             const Globals&) const override {}
+    __device__ void run(State<Config>&, const Globals&) const override {}
 
-    __device__ void storer(State<Config>& s,
-                           const Globals& g) const override {
+    __device__ void store(State<Config>& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
         const int pid = s.pid(0);
@@ -130,22 +141,34 @@ public:
         s.semaphores()[0].wait(0);
 
         const float* page = static_cast<const float*>(s.pages[pid].ptr());
-        const int count = valid_count(g);
         auto out = g.embedding_output;
-        if (out.layout.strides[1] == 1 && count > 0) {
-            copy::lds_to_global_vec<float4>(
-                out.data + static_cast<size_t>(inst.dst_row) *
-                               out.layout.strides[0],
-                page, static_cast<size_t>(count), static_cast<size_t>(lane),
-                Config::kWaveSize);
-        } else {
+        const size_t row =
+            static_cast<size_t>(inst.dst_row) * out.layout.strides[0];
+        const int count = valid_count(g);
+
+        if (out.layout.strides[1] != 1) {
             for (int i = lane; i < count; i += Config::kWaveSize) {
-                out.data[static_cast<size_t>(inst.dst_row) *
-                             out.layout.strides[0] +
-                         static_cast<size_t>(i) * out.layout.strides[1]] =
+                out.data[row + static_cast<size_t>(i) * out.layout.strides[1]] =
                     page[i];
             }
+        } else {
+            float* dst = out.data + row;
+            size_t vector_end = 0;
+            if (copy::aligned<float4>(dst) && copy::aligned<float4>(page)) {
+                vector_end = static_cast<size_t>(count) / kVector * kVector;
+                for (size_t element = static_cast<size_t>(lane) * kVector;
+                     element < vector_end; element += kWaveStride) {
+                    copy::store_vec<float4>(
+                        dst + element,
+                        copy::load_vec<float4>(page + element));
+                }
+            }
+            for (size_t element = vector_end + lane;
+                 element < static_cast<size_t>(count);
+                 element += Config::kWaveSize)
+                dst[element] = page[element];
         }
+
         lds::wave_barrier();
         __threadfence_block();
         if (lane == 0) s.finish_page(pid, Config::kConsumerWaves);

@@ -176,7 +176,7 @@ s.pages[pid].ptr();          // 访问
 ```
 
 **约束**：一个 op 必须在每条用到它的指令里，对每个 page 恰好完成一次
-`finish_page`；未使用的 page 由 loader 立即释放（`NoOp` / `ElementwiseOp`
+`finish_page`；未使用的 page 由 `load()` 立即释放（`NoOp` / `ElementwiseOp`
 都是这么做的）。这样 `page_finished[p]` 的 phase 每条指令翻转一次，
 `wait_page_ready` 的 `(instruction_index & 1)` 才总是对得上。
 
@@ -256,7 +256,8 @@ wait(0) 在 ticket=4 之后返回；wait(1) 在 ticket=8 之后返回。
 | `+2` | controller | 1 |
 
 worker 循环是 `worker_loop<Role, Config, Globals, Ops...>`。每条指令在本地
-buffer 里构造一次当前 op，然后通过 `BaseOp*` 虚调用进入 op：
+buffer 里构造一次当前 op，然后通过 `BaseOp*` 虚调用进入 op。角色只决定调哪个
+hook，op 本身只看到 `load/run/store`：
 
 ```cpp
 alignas(16) unsigned char storage[Config::kOpStorageBytes];
@@ -265,9 +266,9 @@ for (instruction_index = 0, ring = 0; index < g.num_instructions;
     await_instruction();                    // wait instruction_arrived[ring]
     BaseOp* op = make_op<Config, Globals, Ops...>(
         instruction()[0], storage, instruction());
-    if constexpr (Role == Loader) op->loader(s, g);
-    else if constexpr (Role == Storer) op->storer(s, g);
-    else op->consumer(s, g);
+    if constexpr (Role == Loader) op->load(s, g);
+    else if constexpr (Role == Storer) op->store(s, g);
+    else op->run(s, g);
 }
 ```
 
@@ -320,12 +321,25 @@ public:
     __device__ int init_semaphores(State<Config>& s,
                                    const Globals& g) const override;
 
-    // worker waves：各自角色的工作
-    __device__ void loader(State<Config>& s, const Globals& g) const override;
-    __device__ void consumer(State<Config>& s, const Globals& g) const override;
-    __device__ void storer(State<Config>& s, const Globals& g) const override;
+    // 三条数据通路，与角色无关：HBM -> page，page 内计算，page -> HBM
+    __device__ void load(State<Config>& s, const Globals& g) const override;
+    __device__ void run(State<Config>& s, const Globals& g) const override;
+    __device__ void store(State<Config>& s, const Globals& g) const override;
 };
 ```
+
+`load/run/store` 不知道自己是哪个波：kernel 把 `Role::Loader` 映射到 `load`、
+`Role::Consumer` 映射到 `run`、`Role::Storer` 映射到 `store`。因此一个 op 可以
+按"搬入 → 计算 → 搬出"三段来读和测，新 op 也不需要关心波编号。
+
+搬数据的循环写在 op 自己的 `load()/store()` 里（page 形状、边界、尾部和对齐
+条件都是 op 私有的），`copy.h` 只提供 16 B 的 `load_vec`/`store_vec`。
+
+**粒度：一条指令 = 一个 tile。** `load()`、`run()`、`store()` 处理的是同一个
+tile，op 内部不跨 tile 循环、也不在两次调用之间保留 per-tile 状态；需要 N 个
+tile 的指令流就写 N 条指令。于是 controller、page 置换和退休计数都是 tile 粒度
+的，op 只需要解释自己那 32 个指令字。GEMM 的 A/B/C 三个 page 属于同一个 tile；
+Elementwise 的一个 page 就是那个 tile；Embedding 的一行就是那个 tile。
 
 controller 和 worker 都通过 `make_op<Config, Globals, Ops...>(opcode, storage,
 instruction)` 构造当前 op，并直接调用虚函数；controller 不再出现 opcode
@@ -351,7 +365,7 @@ op 内部用 `s.pid(lid)`、`s.wait_page_ready`、`s.finish_page`、`s.semaphore
 
 1. 指令字布局定好，并把 host 侧序列化对齐；
 2. 明确用哪些逻辑页、每条指令对每个 page **恰好 finish 一次**；
-3. 未使用的 page 由 loader 立即 `wait_page_ready + finish_page`；
+3. 未使用的 page 由 `load()` 立即 `wait_page_ready + finish_page`；
 4. 若 op 有流水，`release_lid` 要按 pipeline 轮转，不能简单 identity；
 5. 动态 semaphore 数量 ≤ `kDynamicSemaphores`，且每个都在 `init_semaphores` 里初始化；
 6. 任何跨角色的数据依赖都走 `s.semaphores()`，不要依赖 wave 调度顺序；
@@ -362,23 +376,28 @@ op 内部用 `s.pid(lid)`、`s.wait_page_ready`、`s.finish_page`、`s.semaphore
 `ElementwiseOp`（`csrc/dmk/demo_op.h`）用 1 个 page 做 `y = scale*x + bias`：
 
 - 指令字：`[1]=tile`、`[2]=scale bits`、`[3]=bias bits`、`[4]=有效元素数`；
-- lid 0：loader 从 HBM 搬入，4 个 consumer wave 分工缩放，storer 写回；
-- lid 1..5：loader 立即释放；
-- 动态 semaphore：`data_ready`（loader→consumer，expected 1）、
-  `data_done`（consumer×4→storer，expected 4）；
-- page 0 由 storer 在拷完后 `finish_page`（expected 4）。
+- lid 0：`load()` 从 HBM 搬入并清零尾部，4 个 consumer wave 在 `run()` 里
+  分工缩放，`store()` 写回；
+- lid 1..5：`load()` 立即释放；
+- 动态 semaphore：`data_ready`（load→run，expected 1）、
+  `data_done`（run×4→store，expected 4）；
+- page 0 由 `store()` 在拷完后 `finish_page`（expected 4）。
 
-`NoOp`（`csrc/dmk/noop.h`）负责指令流填充：loader 对 6 个 page 全部
-`wait_page_ready + finish_page`，其他角色空操作。
+`load()/store()` 各自展开自己的循环：wave 的 lane i 处理第 i 个 16 B chunk，
+`count` 不是 4 的倍数时尾部逐元素补齐，`load()` 再把 page 剩余部分清零。
+
+`NoOp`（`csrc/dmk/noop.h`）负责指令流填充：`load()` 对 6 个 page 全部
+`wait_page_ready + finish_page`，`run()/store()` 为空。
 
 ### 5.5 具体 op
 
 - **`GemmOp`**（`csrc/dmk/gemm.h`，opcode 2）：一条指令算一个 16×16×16 tile，
-  page 0/1/2 分别是 A/B/C；loader 搬 A/B，consumer wave 0 做标量参考
-  GEMM，storer 写 C。文件里同时保留低层 `GemmWave` / `run_gemm_wave`，
+  page 0/1/2 分别是 A/B/C；`load()` 搬 A/B，consumer wave 0 在 `run()` 里做
+  标量参考 GEMM，`store()` 写 C。`copy_tile` 是 `GemmOp` 自己的 16×16 搬运
+  循环：列连续时每行 4 个 chunk、整 tile 64 个 vector 正好一条 wave。文件里同时保留低层 `GemmWave` / `run_gemm_wave`，
   它是原来的 DUMMA microbench，不经过 page VM。
 - **`EmbeddingOp`**（`csrc/dmk/embedding.h`，opcode 3）：一条指令把 table 的
-  一行 gather 到 output 的一行；page 0 做中转，consumer 当前为空，后续可加
+  一行 gather 到 output 的一行；page 0 做中转，`run()` 为空，后续可加
   positional/scale。
 - **`ElementwiseOp`**（`csrc/dmk/demo_op.h`，opcode 1）：`y = scale*x + bias`，
   用来验证数据通路和 4 个 consumer wave 的分工。
@@ -387,41 +406,46 @@ op 内部用 `s.pid(lid)`、`s.wait_page_ready`、`s.finish_page`、`s.semaphore
 `GemmOp`/`EmbeddingOp` 需要 `MkGlobals` 里的 `matrix_a/matrix_b/matrix_c` 和
 `embedding_table/embedding_output`；demo 的 Elementwise/NoOp 不使用这些字段。
 
-### 5.6 向量化 HBM/LDS 访存（copy.h）
+### 5.6 向量化访存
 
-op 搬数据时不再逐元素 4 B 访问，`csrc/dmk/copy.h` 提供了对齐向量的读写：
+`csrc/dmk/copy.h` 只保留三个原语，不做任何循环：
 
-| API | 方向 | 说明 |
-| --- | --- | --- |
-| `load_vec<Vec>` / `store_vec<Vec>` | 任意 | 16 B / 8 B 向量的单次读写，调用方保证对齐 |
-| `global_to_lds_vec<Vec>` | HBM → LDS | 连续 run，自动处理尾部 |
-| `lds_to_global_vec<Vec>` | LDS → HBM | 连续 run，自动处理尾部 |
-| `lds_to_lds_vec<Vec>` | LDS → LDS | page/scratch 之间搬移 |
-| `zero_lds_vec<Vec>` | LDS | 零填充，自动处理未对齐头部 |
-| `fill_lds_vec<Vec>` | LDS | 常量填充 |
-| `global_rows_to_lds_vec<Vec>` | HBM → LDS | 2D 行主序（列 stride 必须为 1） |
-| `lds_rows_to_global_vec<Vec>` | LDS → HBM | 2D 行主序 |
+| API | 说明 |
+| --- | --- |
+| `load_vec<Vec>(p)` | 从 `p` 读一个 `Vec`（16 B / 8 B） |
+| `store_vec<Vec>(p, v)` | 往 `p` 写一个 `Vec` |
+| `aligned<Vec>(p)` | 地址是否满足 `alignof(Vec)` |
 
-- `Vec` 支持 `float4`（16 B）、`float2`（8 B）、`int4`、`int2`；`VecTraits` 给出
-  lane 数和 splat。
-- 快路径条件：指针按 `alignof(Vec)` 对齐、长度 ≥ lane 数、行拷贝时 `cols` 和两个
-  row stride 都是 lane 数的倍数。**任何一条不满足就自动回退到标量循环**，所以 op
-  可以无条件调用，不需要自己写 tail 分支。
-- worker 循环按 **vector index** 分配：wave64 的 lane 0..63 处理相邻的 16 B
-  chunk，一次访存覆盖 1 KiB；不要按 element index 分配，否则会退化成跨步访存。
-- 行拷贝假设列方向连续（`layout.strides[1] == 1`）；转置/列主序视图走标量路径。
-  GEMM 的 A/B/C 在调用前检查 strides 和边界；Elementwise/Embedding 直接按 1D
-  连续 run 调用。
-- 边界/尾部：Elementwise loader 先 `global_to_lds_vec` 搬 `count` 个元素，再
-  `zero_lds_vec` 把 page 剩余部分清零；Gemm/Embedding 在完整 tile 时走向量路径，
-  部分 tile 仍用带边界判断的标量路径。
-- 当前向量化只覆盖普通的连续/行主序 LDS 布局；`ShmemSwizzleLayout` 的 XOR
-  地址映射还没有向量版本，需要 swizzle 的算子先走标量或 padded 行 stride。
+`Vec` 可以是 `float4`/`float2`/`int4`/`int2`；`static_assert` 保证
+`sizeof(Vec)` 是元素大小的整数倍。谁搬哪些元素、怎么在 lane 之间切分、尾部
+怎么处理，全部写在具体 op 的 `load()/store()` 里：
 
-实测口径：Elementwise 的 2048-float tile 在 `float4` 下每 lane 8 次 16 B 读写；
-GEMM 的 16×16 A/B/C tile 每 lane 1 个 `float4`/行；Embedding 一行按 `count/4`
-个 vector 分给 64 lane。设备测试的 `tail` / `gemm` / `embedding` 用例会走到
-带尾部的向量路径。
+```cpp
+// ElementwiseOp::load 的拷贝部分，count 是有效元素数
+size_t vector_end = 0;
+if (copy::aligned<float4>(src) && copy::aligned<float4>(page)) {
+    vector_end = count / kVector * kVector;
+    for (size_t e = lane * kVector; e < vector_end; e += kWaveStride)
+        copy::store_vec<float4>(page + e, copy::load_vec<float4>(src + e));
+}
+for (size_t e = vector_end + lane; e < count; e += Config::kWaveSize)
+    page[e] = src[e];                 // 未对齐 base 或不满 kVector 的尾巴
+```
+
+- 循环按 **元素下标 = lane × kVector** 起步：lane i 处理从 `i*4` 开始的 16 B，
+  一条 wave64 一次覆盖 1 KiB 连续地址；不要按元素下标分给 lane，否则相邻 lane
+  只差 4 B，一条指令只覆盖 256 B。
+- 快路径条件由 op 自己判断：base 和 page 都要 `aligned<Vec>`；GEMM 的 tile 还
+  要求两个 row stride 是 `kVector` 的倍数（否则第 r 行起点就不再对齐）。任何
+  一条不满足就退回逐元素循环，结果始终正确。
+- 尾部/边界也留在 op 里：Elementwise/Embedding 只搬 `count` 个元素，page 剩余
+  部分清零；GEMM 完整 tile 走向量，越界 tile 走带 bounds check 的标量路径。
+- 明确未向量化的：`layout.strides[1] != 1` 的行（embedding 的 strided row、
+  转置视图）逐元素 gather；`ShmemSwizzleLayout` 的 XOR 地址映射没有向量版本。
+
+实测口径：Elementwise 的 2048-float tile 每个 lane 8 次 16 B 读写；GEMM 的
+16×16 A/B/C tile 每条 wave 一次（64 个 vector 正好 64 lane）；Embedding 一行
+按 `count/4` 个 vector 分给 64 lane。
 
 ---
 
@@ -431,7 +455,7 @@ GEMM 的 16×16 A/B/C tile 每 lane 1 个 `float4`/行；Embedding 一行按 `co
 | --- | --- |
 | `csrc/dmk/config.h` | `Config`、`InstructionState`、静态/动态/launch 字节常量与 `static_assert` |
 | `csrc/dmk/lds.h` | `lds::Semaphore`（parity）、对齐、`phase_for_ticket` |
-| `csrc/dmk/copy.h` | 标量 tensor copy + `float4`/`float2` 向量化 HBM/LDS 读写 |
+| `csrc/dmk/copy.h` | `load_vec`/`store_vec`/`aligned` 三个向量读写原语（循环在各 op 的 load/store 里） |
 | `csrc/dmk/op.h` | `BaseOp<Config, Globals>` 虚接口、`make_op` 工厂、op 存储约束 |
 | `csrc/dmk/state.h` | `Page`、`State`、`Role`、`worker_loop`、`remap_page_order` |
 | `csrc/dmk/controller.h` | `prepare_instruction`、`main_loop`（op 通过 `BaseOp*` 直接调用） |
@@ -507,7 +531,7 @@ page-based megakernel checks passed
    再看 `release_lid` 是否与 host 指令流匹配；
 3. 卡死 → 检查 `page_finished` 的 init+arrive 是否完成 phase 0、
    `instruction_finished` 的 expected 是否等于 worker waves、
-   NoOp/loader 是否释放了所有未使用 page；
+   `NoOp::load` 是否释放了所有未使用 page；
 4. `--host-only` 排除预算/布局问题。
 
 ---
@@ -530,7 +554,7 @@ page-based megakernel checks passed
    generic 指针上，可能生成 flat atomic 而不是 `ds_add`；当前每指令只有几次，
    若 profile 显示瓶颈，可把 semaphore 移到静态 `__shared__` 或改用
    `__builtin_amdgcn_ds_add_*`。
-5. **没有 TMA / cp.async.bulk**：loader/storer 是普通 HBM 读写；
+5. **没有 TMA / cp.async.bulk**：`load()/store()` 是普通 HBM 读写；
    访存流水、16 B 向量化和 L2 复用是后续优化项。
 6. **timings 默认关闭**，也没有 Blackwell 的 tensor allocator / cluster。
 7. **持久化 kernel / grid 同步**：目前是普通 grid launch（每 block 一条指令流），

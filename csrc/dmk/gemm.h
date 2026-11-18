@@ -244,9 +244,12 @@ __device__ inline void run_gemm_wave(const GemmParams& params,
 
 }  // namespace dmk::gemm
 
-// Page-based concrete GEMM operation for the megakernel VM. The low-level
-// GemmWave/run_gemm_wave above remain the standalone DUMMA microbenchmark;
-// this class owns the page/semaphore lifecycle and is what the controller sees.
+// Page-based concrete GEMM operation for the megakernel VM. One instruction is
+// one 16x16 output tile: load() fills the A/B pages, run() multiplies them and
+// store() writes the C page. The low-level GemmWave/run_gemm_wave above remain
+// the standalone DUMMA microbenchmark (it batches k and several tiles, which is
+// exactly what the page VM does not do); this class owns the page/semaphore
+// lifecycle and is what the controller sees.
 namespace dmk::mk {
 
 template <typename Config, typename Globals>
@@ -255,6 +258,10 @@ public:
     static constexpr int opcode = 2;
     static constexpr int kTile = 16;
     static constexpr int kTileElements = kTile * kTile;
+
+    static constexpr size_t kVector = sizeof(float4) / sizeof(float);
+    static constexpr size_t kRowVectors = kTile / kVector;       // 4 per row
+    static constexpr size_t kTileVectors = kTile * kRowVectors;  // one per lane
 
     struct Instruction {
         int m0;
@@ -277,8 +284,35 @@ public:
         return 2;
     }
 
-    __device__ void loader(State<Config>& s,
-                           const Globals& g) const override {
+    // One 16x16 tile between HBM and a page. With contiguous columns each row
+    // is four 16 B chunks, so the 64 vectors of the tile map one-to-one onto
+    // the lanes of a wave; any other layout is copied element by element.
+    __device__ static void copy_tile(float* dst, size_t dst_row_stride,
+                                     size_t dst_col_stride, const float* src,
+                                     size_t src_row_stride,
+                                     size_t src_col_stride, int lane) {
+        if (dst_col_stride == 1 && src_col_stride == 1 &&
+            dst_row_stride % kVector == 0 && src_row_stride % kVector == 0 &&
+            copy::aligned<float4>(dst) && copy::aligned<float4>(src)) {
+            for (size_t vector = static_cast<size_t>(lane);
+                 vector < kTileVectors; vector += Config::kWaveSize) {
+                const size_t row = vector / kRowVectors;
+                const size_t col = (vector % kRowVectors) * kVector;
+                copy::store_vec<float4>(
+                    dst + row * dst_row_stride + col,
+                    copy::load_vec<float4>(src + row * src_row_stride + col));
+            }
+            return;
+        }
+        for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+            const int row = i / kTile;
+            const int col = i % kTile;
+            dst[row * dst_row_stride + col * dst_col_stride] =
+                src[row * src_row_stride + col * src_col_stride];
+        }
+    }
+
+    __device__ void load(State<Config>& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
 
@@ -298,22 +332,16 @@ public:
         const int a_cols = static_cast<int>(a.shape.dims[1]);
         const int b_rows = static_cast<int>(b.shape.dims[0]);
         const int b_cols = static_cast<int>(b.shape.dims[1]);
+
         const bool a_full = inst.m0 >= 0 && inst.k0 >= 0 &&
                             inst.m0 + kTile <= a_rows &&
-                            inst.k0 + kTile <= a_cols &&
-                            a.layout.strides[1] == 1;
-        const bool b_full = inst.k0 >= 0 && inst.n0 >= 0 &&
-                            inst.k0 + kTile <= b_rows &&
-                            inst.n0 + kTile <= b_cols &&
-                            b.layout.strides[1] == 1;
-
+                            inst.k0 + kTile <= a_cols;
         if (a_full) {
-            copy::global_rows_to_lds_vec<float4>(
-                a_page, kTile,
-                a.data + static_cast<size_t>(inst.m0) * a.layout.strides[0] +
-                    static_cast<size_t>(inst.k0) * a.layout.strides[1],
-                a.layout.strides[0], kTile, kTile,
-                static_cast<size_t>(lane), Config::kWaveSize);
+            copy_tile(a_page, kTile, 1,
+                      a.data +
+                          static_cast<size_t>(inst.m0) * a.layout.strides[0] +
+                          static_cast<size_t>(inst.k0) * a.layout.strides[1],
+                      a.layout.strides[0], a.layout.strides[1], lane);
         } else {
             for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
                 const int row = i / kTile;
@@ -330,13 +358,15 @@ public:
             }
         }
 
+        const bool b_full = inst.k0 >= 0 && inst.n0 >= 0 &&
+                            inst.k0 + kTile <= b_rows &&
+                            inst.n0 + kTile <= b_cols;
         if (b_full) {
-            copy::global_rows_to_lds_vec<float4>(
-                b_page, kTile,
-                b.data + static_cast<size_t>(inst.k0) * b.layout.strides[0] +
-                    static_cast<size_t>(inst.n0) * b.layout.strides[1],
-                b.layout.strides[0], kTile, kTile,
-                static_cast<size_t>(lane), Config::kWaveSize);
+            copy_tile(b_page, kTile, 1,
+                      b.data +
+                          static_cast<size_t>(inst.k0) * b.layout.strides[0] +
+                          static_cast<size_t>(inst.n0) * b.layout.strides[1],
+                      b.layout.strides[0], b.layout.strides[1], lane);
         } else {
             for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
                 const int row = i / kTile;
@@ -352,6 +382,7 @@ public:
                         : 0.0f;
             }
         }
+
         lds::wave_barrier();
         __threadfence_block();
         if (lane == 0) s.semaphores()[0].arrive();
@@ -364,8 +395,7 @@ public:
         }
     }
 
-    __device__ void consumer(State<Config>& s,
-                             const Globals&) const override {
+    __device__ void run(State<Config>& s, const Globals&) const override {
         const int wave = static_cast<int>(threadIdx.x / Config::kWaveSize);
         if (wave != 0) return;  // only one consumer wave runs this tile
 
@@ -385,10 +415,8 @@ public:
             const int col = i % kTile;
             float sum = 0.0f;
 #pragma unroll
-            for (int kk = 0; kk < kTile; ++kk) {
-                sum += a_page[row * kTile + kk] *
-                       b_page[kk * kTile + col];
-            }
+            for (int kk = 0; kk < kTile; ++kk)
+                sum += a_page[row * kTile + kk] * b_page[kk * kTile + col];
             c_page[i] = sum;
         }
         lds::wave_barrier();
@@ -396,8 +424,7 @@ public:
         if (lane == 0) s.semaphores()[1].arrive();
     }
 
-    __device__ void storer(State<Config>& s,
-                           const Globals& g) const override {
+    __device__ void store(State<Config>& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % Config::kWaveSize);
         const int pid_a = s.pid(0);
@@ -406,21 +433,20 @@ public:
 
         s.semaphores()[1].wait(0);
 
-        const float* c_page =
-            static_cast<const float*>(s.pages[pid_c].ptr());
+        const float* c_page = static_cast<const float*>(s.pages[pid_c].ptr());
         auto c = g.matrix_c;
         const int c_rows = static_cast<int>(c.shape.dims[0]);
         const int c_cols = static_cast<int>(c.shape.dims[1]);
+
         const bool c_full = inst.m0 >= 0 && inst.n0 >= 0 &&
                             inst.m0 + kTile <= c_rows &&
-                            inst.n0 + kTile <= c_cols &&
-                            c.layout.strides[1] == 1;
+                            inst.n0 + kTile <= c_cols;
         if (c_full) {
-            copy::lds_rows_to_global_vec<float4>(
-                c.data + static_cast<size_t>(inst.m0) * c.layout.strides[0] +
-                    static_cast<size_t>(inst.n0) * c.layout.strides[1],
-                c.layout.strides[0], c_page, kTile, kTile, kTile,
-                static_cast<size_t>(lane), Config::kWaveSize);
+            copy_tile(c.data +
+                          static_cast<size_t>(inst.m0) * c.layout.strides[0] +
+                          static_cast<size_t>(inst.n0) * c.layout.strides[1],
+                      c.layout.strides[0], c.layout.strides[1], c_page, kTile,
+                      1, lane);
         } else {
             for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
                 const int row = i / kTile;
@@ -434,6 +460,7 @@ public:
                 }
             }
         }
+
         lds::wave_barrier();
         __threadfence_block();
         if (lane == 0) {

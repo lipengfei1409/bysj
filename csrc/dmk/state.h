@@ -151,13 +151,16 @@ struct State {
     }
 };
 
-// Role tags selected at compile time by the kernel's wave dispatch.
+// Role tags selected at compile time by the kernel's wave dispatch. They are
+// only a framework concept: a role picks which op hook runs, and the op itself
+// only ever sees load/run/store.
 enum class Role { Loader, Storer, Consumer };
 
 // Every worker wave runs this loop. The op object is constructed in a small
 // local buffer for each instruction and called through BaseOp's virtual
 // interface; the storage is reused after the call because ops are required to
-// be trivially destructible.
+// be trivially destructible. One iteration is one tile: the hook it dispatches
+// to handles exactly the tile its instruction words name.
 template <Role R, typename Config, typename Globals, typename... Ops>
 __device__ inline void worker_loop(const Globals& g, State<Config>& s) {
     alignas(16) unsigned char op_storage[Config::kOpStorageBytes];
@@ -170,11 +173,11 @@ __device__ inline void worker_loop(const Globals& g, State<Config>& s) {
         if (op == nullptr) __builtin_trap();
 
         if constexpr (R == Role::Loader)
-            op->loader(s, g);
+            op->load(s, g);
         else if constexpr (R == Role::Storer)
-            op->storer(s, g);
+            op->store(s, g);
         else
-            op->consumer(s, g);
+            op->run(s, g);
     }
 }
 
