@@ -228,6 +228,61 @@ class ProfileContracts(unittest.TestCase):
         ])
         self.assertFalse(hasattr(args, "native_ops"))
 
+    def test_triton_levels_are_opt_in_direct_dpa4_switches(self):
+        args = cli.build_parser().parse_args([
+            "dpa4", "--model-file", "m.pt", "--input-npz", "s.npz",
+            "--output-dir", "out",
+        ])
+        self.assertIsNone(args.triton_infer)
+        self.assertIsNone(args.triton_train)
+        args = cli.build_parser().parse_args([
+            "dpa4", "--model-file", "m.pt", "--input-npz", "s.npz",
+            "--output-dir", "out", "--triton-infer", "2", "--triton-train", "1",
+        ])
+        self.assertEqual(args.triton_infer, 2)
+        self.assertEqual(args.triton_train, 1)
+        lammps_args = cli.build_parser().parse_args([
+            "lammps", "--model-file", "m.pt2", "--data-file", "s.data",
+            "--lammps-input", "in", "--lammps-exe", "lmp", "--gpu-ids", "0",
+            "--output-dir", "out",
+        ])
+        self.assertFalse(hasattr(lammps_args, "triton_infer"))
+
+    def test_triton_report_distinguishes_cli_environment_and_unset(self):
+        with patch.dict(cli.os.environ, {}, clear=False):
+            cli.os.environ.pop("DP_TRITON_INFER", None)
+            cli.os.environ.pop("DP_TRITON_TRAIN", None)
+            report = cli._triton_report(SimpleNamespace(triton_infer=None, triton_train=None))
+            self.assertEqual(report["DP_TRITON_INFER"], {"level": None, "source": "unset"})
+            cli.os.environ["DP_TRITON_INFER"] = "1"
+            report = cli._triton_report(SimpleNamespace(triton_infer=None, triton_train=None))
+            self.assertEqual(report["DP_TRITON_INFER"], {"level": 1, "source": "environment"})
+            report = cli._triton_report(SimpleNamespace(triton_infer=3, triton_train=0))
+            self.assertEqual(report["DP_TRITON_INFER"], {"level": 3, "source": "cli"})
+            self.assertEqual(report["DP_TRITON_TRAIN"], {"level": 0, "source": "cli"})
+
+    def test_direct_constructor_restores_triton_switches(self):
+        args = SimpleNamespace(
+            device="cuda:0", model_file=Path("model.pt"), compile=False,
+            triton_infer=2, triton_train=None,
+        )
+        expected = SimpleNamespace(deep_eval=object())
+        def create(path, **kwargs):
+            self.assertEqual(cli.os.environ["DP_TRITON_INFER"], "2")
+            self.assertNotIn("DP_TRITON_TRAIN", cli.os.environ)
+            return expected
+        package = ModuleType("deepmd")
+        infer = ModuleType("deepmd.infer")
+        infer.DeepPot = Mock(side_effect=create)
+        with patch.dict(sys.modules, {"deepmd": package, "deepmd.infer": infer}), \
+             patch.object(cli, "_loaded_deepmd_device_modules", return_value=[]), \
+             patch.dict(cli.os.environ, {"DP_TRITON_INFER": "shell-value"}):
+            cli.os.environ.pop("DP_TRITON_TRAIN", None)
+            actual = cli._construct_deepmd_model(args)
+            self.assertIs(actual, expected)
+            self.assertEqual(cli.os.environ["DP_TRITON_INFER"], "shell-value")
+            self.assertNotIn("DP_TRITON_TRAIN", cli.os.environ)
+
     def test_water_metadata_remaps_types_for_multi_element_model(self):
         model = Mock()
         model.get_type_map.return_value = ["H", "C", "N", "O"]

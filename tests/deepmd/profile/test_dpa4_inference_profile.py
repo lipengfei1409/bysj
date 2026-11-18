@@ -650,6 +650,55 @@ def _loaded_deepmd_device_modules():
     ]
 
 
+def _requested_deepmd_env(args):
+    """Map the CLI switches to the environment DeepMD reads at construction."""
+    overrides = {"DP_COMPILE_INFER": "1" if getattr(args, "compile", False) else "0"}
+    triton_infer = getattr(args, "triton_infer", None)
+    if triton_infer is not None:
+        overrides["DP_TRITON_INFER"] = str(int(triton_infer))
+    triton_train = getattr(args, "triton_train", None)
+    if triton_train is not None:
+        overrides["DP_TRITON_TRAIN"] = str(int(triton_train))
+    return overrides
+
+
+def _triton_report(args):
+    """Record the Triton levels the model will be constructed with.
+
+    ``None`` means the switch was not passed; ``source`` says where the value
+    came from, so a profiling run can never be ambiguous about which kernel
+    path produced its numbers.
+    """
+    report = {}
+    for attribute, variable in (
+        ("triton_infer", "DP_TRITON_INFER"),
+        ("triton_train", "DP_TRITON_TRAIN"),
+    ):
+        requested = getattr(args, attribute, None)
+        if requested is not None:
+            report[variable] = {"level": int(requested), "source": "cli"}
+            continue
+        raw = os.environ.get(variable)
+        if raw is None:
+            report[variable] = {"level": None, "source": "unset"}
+            continue
+        try:
+            level = int(raw.strip())
+        except ValueError:
+            level = None
+        report[variable] = {"level": level, "source": "environment"}
+    return report
+
+
+def _triton_available():
+    """Return the SeZM Triton availability flag, or None when unreadable."""
+    try:
+        from deepmd.pt_expt.kernels.triton.sezm import TRITON_AVAILABLE
+    except Exception:  # noqa: BLE001 - diagnostics must never fail a profile run
+        return None
+    return bool(TRITON_AVAILABLE)
+
+
 def _construct_deepmd_model(args):
     rank = int(args.device.split(":", 1)[1]) if ":" in args.device else 0
     initialized_modules = _loaded_deepmd_device_modules()
@@ -658,13 +707,12 @@ def _construct_deepmd_model(args):
             raise RuntimeError(
                 f"DeepMD already initialized on {module.DEVICE}, requested {args.device}"
             )
-    prior_device = os.environ.get("DEVICE")
-    prior_rank = os.environ.get("LOCAL_RANK")
-    prior_compile_infer = os.environ.get("DP_COMPILE_INFER")
-    os.environ["DP_COMPILE_INFER"] = "1" if getattr(args, "compile", False) else "0"
+    overrides = _requested_deepmd_env(args)
     if not initialized_modules:
-        os.environ["DEVICE"] = "cuda"
-        os.environ["LOCAL_RANK"] = str(rank)
+        overrides["DEVICE"] = "cuda"
+        overrides["LOCAL_RANK"] = str(rank)
+    prior_env = {name: os.environ.get(name) for name in overrides}
+    os.environ.update(overrides)
     try:
         try:
             from deepmd.infer import DeepPot
@@ -672,19 +720,11 @@ def _construct_deepmd_model(args):
             raise RuntimeError("profiling requires an installed DeepMD-kit") from error
         return DeepPot(str(args.model_file), auto_batch_size=False)
     finally:
-        if prior_compile_infer is None:
-            os.environ.pop("DP_COMPILE_INFER", None)
-        else:
-            os.environ["DP_COMPILE_INFER"] = prior_compile_infer
-        if not initialized_modules:
-            if prior_device is None:
-                os.environ.pop("DEVICE", None)
+        for name, value in prior_env.items():
+            if value is None:
+                os.environ.pop(name, None)
             else:
-                os.environ["DEVICE"] = prior_device
-            if prior_rank is None:
-                os.environ.pop("LOCAL_RANK", None)
-            else:
-                os.environ["LOCAL_RANK"] = prior_rank
+                os.environ[name] = value
 
 
 def _run_dpa4(args) -> int:
@@ -734,6 +774,8 @@ def _run_dpa4(args) -> int:
     summary_path = output_dir / summary_name
     torch.cuda.set_device(device)
     args.device = str(device)
+    triton_report = _triton_report(args)
+    print("Requested Triton path: " + json.dumps(triton_report), flush=True)
     model = _construct_deepmd_model(args)
     try:
         backend = model.deep_eval
@@ -745,6 +787,8 @@ def _run_dpa4(args) -> int:
             f"lower_input_kind: {lower_input_kind or 'unknown'}",
             flush=True,
         )
+        triton_report["available"] = _triton_available()
+        print("SeZM Triton available: " + json.dumps(triton_report["available"]), flush=True)
         source_system, type_mapping = _remap_input_types(model, source_system, args)
         print("DeepMD input types: " + json.dumps(type_mapping), flush=True)
         selected_system, replicas, sizing = _prepare_direct_system(model, source_system, args)
@@ -828,6 +872,7 @@ def _run_dpa4(args) -> int:
             "mode": "direct_dpa4_single_card",
             "profiled": profiled,
             "compile_requested": bool(getattr(args, "compile", False)),
+            "triton": triton_report,
             "model_file": str(Path(args.model_file).resolve()),
             "input_source": input_source,
             "backend": _deepmd_backend_name(model),
@@ -1344,6 +1389,16 @@ def build_parser() -> argparse.ArgumentParser:
     dpa4.add_argument(
         "--compile", action="store_true",
         help="request DeepMD compiled inference via DP_COMPILE_INFER (default off)",
+    )
+    dpa4.add_argument(
+        "--triton-infer", type=int, choices=(0, 1, 2, 3), default=None,
+        help="set DP_TRITON_INFER before model construction (0 disables, "
+             "1 universal kernels, 2 adds swept launch tables, 3 adds fp16x3); "
+             "default leaves the environment untouched",
+    )
+    dpa4.add_argument(
+        "--triton-train", type=int, choices=(0, 1), default=None,
+        help="set DP_TRITON_TRAIN before model construction (default untouched)",
     )
     dpa4.add_argument(
         "--no-profile",
