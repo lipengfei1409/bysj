@@ -58,6 +58,9 @@ class GIEBuildConfigurationTests(unittest.TestCase):
                 "csrc/rmsnorm.cpp",
                 "csrc/gie.cpp",
                 "csrc/so2_reduce.cpp",
+                "csrc/segment_sum.cpp",
+                "csrc/segment_softmax.cpp",
+                "csrc/force_assembly.cpp",
             ],
         )
         self.assertEqual(extension_args["define_macros"], [])

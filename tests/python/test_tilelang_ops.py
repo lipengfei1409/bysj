@@ -23,11 +23,17 @@ class TileLangOpsPackageTests(unittest.TestCase):
         self.assertEqual(
             kernels.__all__,
             [
+                "force_assembly",
                 "gemm",
                 "gie_available",
                 "gie_zonal_scatter",
+                "group_by_source",
                 "rmsnorm",
                 "rmsnorm_available",
+                "segment_available",
+                "segment_offsets",
+                "segment_softmax",
+                "segment_sum",
                 "so2_envelope_reduce",
                 "so2_envelope_reduce_available",
                 "zonal_scatter",

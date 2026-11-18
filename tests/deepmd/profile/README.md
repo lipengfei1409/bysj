@@ -81,7 +81,14 @@ TRITON_ALWAYS_COMPILE=1 python3 tests/deepmd/profile/triton_smoke.py --json /tmp
 # 2) 把一次 trace 归因到 kernel 家族、roofline 等价量与 cast 分组
 python3 tests/deepmd/profile/analyze_trace.py /tmp/profile-triton2/dpa4_*/dpa4_inference_trace.json \
   --json /tmp/lv2.json
+
+# 3) 找可融合的相邻算子链（n-gram），并核对前向/反向分区与总时长
+python3 tests/deepmd/profile/scan_fusion_patterns.py \
+  --trace /path/to/dpa4_inference_trace.json --top 25 --max-len 5 \
+  --json docs/fusion-patterns.json
 ```
+
+- `scan_fusion_patterns.py` 用 `cuda_runtime` 的 `correlation` 把每次 launch 对回 `cpu_op`，得到"算子名 + 形状"的 launch 序列；它先打印与 summary 的自动比对（总数、前向/反向分区），再给出按时间排序的签名、2–5 元相邻链与形状分类。链上的 `saving_ms` 是"每项 3 路流 × 最大 numel"的粗估，只用于排序。
 
 - `triton_smoke.py` 打印设备参数（wave 大小、线程上限、LDS 预算）、每个 kernel 的 LDS 字节与寄存器数，以及源码里出现的指令标记；非零退出码表示 Triton 在本机不可用或结果不正确。
 - `analyze_trace.py` 按 `triton` / `aten` / `gemm` / `other` 分类统计设备时间，并给每个 kernel 一个 roofline 等价量（访存型按等效字节、GEMM 按等效 GFLOP）。**如果 trace 里没有 triton kernel，脚本会明确提示：该次测的是稠密参考路径，不能据此下调优结论。** `cast_report` 按"输入 dtype + 维度"分组 cast/copy；注意 CPU op 的耗时包含等待设备，单次远高于同组的调用是同步点而非拷贝成本。
