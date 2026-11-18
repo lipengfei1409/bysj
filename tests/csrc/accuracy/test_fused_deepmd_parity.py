@@ -6,9 +6,9 @@ harness::
     DP_RUN_FUSED_DEEPMD_PARITY=1 PYTHONPATH=python \\
         python -m unittest tests.csrc.accuracy.test_fused_deepmd_parity -v
 
-Each test patches the seam through :mod:`model.fused_deepmd`, calls the patched
-name, then uninstalls and calls the stock DeepMD implementation on the same
-inputs. Both are the functions DeepMD itself calls, so this is an operator-level
+Each test patches the seam through :mod:`model.fused_deepmd.deepmd_patch`, calls
+the patched name, then uninstalls and calls the stock DeepMD implementation on
+the same inputs. Both are the functions DeepMD itself calls, so this is an operator-level
 parity check -- it does not need a checkpoint.
 """
 from __future__ import annotations
@@ -53,10 +53,11 @@ class FusedDeepMDDispatchParityTests(unittest.TestCase):
         bias = torch.randn(focus, heads, device="cuda")
         eps = 1e-6
 
-        stats = fused_deepmd.install(
+        stats = fused_deepmd.deepmd_patch(
             SimpleNamespace(modules=lambda: []),
             namespaces=[attention_module],
             envelope=False,
+            verbose=False,
         )
         self.assertTrue(stats.bound_softmax)
         actual = attention_module.segment_envelope_gated_softmax(
@@ -96,8 +97,8 @@ class FusedDeepMDDispatchParityTests(unittest.TestCase):
         )
         x = torch.zeros(atoms, rows, channels, device="cuda")
 
-        stats = fused_deepmd.install(
-            SimpleNamespace(modules=lambda: [block]), softmax=False
+        stats = fused_deepmd.deepmd_patch(
+            SimpleNamespace(modules=lambda: [block]), softmax=False, verbose=False
         )
         self.assertTrue(stats.bound_envelope)
         actual = block.forward_envelope(x, cache, None)
