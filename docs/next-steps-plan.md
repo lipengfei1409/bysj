@@ -140,8 +140,8 @@ P1/P2 是"在现有结构里榨 1.2–1.8x"。如果 P3 的目标算子用 Trito
 1. 让脚手架可编译可运行：`megakernel.cpp` 用 `uint32_t`、修 `WARP_SIZE`、实现 4 角色空跑 +
    LDS 邮箱 + 计数，`launch_mk()` 真启动；新增 `tests/csrc/run_dmk_megakernel_test.py`
    （复用 GEMM runner 的 hipcc 直编 + arch 检测）。
-2. 修 `rmsnorm.h` / `attention.h` 的语法错误（仍是旧坏桩，未纳入 op pack）；
-   `embedding.h` 已按 `BaseOp` 补成页面版 `EmbeddingOp`。
+2. `embedding.h` 已按 `BaseOp` 补成页面版 `EmbeddingOp`；`rmsnorm.h` / `attention.h`
+   两个不能编译的旧桩（未纳入 op pack、也无人 include）已删除，需要时按 `BaseOp` 重写。
 3. **三个 μbench（最重要）**，它们是后续所有优化的判决器：
    - 纯 MMA 循环（同 tile 形状、无访存）→ DUMMA 的实际上限 FLOP/s；
    - HBM→LDS 16 B 向量拷贝 → 有效带宽 + bank 冲突计数；
@@ -158,7 +158,8 @@ P1/P2 是"在现有结构里榨 1.2–1.8x"。如果 P3 的目标算子用 Trito
 > HBM/LDS 读写并在 Elementwise/Gemm/Embedding 中使用；按 DCU 同步 DUMMA 的实际情况去掉了
 > launcher 波（controller + loader + storer + 4 consumer waves，448 threads），
 > 设计说明见 `docs/lds-management.md`。
-> `rmsnorm.h` / `attention.h` 修复、三个 μbench 与真实 op 的 page 规划仍待做。
+> 三个 μbench 与真实 op 的 page 规划仍待做；`rmsnorm.h` / `attention.h` 两个不能编译的
+> 旧桩已删除（见第 2 条），需要时按 `BaseOp` 重写。
 
 ### M1（1–1.5 周）GEMM 打到 roofline
 
