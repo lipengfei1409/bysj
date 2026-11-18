@@ -778,6 +778,7 @@ def _run_dpa4(args) -> int:
     print("Requested Triton path: " + json.dumps(triton_report), flush=True)
     model = _construct_deepmd_model(args)
     fused_report: dict[str, Any] = {}
+    fused_stats: Any = None
     fused_patched = False
     try:
         if getattr(args, "fused", "off") != "off":
@@ -788,11 +789,16 @@ def _run_dpa4(args) -> int:
                 if args.fused == "on"
                 else {args.fused: True}
             )
-            stats = deepmd_patch(model, **seams)
-            fused_report = dict(stats.as_dict())
-            fused_report["requested"] = args.fused
+            # ``fused_stats`` is the live counter object: read it again after
+            # the profiled call, never here, or the summary reports the zeros
+            # from before any inference ran.
+            fused_stats = deepmd_patch(model, **seams)
             fused_patched = True
-            print("Fused DeepMD dispatch: " + json.dumps(fused_report, sort_keys=True), flush=True)
+            print(
+                "Fused DeepMD dispatch (before inference): "
+                + json.dumps(dict(fused_stats.as_dict()), sort_keys=True),
+                flush=True,
+            )
         backend = model.deep_eval
         lower_input_kind = (getattr(backend, "metadata", None) or {}).get(
             "lower_input_kind"
@@ -921,6 +927,15 @@ def _run_dpa4(args) -> int:
             **memory_report,
             **timing_report,
         }
+        if fused_stats is not None:
+            fused_report = dict(fused_stats.as_dict())
+            fused_report["requested"] = args.fused
+            report["fused"] = fused_report
+            print(
+                "Fused DeepMD dispatch (after inference): "
+                + json.dumps(fused_report, sort_keys=True),
+                flush=True,
+            )
         if profiled:
             report["analysis_goal"] = "hotspots"
             profiler.export_chrome_trace(str(trace_path))

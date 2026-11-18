@@ -71,14 +71,31 @@ def compare(baseline: dict, patched: dict, *, top: int = 8) -> dict:
     speedup = None
     if base_ms and patched_ms:
         speedup = base_ms / patched_ms
-    config_fields = ("model_file", "backend", "device_name", "atom_count", "input_source")
+    fused = patched.get("fused") or {}
+    dispatched = (fused.get("softmax_hits") or 0) + (fused.get("envelope_hits") or 0)
+    bound = bool(fused.get("bound_softmax") or fused.get("bound_envelope"))
+    config_fields = (
+        "model_file",
+        "backend",
+        "device_name",
+        "atom_count",
+        "input_source",
+        "triton",
+        "warmup_calls",
+        "profiled",
+    )
     return {
         "baseline_ms": base_ms,
         "patched_ms": patched_ms,
         "speedup": speedup,
         "baseline_launches": (baseline.get("trace_analysis") or {}).get("device_kernel_calls"),
         "patched_launches": (patched.get("trace_analysis") or {}).get("device_kernel_calls"),
-        "fused": patched.get("fused") or {},
+        "fused": fused,
+        "fused_bound": bound,
+        "fused_dispatched": dispatched,
+        "command_differs": baseline.get("command") != patched.get("command"),
+        "baseline_command": baseline.get("command"),
+        "patched_command": patched.get("command"),
         "kernel_deltas": deltas,
         "config_matches": {
             field: baseline.get(field) == patched.get(field) for field in config_fields
@@ -105,6 +122,11 @@ def render(report: dict) -> str:
             f"softmax={fused.get('softmax_hits')} (fallback {fused.get('softmax_fallbacks')}), "
             f"envelope={fused.get('envelope_hits')} (fallback {fused.get('envelope_fallbacks')})"
         )
+        if report.get("fused_bound") and not report.get("fused_dispatched"):
+            lines.append(
+                "fused seams  : bound but never dispatched (hits 0) -- the counters are "
+                "read after inference, so the seam really was not called"
+            )
         if fused.get("last_error"):
             lines.append(f"last error   : {fused['last_error']}")
     else:
@@ -112,6 +134,11 @@ def render(report: dict) -> str:
     mismatched = [name for name, same in report["config_matches"].items() if not same]
     if mismatched:
         lines.append(f"config       : NOT comparable, differs in {', '.join(mismatched)}")
+    if report.get("command_differs"):
+        lines.append(
+            "command      : the two runs used different invocations; compare the "
+            "--json output before trusting the delta"
+        )
     if report["kernel_deltas"]:
         lines += ["", "per-kernel delta (top by magnitude)", ""]
         lines.append(f"{'baseline':>10} {'patched':>10} {'delta':>10}  kernel")

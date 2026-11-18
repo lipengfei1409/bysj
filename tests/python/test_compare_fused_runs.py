@@ -71,6 +71,28 @@ class CompareTests(unittest.TestCase):
         self.assertIn("softmax=3", text)
         self.assertIn("NOT comparable", text)
 
+    def test_bound_but_never_dispatched_is_called_out(self):
+        baseline = _summary(1218.0, 2614, {"k": 10.0})
+        patched = _summary(
+            1218.0,
+            2614,
+            {"k": 10.0},
+            fused={"bound_softmax": True, "bound_envelope": True,
+                   "softmax_hits": 0, "envelope_hits": 0},
+        )
+        report = compare_fused_runs.compare(baseline, patched)
+        self.assertTrue(report["fused_bound"])
+        self.assertEqual(report["fused_dispatched"], 0)
+        self.assertIn("bound but never dispatched", compare_fused_runs.render(report))
+
+    def test_a_different_command_is_flagged(self):
+        baseline = _summary(1218.0, 2614, {"k": 10.0})
+        patched = _summary(1218.0, 2614, {"k": 10.0}, fused={"softmax_hits": 3})
+        patched["command"] = ["python", "other.py"]
+        report = compare_fused_runs.compare(baseline, patched)
+        self.assertTrue(report["command_differs"])
+        self.assertIn("different invocations", compare_fused_runs.render(report))
+
     def test_cli_writes_the_json_report(self):
         baseline = _summary(1218.0, 2614, {"k": 10.0})
         patched = _summary(1100.0, 2400, {"k": 4.0}, fused={"softmax_hits": 3})
