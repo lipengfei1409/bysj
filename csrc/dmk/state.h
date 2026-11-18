@@ -22,13 +22,13 @@ namespace dmk::mk {
 // accesses and bank patterns stay predictable.
 template <typename Config>
 struct alignas(128) Page {
-    int data[Config::kPageSize / sizeof(int)];
+    // Raw storage: ops reinterpret it as float/float4/etc. A char array avoids
+    // giving the page a fixed element type that vector accesses would alias.
+    char data[Config::kPageSize];
 
-    __device__ void* ptr(size_t byte_offset = 0) {
-        return reinterpret_cast<char*>(data) + byte_offset;
-    }
+    __device__ void* ptr(size_t byte_offset = 0) { return data + byte_offset; }
     __device__ const void* ptr(size_t byte_offset = 0) const {
-        return reinterpret_cast<const char*>(data) + byte_offset;
+        return data + byte_offset;
     }
 };
 

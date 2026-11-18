@@ -5,6 +5,11 @@
 
 namespace dmk::copy {
 
+using tensor::MemorySpace;
+using tensor::Shape;
+using tensor::StridedLayout;
+using tensor::Tensor;
+
 // Adjacent worker IDs should access adjacent global addresses. An axis with
 // the smallest element stride varies first; padded rows may still leave gaps.
 namespace detail {
@@ -132,7 +137,8 @@ __device__ inline bool lds_to_fragment(
     Tensor<Fragment, 2, MemorySpace::Register, RegisterLayoutT>& dst,
     Tensor<T, 2, MemorySpace::Shmem, StridedLayout<2>> src) {
     if (!detail::valid_row_major_lds(dst.shape, src)) return false;
-    ld_matrix(dst.fragment, src.data, static_cast<unsigned>(src.layout.strides[0]));
+    dumma::ld_matrix(dst.fragment, src.data,
+                     static_cast<unsigned>(src.layout.strides[0]));
     return true;
 }
 
@@ -145,8 +151,8 @@ __device__ inline bool lds_to_fragment(
     NativeLayout native_layout) {
     if (native_layout != du::dumma::mem_row_major ||
         !detail::valid_row_major_lds(dst.shape, src)) return false;
-    ld_matrix(dst.fragment, src.data,
-              static_cast<unsigned>(src.layout.strides[0]), native_layout);
+    dumma::ld_matrix(dst.fragment, src.data,
+                     static_cast<unsigned>(src.layout.strides[0]), native_layout);
     return true;
 }
 
@@ -158,9 +164,247 @@ __device__ inline bool fragment_to_lds(
     const Tensor<Fragment, 2, MemorySpace::Register, RegisterLayoutT>& src) {
     static_assert(!is_const<T>::value, "LDS destination must be writable");
     if (!detail::valid_row_major_lds(src.shape, dst)) return false;
-    store_matrix(dst.data, src.fragment, static_cast<unsigned>(dst.layout.strides[0]),
-                 du::dumma::mem_row_major);
+    dumma::store_matrix(dst.data, src.fragment,
+                        static_cast<unsigned>(dst.layout.strides[0]),
+                        du::dumma::mem_row_major);
     return true;
 }
+
+
+// ---------------------------------------------------------------------------
+// Vectorized global <-> LDS I/O.
+//
+// A wave of 64 lanes issuing 16-byte loads/stores touches 1 KiB per
+// instruction, and adjacent lanes cover adjacent 16-byte chunks. The helpers
+// below choose that path only when the pointers and strides satisfy the vector
+// alignment/width rules; otherwise they fall back to the same scalar loop, so
+// callers can use one API for both fast and tail cases.
+//
+// The helpers operate on contiguous runs of elements. The row variants assume
+// the caller has already checked layout.strides[1] == 1; they only vectorize
+// when the row stride and base pointers keep every row 16-byte aligned.
+//
+// Typical use in an op:
+//
+//   copy::global_to_lds_vec<float4>(page, hbm + base, count, lane, wave);
+//   copy::zero_lds_vec<float4>(page + count, tile - count, lane, wave);
+//
+// Always place the worker loop over vector indices, not element indices:
+// lanes 0..63 then read/write 16 B each at consecutive addresses.
+
+template <typename Vec>
+struct VecTraits;
+
+template <>
+struct VecTraits<float4> {
+    using Element = float;
+    static constexpr size_t kLanes = 4;
+    static DMK_HOST_DEVICE inline float4 splat(float value) {
+        return float4{value, value, value, value};
+    }
+};
+
+template <>
+struct VecTraits<float2> {
+    using Element = float;
+    static constexpr size_t kLanes = 2;
+    static DMK_HOST_DEVICE inline float2 splat(float value) {
+        return float2{value, value};
+    }
+};
+
+template <>
+struct VecTraits<int4> {
+    using Element = int;
+    static constexpr size_t kLanes = 4;
+    static DMK_HOST_DEVICE inline int4 splat(int value) {
+        return int4{value, value, value, value};
+    }
+};
+
+template <>
+struct VecTraits<int2> {
+    using Element = int;
+    static constexpr size_t kLanes = 2;
+    static DMK_HOST_DEVICE inline int2 splat(int value) {
+        return int2{value, value};
+    }
+};
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool vec_aligned(const T* pointer) {
+    return (reinterpret_cast<uintptr_t>(pointer) & (alignof(Vec) - 1)) == 0;
+}
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline Vec load_vec(const T* pointer) {
+    static_assert(sizeof(T) == sizeof(typename VecTraits<Vec>::Element),
+                  "vector element type does not match T");
+    return *reinterpret_cast<const Vec*>(pointer);
+}
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline void store_vec(T* pointer, Vec value) {
+    static_assert(sizeof(T) == sizeof(typename VecTraits<Vec>::Element),
+                  "vector element type does not match T");
+    *reinterpret_cast<Vec*>(pointer) = value;
+}
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool can_vectorize(const T* dst, const T* src,
+                                            size_t count) {
+    return count >= VecTraits<Vec>::kLanes && dst != nullptr &&
+           src != nullptr && vec_aligned<Vec>(dst) && vec_aligned<Vec>(src);
+}
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool copy_vec(T* dst, const T* src, size_t count,
+                                      size_t worker_id, size_t worker_count) {
+    if (count == 0 || dst == nullptr || src == nullptr) return false;
+    if (worker_count == 0 || worker_id >= worker_count) return false;
+
+    constexpr size_t kLanes = VecTraits<Vec>::kLanes;
+    if (can_vectorize<Vec>(dst, src, count)) {
+        const size_t vectors = count / kLanes;
+        for (size_t vector = worker_id; vector < vectors;
+             vector += worker_count) {
+            store_vec<Vec>(dst + vector * kLanes,
+                           load_vec<Vec>(src + vector * kLanes));
+        }
+        const size_t tail_start = vectors * kLanes;
+        for (size_t index = tail_start + worker_id; index < count;
+             index += worker_count) {
+            dst[index] = src[index];
+        }
+        return true;
+    }
+
+    for (size_t index = worker_id; index < count; index += worker_count)
+        dst[index] = src[index];
+    return false;
+}
+
+// HBM -> LDS, LDS -> HBM, LDS -> LDS. All three use the same aligned vector
+// copy; the names document the intended memory spaces at the call site.
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool global_to_lds_vec(T* dst, const T* src, size_t count,
+                                               size_t worker_id,
+                                               size_t worker_count) {
+    return copy_vec<Vec>(dst, src, count, worker_id, worker_count);
+}
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool lds_to_global_vec(T* dst, const T* src, size_t count,
+                                               size_t worker_id,
+                                               size_t worker_count) {
+    return copy_vec<Vec>(dst, src, count, worker_id, worker_count);
+}
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool lds_to_lds_vec(T* dst, const T* src, size_t count,
+                                            size_t worker_id,
+                                            size_t worker_count) {
+    return copy_vec<Vec>(dst, src, count, worker_id, worker_count);
+}
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool fill_lds_vec(T* dst, T value, size_t count,
+                                          size_t worker_id,
+                                          size_t worker_count) {
+    if (count == 0 || dst == nullptr) return false;
+    if (worker_count == 0 || worker_id >= worker_count) return false;
+
+    constexpr size_t kLanes = VecTraits<Vec>::kLanes;
+    // A tail starts at an arbitrary element offset (e.g. a partial tile), so
+    // fill the unaligned head scalar, then vectorize the aligned middle.
+    size_t head = 0;
+    while (head < count && !vec_aligned<Vec>(dst + head)) ++head;
+    const size_t vectors = (count - head) / kLanes;
+    if (vectors != 0) {
+        const Vec vector = VecTraits<Vec>::splat(value);
+        for (size_t index = worker_id; index < head; index += worker_count)
+            dst[index] = value;
+        for (size_t vector_index = worker_id; vector_index < vectors;
+             vector_index += worker_count) {
+            store_vec<Vec>(dst + head + vector_index * kLanes, vector);
+        }
+        const size_t tail_start = head + vectors * kLanes;
+        for (size_t index = tail_start + worker_id; index < count;
+             index += worker_count) {
+            dst[index] = value;
+        }
+        return true;
+    }
+
+    for (size_t index = worker_id; index < count; index += worker_count)
+        dst[index] = value;
+    return false;
+}
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool zero_lds_vec(T* dst, size_t count,
+                                          size_t worker_id,
+                                          size_t worker_count) {
+    return fill_lds_vec<Vec>(dst, T{}, count, worker_id, worker_count);
+}
+
+// Row-major copy between a strided source and a strided destination. The
+// column dimension must be contiguous (stride 1); ops that can present a
+// transposed view must use the scalar path instead. The vector fast path
+// requires `cols`, both row strides and both base pointers to keep each row
+// 16-byte aligned; otherwise the whole tile falls back to scalar.
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool rows_copy_vec(T* dst, size_t dst_stride,
+                                           const T* src, size_t src_stride,
+                                           size_t rows, size_t cols,
+                                           size_t worker_id,
+                                           size_t worker_count) {
+    if (rows == 0 || cols == 0 || dst == nullptr || src == nullptr)
+        return false;
+    if (worker_count == 0 || worker_id >= worker_count) return false;
+
+    constexpr size_t kLanes = VecTraits<Vec>::kLanes;
+    const bool vector_ok =
+        cols % kLanes == 0 && src_stride % kLanes == 0 &&
+        dst_stride % kLanes == 0 &&
+        can_vectorize<Vec>(dst, src, rows * cols);
+    if (vector_ok) {
+        const size_t vectors_per_row = cols / kLanes;
+        const size_t total = rows * vectors_per_row;
+        for (size_t vector = worker_id; vector < total;
+             vector += worker_count) {
+            const size_t row = vector / vectors_per_row;
+            const size_t col = (vector % vectors_per_row) * kLanes;
+            store_vec<Vec>(dst + row * dst_stride + col,
+                           load_vec<Vec>(src + row * src_stride + col));
+        }
+        return true;
+    }
+
+    const size_t total = rows * cols;
+    for (size_t index = worker_id; index < total; index += worker_count) {
+        const size_t row = index / cols;
+        const size_t col = index % cols;
+        dst[row * dst_stride + col] = src[row * src_stride + col];
+    }
+    return false;
+}
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool global_rows_to_lds_vec(
+    T* dst, size_t dst_stride, const T* src, size_t src_stride, size_t rows,
+    size_t cols, size_t worker_id, size_t worker_count) {
+    return rows_copy_vec<Vec>(dst, dst_stride, src, src_stride, rows, cols,
+                              worker_id, worker_count);
+}
+
+template <typename Vec, typename T>
+DMK_HOST_DEVICE inline bool lds_rows_to_global_vec(
+    T* dst, size_t dst_stride, const T* src, size_t src_stride, size_t rows,
+    size_t cols, size_t worker_id, size_t worker_count) {
+    return rows_copy_vec<Vec>(dst, dst_stride, src, src_stride, rows, cols,
+                              worker_id, worker_count);
+}
+
 
 }  // namespace dmk::copy

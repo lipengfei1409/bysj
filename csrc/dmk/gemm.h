@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tensor.h"
+#include "copy.h"
 #include "dumma.h"
 #include "op.h"
 #include "state.h"
@@ -292,27 +293,64 @@ public:
         float* b_page = static_cast<float*>(s.pages[pid_b].ptr());
         const auto a = g.matrix_a;
         const auto b = g.matrix_b;
-        for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
-            const int row = i / kTile;
-            const int col = i % kTile;
 
-            const int ar = inst.m0 + row;
-            const int ak = inst.k0 + col;
-            a_page[i] =
-                ar < static_cast<int>(a.shape.dims[0]) &&
-                        ak < static_cast<int>(a.shape.dims[1])
-                    ? a.data[static_cast<size_t>(ar) * a.layout.strides[0] +
-                             static_cast<size_t>(ak) * a.layout.strides[1]]
-                    : 0.0f;
+        const int a_rows = static_cast<int>(a.shape.dims[0]);
+        const int a_cols = static_cast<int>(a.shape.dims[1]);
+        const int b_rows = static_cast<int>(b.shape.dims[0]);
+        const int b_cols = static_cast<int>(b.shape.dims[1]);
+        const bool a_full = inst.m0 >= 0 && inst.k0 >= 0 &&
+                            inst.m0 + kTile <= a_rows &&
+                            inst.k0 + kTile <= a_cols &&
+                            a.layout.strides[1] == 1;
+        const bool b_full = inst.k0 >= 0 && inst.n0 >= 0 &&
+                            inst.k0 + kTile <= b_rows &&
+                            inst.n0 + kTile <= b_cols &&
+                            b.layout.strides[1] == 1;
 
-            const int bk = inst.k0 + row;
-            const int bn = inst.n0 + col;
-            b_page[i] =
-                bk < static_cast<int>(b.shape.dims[0]) &&
-                        bn < static_cast<int>(b.shape.dims[1])
-                    ? b.data[static_cast<size_t>(bk) * b.layout.strides[0] +
-                             static_cast<size_t>(bn) * b.layout.strides[1]]
-                    : 0.0f;
+        if (a_full) {
+            copy::global_rows_to_lds_vec<float4>(
+                a_page, kTile,
+                a.data + static_cast<size_t>(inst.m0) * a.layout.strides[0] +
+                    static_cast<size_t>(inst.k0) * a.layout.strides[1],
+                a.layout.strides[0], kTile, kTile,
+                static_cast<size_t>(lane), Config::kWaveSize);
+        } else {
+            for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+                const int row = i / kTile;
+                const int col = i % kTile;
+                const int ar = inst.m0 + row;
+                const int ak = inst.k0 + col;
+                a_page[i] =
+                    ar >= 0 && ar < a_rows && ak >= 0 && ak < a_cols
+                        ? a.data[static_cast<size_t>(ar) *
+                                     a.layout.strides[0] +
+                                 static_cast<size_t>(ak) *
+                                     a.layout.strides[1]]
+                        : 0.0f;
+            }
+        }
+
+        if (b_full) {
+            copy::global_rows_to_lds_vec<float4>(
+                b_page, kTile,
+                b.data + static_cast<size_t>(inst.k0) * b.layout.strides[0] +
+                    static_cast<size_t>(inst.n0) * b.layout.strides[1],
+                b.layout.strides[0], kTile, kTile,
+                static_cast<size_t>(lane), Config::kWaveSize);
+        } else {
+            for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+                const int row = i / kTile;
+                const int col = i % kTile;
+                const int bk = inst.k0 + row;
+                const int bn = inst.n0 + col;
+                b_page[i] =
+                    bk >= 0 && bk < b_rows && bn >= 0 && bn < b_cols
+                        ? b.data[static_cast<size_t>(bk) *
+                                     b.layout.strides[0] +
+                                 static_cast<size_t>(bn) *
+                                     b.layout.strides[1]]
+                        : 0.0f;
+            }
         }
         lds::wave_barrier();
         __threadfence_block();
@@ -371,16 +409,29 @@ public:
         const float* c_page =
             static_cast<const float*>(s.pages[pid_c].ptr());
         auto c = g.matrix_c;
-        for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
-            const int row = i / kTile;
-            const int col = i % kTile;
-            const int cr = inst.m0 + row;
-            const int cc = inst.n0 + col;
-            if (cr < static_cast<int>(c.shape.dims[0]) &&
-                cc < static_cast<int>(c.shape.dims[1])) {
-                c.data[static_cast<size_t>(cr) * c.layout.strides[0] +
-                       static_cast<size_t>(cc) * c.layout.strides[1]] =
-                    c_page[i];
+        const int c_rows = static_cast<int>(c.shape.dims[0]);
+        const int c_cols = static_cast<int>(c.shape.dims[1]);
+        const bool c_full = inst.m0 >= 0 && inst.n0 >= 0 &&
+                            inst.m0 + kTile <= c_rows &&
+                            inst.n0 + kTile <= c_cols &&
+                            c.layout.strides[1] == 1;
+        if (c_full) {
+            copy::lds_rows_to_global_vec<float4>(
+                c.data + static_cast<size_t>(inst.m0) * c.layout.strides[0] +
+                    static_cast<size_t>(inst.n0) * c.layout.strides[1],
+                c.layout.strides[0], c_page, kTile, kTile, kTile,
+                static_cast<size_t>(lane), Config::kWaveSize);
+        } else {
+            for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
+                const int row = i / kTile;
+                const int col = i % kTile;
+                const int cr = inst.m0 + row;
+                const int cc = inst.n0 + col;
+                if (cr >= 0 && cr < c_rows && cc >= 0 && cc < c_cols) {
+                    c.data[static_cast<size_t>(cr) * c.layout.strides[0] +
+                           static_cast<size_t>(cc) * c.layout.strides[1]] =
+                        c_page[i];
+                }
             }
         }
         lds::wave_barrier();

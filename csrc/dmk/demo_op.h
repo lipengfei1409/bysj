@@ -22,6 +22,7 @@
 // Page lifetime: the storer releases lid 0 after its copy, so the next
 // instruction's loader can reuse the physical page.
 
+#include "copy.h"
 #include "op.h"
 #include "state.h"
 
@@ -67,9 +68,18 @@ public:
 
         float* page = static_cast<float*>(s.pages[pid].ptr());
         const size_t base = static_cast<size_t>(inst.tile) * kTileElements;
-        for (int i = lane; i < kTileElements; i += Config::kWaveSize) {
-            page[i] = i < inst.count ? g.input.data[base + i] : 0.0f;
-        }
+        const size_t count =
+            inst.count <= 0
+                ? 0
+                : (static_cast<size_t>(inst.count) < kTileElements
+                       ? static_cast<size_t>(inst.count)
+                       : kTileElements);
+        copy::global_to_lds_vec<float4>(page, g.input.data + base, count,
+                                        static_cast<size_t>(lane),
+                                        Config::kWaveSize);
+        copy::zero_lds_vec<float4>(page + count, kTileElements - count,
+                                   static_cast<size_t>(lane),
+                                   Config::kWaveSize);
         lds::wave_barrier();
         __threadfence_block();
         if (lane == 0) s.semaphores()[0].arrive();
@@ -92,9 +102,21 @@ public:
         s.semaphores()[0].wait(0);
 
         float* page = static_cast<float*>(s.pages[pid].ptr());
-        for (int i = wave * Config::kWaveSize + lane; i < kTileElements;
-             i += Config::kConsumerWaves * Config::kWaveSize) {
-            page[i] = inst.scale * page[i] + inst.bias;
+        static_assert(kTileElements % 4 == 0,
+                      "elementwise vector path needs a 4-aligned tile");
+        const size_t vector_count = kTileElements / 4;
+        const size_t worker =
+            static_cast<size_t>(wave * Config::kWaveSize + lane);
+        const size_t workers = static_cast<size_t>(Config::kConsumerWaves) *
+                               Config::kWaveSize;
+        for (size_t vector = worker; vector < vector_count;
+             vector += workers) {
+            float4 value = copy::load_vec<float4>(page + vector * 4);
+            value.x = inst.scale * value.x + inst.bias;
+            value.y = inst.scale * value.y + inst.bias;
+            value.z = inst.scale * value.z + inst.bias;
+            value.w = inst.scale * value.w + inst.bias;
+            copy::store_vec<float4>(page + vector * 4, value);
         }
         lds::wave_barrier();
         __threadfence_block();
@@ -111,9 +133,15 @@ public:
 
         const float* page = static_cast<const float*>(s.pages[pid].ptr());
         const size_t base = static_cast<size_t>(inst.tile) * kTileElements;
-        for (int i = lane; i < inst.count; i += Config::kWaveSize) {
-            g.output.data[base + i] = page[i];
-        }
+        const size_t count =
+            inst.count <= 0
+                ? 0
+                : (static_cast<size_t>(inst.count) < kTileElements
+                       ? static_cast<size_t>(inst.count)
+                       : kTileElements);
+        copy::lds_to_global_vec<float4>(g.output.data + base, page, count,
+                                        static_cast<size_t>(lane),
+                                        Config::kWaveSize);
         lds::wave_barrier();
         __threadfence_block();
         if (lane == 0) s.finish_page(pid, Config::kConsumerWaves);

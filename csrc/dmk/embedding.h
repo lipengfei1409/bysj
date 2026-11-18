@@ -24,6 +24,7 @@
 //   Tensor<const float, 2, HBM> embedding_table;
 //   Tensor<float, 2, HBM>       embedding_output;
 
+#include "copy.h"
 #include "op.h"
 #include "state.h"
 
@@ -86,13 +87,25 @@ public:
         float* page = static_cast<float*>(s.pages[pid].ptr());
         const int count = valid_count(g);
         const auto table = g.embedding_table;
-        for (int i = lane; i < kPageElements; i += Config::kWaveSize) {
-            page[i] = i < count
-                          ? table.data[static_cast<size_t>(inst.src_row) *
-                                           table.layout.strides[0] +
-                                       static_cast<size_t>(i) *
-                                           table.layout.strides[1]]
-                          : 0.0f;
+        if (table.layout.strides[1] == 1 && count > 0) {
+            copy::global_to_lds_vec<float4>(
+                page,
+                table.data + static_cast<size_t>(inst.src_row) *
+                                 table.layout.strides[0],
+                static_cast<size_t>(count), static_cast<size_t>(lane),
+                Config::kWaveSize);
+            copy::zero_lds_vec<float4>(page + count, kPageElements - count,
+                                       static_cast<size_t>(lane),
+                                       Config::kWaveSize);
+        } else {
+            for (int i = lane; i < kPageElements; i += Config::kWaveSize) {
+                page[i] = i < count
+                              ? table.data[static_cast<size_t>(inst.src_row) *
+                                               table.layout.strides[0] +
+                                           static_cast<size_t>(i) *
+                                               table.layout.strides[1]]
+                              : 0.0f;
+            }
         }
         lds::wave_barrier();
         __threadfence_block();
@@ -119,10 +132,19 @@ public:
         const float* page = static_cast<const float*>(s.pages[pid].ptr());
         const int count = valid_count(g);
         auto out = g.embedding_output;
-        for (int i = lane; i < count; i += Config::kWaveSize) {
-            out.data[static_cast<size_t>(inst.dst_row) *
-                         out.layout.strides[0] +
-                     static_cast<size_t>(i) * out.layout.strides[1]] = page[i];
+        if (out.layout.strides[1] == 1 && count > 0) {
+            copy::lds_to_global_vec<float4>(
+                out.data + static_cast<size_t>(inst.dst_row) *
+                               out.layout.strides[0],
+                page, static_cast<size_t>(count), static_cast<size_t>(lane),
+                Config::kWaveSize);
+        } else {
+            for (int i = lane; i < count; i += Config::kWaveSize) {
+                out.data[static_cast<size_t>(inst.dst_row) *
+                             out.layout.strides[0] +
+                         static_cast<size_t>(i) * out.layout.strides[1]] =
+                    page[i];
+            }
         }
         lds::wave_barrier();
         __threadfence_block();

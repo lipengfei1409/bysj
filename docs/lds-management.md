@@ -387,6 +387,42 @@ op 内部用 `s.pid(lid)`、`s.wait_page_ready`、`s.finish_page`、`s.semaphore
 `GemmOp`/`EmbeddingOp` 需要 `MkGlobals` 里的 `matrix_a/matrix_b/matrix_c` 和
 `embedding_table/embedding_output`；demo 的 Elementwise/NoOp 不使用这些字段。
 
+### 5.6 向量化 HBM/LDS 访存（copy.h）
+
+op 搬数据时不再逐元素 4 B 访问，`csrc/dmk/copy.h` 提供了对齐向量的读写：
+
+| API | 方向 | 说明 |
+| --- | --- | --- |
+| `load_vec<Vec>` / `store_vec<Vec>` | 任意 | 16 B / 8 B 向量的单次读写，调用方保证对齐 |
+| `global_to_lds_vec<Vec>` | HBM → LDS | 连续 run，自动处理尾部 |
+| `lds_to_global_vec<Vec>` | LDS → HBM | 连续 run，自动处理尾部 |
+| `lds_to_lds_vec<Vec>` | LDS → LDS | page/scratch 之间搬移 |
+| `zero_lds_vec<Vec>` | LDS | 零填充，自动处理未对齐头部 |
+| `fill_lds_vec<Vec>` | LDS | 常量填充 |
+| `global_rows_to_lds_vec<Vec>` | HBM → LDS | 2D 行主序（列 stride 必须为 1） |
+| `lds_rows_to_global_vec<Vec>` | LDS → HBM | 2D 行主序 |
+
+- `Vec` 支持 `float4`（16 B）、`float2`（8 B）、`int4`、`int2`；`VecTraits` 给出
+  lane 数和 splat。
+- 快路径条件：指针按 `alignof(Vec)` 对齐、长度 ≥ lane 数、行拷贝时 `cols` 和两个
+  row stride 都是 lane 数的倍数。**任何一条不满足就自动回退到标量循环**，所以 op
+  可以无条件调用，不需要自己写 tail 分支。
+- worker 循环按 **vector index** 分配：wave64 的 lane 0..63 处理相邻的 16 B
+  chunk，一次访存覆盖 1 KiB；不要按 element index 分配，否则会退化成跨步访存。
+- 行拷贝假设列方向连续（`layout.strides[1] == 1`）；转置/列主序视图走标量路径。
+  GEMM 的 A/B/C 在调用前检查 strides 和边界；Elementwise/Embedding 直接按 1D
+  连续 run 调用。
+- 边界/尾部：Elementwise loader 先 `global_to_lds_vec` 搬 `count` 个元素，再
+  `zero_lds_vec` 把 page 剩余部分清零；Gemm/Embedding 在完整 tile 时走向量路径，
+  部分 tile 仍用带边界判断的标量路径。
+- 当前向量化只覆盖普通的连续/行主序 LDS 布局；`ShmemSwizzleLayout` 的 XOR
+  地址映射还没有向量版本，需要 swizzle 的算子先走标量或 padded 行 stride。
+
+实测口径：Elementwise 的 2048-float tile 在 `float4` 下每 lane 8 次 16 B 读写；
+GEMM 的 16×16 A/B/C tile 每 lane 1 个 `float4`/行；Embedding 一行按 `count/4`
+个 vector 分给 64 lane。设备测试的 `tail` / `gemm` / `embedding` 用例会走到
+带尾部的向量路径。
+
 ---
 
 ## 6. 代码结构
@@ -395,6 +431,7 @@ op 内部用 `s.pid(lid)`、`s.wait_page_ready`、`s.finish_page`、`s.semaphore
 | --- | --- |
 | `csrc/dmk/config.h` | `Config`、`InstructionState`、静态/动态/launch 字节常量与 `static_assert` |
 | `csrc/dmk/lds.h` | `lds::Semaphore`（parity）、对齐、`phase_for_ticket` |
+| `csrc/dmk/copy.h` | 标量 tensor copy + `float4`/`float2` 向量化 HBM/LDS 读写 |
 | `csrc/dmk/op.h` | `BaseOp<Config, Globals>` 虚接口、`make_op` 工厂、op 存储约束 |
 | `csrc/dmk/state.h` | `Page`、`State`、`Role`、`worker_loop`、`remap_page_order` |
 | `csrc/dmk/controller.h` | `prepare_instruction`、`main_loop`（op 通过 `BaseOp*` 直接调用） |
@@ -425,6 +462,8 @@ python tests/csrc/run_dmk_lds_test.py --host-only
 - `phase_for_ticket` 的 parity 序列（expected=1 和 4）；
 - `remap_page_order` 的 identity / rotation 置换；
 - `ring_advance/ring_retreat`；
+- 向量化 copy：对齐 `float4` 快路径、未对齐标量回退、未对齐头部的零填充、
+  行主序 padded stride 与奇数 col/stride 的标量行回退；
 - `MkGlobals::valid`：指令 shape、宽度、`num_instructions`、unit-stride 输入输出。
 
 另外，本地（mock HIP/ATen 头）用真实 `State`/controller/op 代码路径跑过一个
@@ -445,7 +484,7 @@ python tests/csrc/run_dmk_lds_test.py
 | --- | --- | --- | --- |
 | `single` | 1 tile | 1 | 最小规模、NoOp 起始 |
 | `multi` | 8 tiles | 2 | 多 block、page/流水槽复用 |
-| `tail` | 3 tiles + 777 | 2 | 尾块有效元素数 |
+| `tail` | 3 tiles + 777 | 2 | 尾块有效元素数 + 向量化尾部/零填充 |
 | `idle` | 2 tiles | 4 | 没分到 tile 的 block 只跑 NoOp，不会卡死 |
 | `noop` | 1 tile | 1 | 全 NoOp，输出保持哨兵值 |
 | `relaunch` | 8 tiles | 2 | 第二次 launch 重新初始化 page phase |

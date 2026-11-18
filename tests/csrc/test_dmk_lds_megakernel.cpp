@@ -312,7 +312,7 @@ void run_embedding_case() {
     words[kInstructionWidth + 0] = EmbeddingOp<Config, MkGlobals>::opcode;
     words[kInstructionWidth + 1] = 2;  // src row
     words[kInstructionWidth + 2] = 1;  // dst row
-    words[kInstructionWidth + 3] = Width;
+    words[kInstructionWidth + 3] = Width - 1;
     write_noop(words.data() + 2 * kInstructionWidth);
     check_hip(hipMalloc(reinterpret_cast<void**>(&device_instructions),
                         words.size() * sizeof(int)),
@@ -352,13 +352,18 @@ void run_embedding_case() {
                         hipMemcpyDeviceToHost),
               "hipMemcpy(embedding out)");
 
-    for (int i = 0; i < Width; ++i) {
+    for (int i = 0; i < Width - 1; ++i) {
         if (actual[Width + i] != host_table[2 * Width + i]) {
             std::fprintf(stderr, "  embedding[%d] differs\n", i);
             std::exit(1);
         }
     }
-    std::printf("  %-10s row 2 -> row 1, width %d\n", "embedding", Width);
+    if (actual[Width + Width - 1] != -1.0f) {
+        std::fprintf(stderr, "  embedding tail was overwritten\n");
+        std::exit(1);
+    }
+    std::printf("  %-10s row 2 -> row 1, width %d (tail scalar)\n",
+                "embedding", Width - 1);
     check_hip(hipFree(device_table), "hipFree(embedding table)");
     check_hip(hipFree(device_out), "hipFree(embedding out)");
     check_hip(hipFree(device_instructions), "hipFree(embedding instructions)");

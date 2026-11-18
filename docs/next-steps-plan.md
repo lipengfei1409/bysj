@@ -154,7 +154,8 @@ P1/P2 是"在现有结构里榨 1.2–1.8x"。如果 P3 的目标算子用 Trito
 > `state.h`（state/pid/page semaphore）、`op.h`（虚基类 + `make_op` 工厂）、
 > `controller.h`（取指 / page 置换 / 动态 semaphore）、`noop.h` /
 > `demo_op.h` / `gemm.h` / `embedding.h`、`megakernel.h` 与
-> `tests/csrc/run_dmk_lds_test.py`；按 DCU 同步 DUMMA 的实际情况去掉了
+> `tests/csrc/run_dmk_lds_test.py`；`copy.h` 增加 `float4`/`float2` 向量化
+> HBM/LDS 读写并在 Elementwise/Gemm/Embedding 中使用；按 DCU 同步 DUMMA 的实际情况去掉了
 > launcher 波（controller + loader + storer + 4 consumer waves，448 threads），
 > 设计说明见 `docs/lds-management.md`。
 > `rmsnorm.h` / `attention.h` 修复、三个 μbench 与真实 op 的 page 规划仍待做。
