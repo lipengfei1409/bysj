@@ -101,7 +101,22 @@ alpha = segment_softmax(logits.reshape(E, C), env, offsets,
 前置条件：`src_weight is None`（SFPG 桥接模式需要"线性 source ratio"，log 空间里没有等价位形，
 因此该模式一定回退）、fp32、`z_bias_raw.numel() == F·H`。
 
-**实测**（181838 边 / 3000 原子）：4.42 → 0.49 ms（C=64，9.09×）、9.52 → 1.91 ms（C=256，5.00×）。
+**算子级实测**（181838 边 / 3000 原子）：4.42 → 0.49 ms（C=64，9.09×）、9.52 → 1.91 ms（C=256，5.00×）。
+
+**端到端实测**（2026-11-19，DPA4-Air-OMol25 100M，3000 原子 / 181838 边，`n_atten_head=1`）：
+
+| 指标 | 基线 | 打上 `--fused on` | 说明 |
+| --- | --- | --- | --- |
+| 接缝命中 | — | `softmax=18` / `fallback=0` | 3 block × 6 次调用（5 warmup + 1 profile），链路通 |
+| 设备 kernel 数 | 2614 | 2464（**−150**） | 参考链的前向 8 个 + 反向约 40 个/次，全被替换 |
+| 设备总时间 | 964.4 ms | 963.8 ms（**1.001×**） | 几乎没有收益 |
+
+结论：**这条接缝在这个 checkpoint 上净值约 0**。它的宽度是 `attn_n_focus × 1`（`n_atten_head=1`），
+被替换掉的都是 `[3000, C]` 量级的小张量，单次成本由 launch 开销主导（同一份 trace 里 `fill_` 只降了 0.14 ms）。
+之前按 trace 里 `fill_[3000,256]` 归因到 softmax 是错的 —— 那些属于别的阶段。
+
+真正的收益在 E-major（边流）的散射上：`force_assembly` 接 `edge_force_virial`，
+以及 dense 路径里 `out_heads.index_add_`（见 §5）。
 
 ---
 

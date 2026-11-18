@@ -225,7 +225,13 @@ S = Σ_e α_e ᾱ_e + α_0 ᾱ_0
 **预期结果**：池 ~25 ms（`fill_[3000,256]` + `index_add_[3000,256]` + `reduce_kernel<512,1>` 里属于软最大/求和的部分）
 → ~5 ms（**−20…−22 ms**）；归一化从 6 个 launch 降到 1 个，`(E,256)` 的 logits 少读 2 趟。
 
-**DCU 实测（181838 边 / 3000 原子，`DPA4_RUN_SEGMENT_LATENCY=1`）**：
+**端到端实测校正（2026-11-19）**：接缝绑上后 `softmax_hits=18`、`fallback=0`、launch 少 150 个，
+但设备总时间 964.4 → 963.8 ms（**1.001×**）—— 本 checkpoint 的 `n_atten_head=1`，归一化宽度是
+`attn_n_focus×1`，被替换的是 `[3000,C]` 小张量，成本由 launch 主导。**C2 的池子归属需要下调为 ≈0**，
+下文按 trace 形状估的 −20…−22 ms 不成立；phase 1 的区间相应按"C1 + C3"（约 −100…−120 ms）理解。
+真正的大头仍是 E-major 散射：`force_assembly` → `edge_force_virial`、dense 路径的 `out_heads.index_add_`。
+
+**算子级实测（181838 边 / 3000 原子，`DPA4_RUN_SEGMENT_LATENCY=1`）**：
 `segment_softmax` 4.42 → 0.49 ms（C=64，**9.09×**）、9.52 → 1.91 ms（C=256，**5.00×**）。
 比预估的 3× 更好，原因是 ATen 链在这两个尺寸上是 launch/归约受限，不是纯带宽受限。
 
