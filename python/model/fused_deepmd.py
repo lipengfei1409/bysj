@@ -166,6 +166,9 @@ class _Session:
             offsets, order = self.csr.get(dst, n_nodes)
             null_logit = torch.log(F.softplus(bias) + float(eps))
             null_logit = null_logit.reshape(1, n_channel).expand(n_nodes, n_channel)
+            # ``segment_softmax`` returns ``(alpha, null_alpha)`` whenever a
+            # null logit is supplied, which this seam always does; tolerate a
+            # plain tensor as well so the seam does not depend on that arity.
             alpha = self.ops.segment_softmax(
                 logits.reshape(n_edges, n_channel),
                 edge_env.reshape(n_edges),
@@ -173,6 +176,8 @@ class _Session:
                 null_logit.contiguous(),
                 order=order,
             )
+            if isinstance(alpha, tuple):
+                alpha = alpha[0]
         except Exception as error:  # noqa: BLE001 - fall back, never break inference
             self._record(error)
             stats.softmax_fallbacks += 1

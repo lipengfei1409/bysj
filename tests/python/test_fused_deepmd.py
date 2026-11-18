@@ -47,10 +47,11 @@ class FakeOps:
         self.calls: list[tuple[str, tuple[int, ...]]] = []
 
     def segment_softmax(self, logit, env, offsets, null_logit=None, order=None):
+        """Mirror kernels.segment.segment_softmax: a 2-tuple when a null logit is given."""
         self.calls.append(("softmax", tuple(logit.shape)))
         dst = _dst_from_csr(offsets, order)
-        alpha, _ = segment_softmax_reference(logit, env, dst, offsets, null_logit)
-        return alpha
+        alpha, null_alpha = segment_softmax_reference(logit, env, dst, offsets, null_logit)
+        return alpha if null_logit is None else (alpha, null_alpha)
 
     def segment_sum(self, src, dst, offsets, edge_scale=None, node_scale=None, order=None):
         self.calls.append(("sum", tuple(src.shape)))
@@ -228,6 +229,47 @@ class FusedDispatchTests(unittest.TestCase):
         fused_deepmd.uninstall()
         self.assertIs(namespace.segment_envelope_gated_softmax, original)
         self.assertEqual(fused_deepmd.status(None), {})
+
+
+class SoftmaxSeamReturnShapeTests(unittest.TestCase):
+    """The seam must cope with the wrapper's real return arity."""
+
+    def setUp(self):
+        fused_deepmd._ACCEPT_ANY_DEVICE = True
+        self.addCleanup(fused_deepmd.uninstall)
+        self.addCleanup(setattr, fused_deepmd, "_ACCEPT_ANY_DEVICE", False)
+
+    def test_two_value_return_is_unpacked(self):
+        namespace = _namespace("fake.attention")
+        ops = FakeOps()  # returns (alpha, null_alpha) when a null logit is passed
+        fused_deepmd.deepmd_patch(
+            FakeModel([]), ops=ops, namespaces=[namespace], envelope=False, verbose=False
+        )
+        dst, _ = _grouped_dst([2, 0, 3])
+        logits = torch.randn(5, 2, 3)
+        env = torch.rand(5, 1) + 0.1
+        bias = torch.randn(2, 3)
+        actual = namespace.segment_envelope_gated_softmax(logits, env, dst, 3, bias, 1e-6)
+        self.assertEqual(tuple(actual.shape), (5, 2, 3))
+        fused_deepmd.uninstall()
+        expected = namespace.segment_envelope_gated_softmax(logits, env, dst, 3, bias, 1e-6)
+        torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+
+    def test_plain_tensor_return_is_also_accepted(self):
+        class TensorOps(FakeOps):
+            def segment_softmax(self, logit, env, offsets, null_logit=None, order=None):
+                alpha, _ = FakeOps.segment_softmax(self, logit, env, offsets, null_logit, order)
+                return alpha
+
+        namespace = _namespace("fake.attention")
+        fused_deepmd.deepmd_patch(
+            FakeModel([]), ops=TensorOps(), namespaces=[namespace], envelope=False, verbose=False
+        )
+        dst, _ = _grouped_dst([2, 0, 3])
+        alpha = namespace.segment_envelope_gated_softmax(
+            torch.randn(5, 2, 3), torch.rand(5, 1) + 0.1, dst, 3, torch.randn(2, 3), 1e-6
+        )
+        self.assertEqual(tuple(alpha.shape), (5, 2, 3))
 
 
 class WrapperResolutionTests(unittest.TestCase):
