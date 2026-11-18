@@ -1,5 +1,5 @@
 #pragma once
-#include "util.h"
+#include "utils.h"
 
 namespace dmk {
 
@@ -11,8 +11,10 @@ public:
 
     __device__ virtual void shard() = 0;
     __device__ virtual void loader() = 0;
+    // consumer one tile
     __device__ virtual void consumer() = 0;
     __device__ virtual void storer() = 0;
+    __device__ virtual bool is_last() const = 0;
 private:
 
 };

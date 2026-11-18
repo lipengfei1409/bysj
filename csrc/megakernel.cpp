@@ -13,19 +13,6 @@ __device__ void controller() {
 
 }
 
-__device__ void loader() {
-
-}
-
-__device__ void consumer() {
-
-}
-
-
-__device__ void storer() {
-
-}
-
 // Launch with blockDim.x = 4 * device.warpSize and one block per independent tile.
 // This small data flow makes each role observable; model operators can replace it later.
 template<const uint WARP_SZIE>
@@ -33,7 +20,8 @@ __global__ void megakernel() {
     const uint wid = threadIdx.x / WARP_SZIE;
     if (wid == 0) {
         // controller
-    } else if ()
+    }
+    // else if ()
 
 }
 

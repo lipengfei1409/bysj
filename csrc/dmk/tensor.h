@@ -2,14 +2,7 @@
 
 #include "utils.h"
 
-#if defined(__HIPCC__)
-#define DMK_TENSOR_HD __host__ __device__
-#else
-#define DMK_TENSOR_HD
-#endif
-
-namespace dmk {
-
+namespace dmk::tensor {
 enum class MemorySpace { HBM, Shmem, Register };
 
 // Fixed rank, runtime extents. No heap allocation is needed in device code.
@@ -18,9 +11,9 @@ struct Shape {
     static_assert(Rank > 0, "Shape rank must be positive");
     size_t dims[Rank]{};
 
-    DMK_TENSOR_HD constexpr size_t ndim() const { return Rank; }
+    DMK_HOST_DEVICE constexpr size_t ndim() const { return Rank; }
 
-    DMK_TENSOR_HD constexpr bool try_numel(size_t& result) const {
+    DMK_HOST_DEVICE constexpr bool try_numel(size_t& result) const {
         for (size_t axis = 0; axis < Rank; ++axis) {
             if (dims[axis] == 0) {
                 result = 0;
@@ -35,7 +28,7 @@ struct Shape {
         return true;
     }
 
-    DMK_TENSOR_HD constexpr size_t numel() const {
+    DMK_HOST_DEVICE constexpr size_t numel() const {
         size_t result = 0;
         const bool valid = try_numel(result);
         assert(valid && "Shape element count overflow");
@@ -48,7 +41,7 @@ template <size_t Rank>
 struct StridedLayout {
     size_t strides[Rank]{};
 
-    DMK_TENSOR_HD static constexpr StridedLayout contiguous(const Shape<Rank>& shape) {
+    DMK_HOST_DEVICE static constexpr StridedLayout contiguous(const Shape<Rank>& shape) {
         StridedLayout result{};
         size_t step = 1;
         for (size_t axis = Rank; axis-- > 0;) {
@@ -58,14 +51,14 @@ struct StridedLayout {
         return result;
     }
 
-    DMK_TENSOR_HD constexpr size_t offset(const Shape<Rank>&, const Shape<Rank>& indices) const {
+    DMK_HOST_DEVICE constexpr size_t offset(const Shape<Rank>&, const Shape<Rank>& indices) const {
         size_t result = 0;
         for (size_t axis = 0; axis < Rank; ++axis)
             result += indices.dims[axis] * strides[axis];
         return result;
     }
 
-    DMK_TENSOR_HD constexpr bool is_contiguous(const Shape<Rank>& shape) const {
+    DMK_HOST_DEVICE constexpr bool is_contiguous(const Shape<Rank>& shape) const {
         for (size_t axis = 0; axis < Rank; ++axis)
             if (shape.dims[axis] == 0) return true;
         size_t step = 1;
@@ -98,16 +91,16 @@ struct ShmemSwizzleLayout {
 
     uint32_t row_xor_mask = bank_count - 1;
 
-    DMK_TENSOR_HD constexpr size_t row_stride(const Shape<2>& shape) const {
+    DMK_HOST_DEVICE constexpr size_t row_stride(const Shape<2>& shape) const {
         const size_t cols = shape.dims[1];
         return (cols / group_elements + (cols % group_elements != 0)) * group_elements;
     }
 
-    DMK_TENSOR_HD constexpr size_t required_elements(const Shape<2>& shape) const {
+    DMK_HOST_DEVICE constexpr size_t required_elements(const Shape<2>& shape) const {
         return shape.dims[0] * row_stride(shape);
     }
 
-    DMK_TENSOR_HD constexpr bool try_required_elements(const Shape<2>& shape,
+    DMK_HOST_DEVICE constexpr bool try_required_elements(const Shape<2>& shape,
                                                         size_t& result) const {
         const size_t groups = shape.dims[1] / group_elements +
                                    (shape.dims[1] % group_elements != 0);
@@ -118,7 +111,7 @@ struct ShmemSwizzleLayout {
         return true;
     }
 
-    DMK_TENSOR_HD constexpr size_t offset(const Shape<2>& shape,
+    DMK_HOST_DEVICE constexpr size_t offset(const Shape<2>& shape,
                                                 const Shape<2>& indices) const {
         const size_t row = indices.dims[0];
         const size_t col = indices.dims[1];
@@ -130,7 +123,7 @@ struct ShmemSwizzleLayout {
         return row * row_stride(shape) + physical_word * elements_per_bank + lane;
     }
 
-    DMK_TENSOR_HD constexpr bool is_contiguous(const Shape<2>&) const { return false; }
+    DMK_HOST_DEVICE constexpr bool is_contiguous(const Shape<2>&) const { return false; }
 };
 
 template <typename Layout>
@@ -158,8 +151,7 @@ struct DefaultTensorLayout<Rank, MemorySpace::Register> {
 };
 
 // A non-owning view. The caller manages the lifetime of HBM/LDS storage.
-template <typename T, size_t Rank, MemorySpace Space,
-          typename Layout = typename DefaultTensorLayout<Rank, Space>::type>
+template <typename T, size_t Rank, MemorySpace Space, typename Layout = typename DefaultTensorLayout<Rank, Space>::type>
 struct Tensor {
     static_assert(Space != MemorySpace::Register,
                   "Register Tensor uses its fragment specialization");
@@ -172,18 +164,18 @@ struct Tensor {
     Shape<Rank> shape{};
     Layout layout{};
 
-    DMK_TENSOR_HD constexpr size_t numel() const { return shape.numel(); }
+    DMK_HOST_DEVICE constexpr size_t numel() const { return shape.numel(); }
 
-    DMK_TENSOR_HD constexpr size_t offset(const Shape<Rank>& indices) const {
+    DMK_HOST_DEVICE constexpr size_t offset(const Shape<Rank>& indices) const {
         return layout.offset(shape, indices);
     }
 
-    DMK_TENSOR_HD constexpr bool is_contiguous() const {
+    DMK_HOST_DEVICE constexpr bool is_contiguous() const {
         return layout.is_contiguous(shape);
     }
 
     template <size_t NewRank>
-    DMK_TENSOR_HD constexpr bool reshape(
+    DMK_HOST_DEVICE constexpr bool reshape(
         const Shape<NewRank>& new_shape,
         Tensor<T, NewRank, Space, StridedLayout<NewRank>>& result) const {
         if constexpr (!is_same<Layout, StridedLayout<Rank>>::value) {
@@ -199,7 +191,7 @@ struct Tensor {
         }
     }
 
-    DMK_TENSOR_HD constexpr Tensor transpose(size_t first,
+    DMK_HOST_DEVICE constexpr Tensor transpose(size_t first,
                                              size_t second) const {
         static_assert(is_same<Layout, StridedLayout<Rank>>::value,
                       "Transpose of swizzled LDS requires a new physical layout");
@@ -222,9 +214,79 @@ struct Tensor<Fragment, Rank, MemorySpace::Register, Layout> {
     Shape<Rank> shape;
     Layout layout;
 
-    DMK_TENSOR_HD constexpr size_t numel() const { return shape.numel(); }
+    DMK_HOST_DEVICE constexpr size_t numel() const { return shape.numel(); }
 };
 
-}  // namespace dmk
 
-#undef DMK_TENSOR_HD
+// Host-only, zero-copy mapping from a Torch CUDA/DTK tensor. The Torch tensor
+// owns the storage and must outlive every kernel using the returned view.
+#ifndef __HIP_DEVICE_COMPILE__
+template <typename T, size_t Rank, MemorySpace Space,
+          typename Layout = typename DefaultTensorLayout<Rank, Space>::type>
+inline void from_torch(at::Tensor& src, Tensor<T, Rank, Space, Layout>& out) {
+    static_assert(Space == MemorySpace::HBM, "Torch data maps only to HBM");
+    static_assert(is_same<Layout, StridedLayout<Rank>>::value,
+                  "Torch data requires a strided HBM layout");
+    using Element = remove_const_t<T>;
+    TORCH_CHECK(src.defined(), "from_torch requires a defined tensor");
+    TORCH_CHECK(src.is_cuda(), "from_torch requires a DCU/CUDA tensor");
+    TORCH_CHECK(src.layout() == at::kStrided,
+                "from_torch requires a strided tensor");
+    TORCH_CHECK(src.dim() == static_cast<int64_t>(Rank),
+                "from_torch rank mismatch");
+    TORCH_CHECK(src.scalar_type() == c10::CppTypeToScalarType<Element>::value,
+                "from_torch dtype mismatch");
+
+    for (size_t axis = 0; axis < Rank; ++axis) {
+        const int64_t dimension = src.size(static_cast<int64_t>(axis));
+        const int64_t stride = src.stride(static_cast<int64_t>(axis));
+        TORCH_CHECK(dimension >= 0 && stride >= 0,
+                    "from_torch requires nonnegative dimensions and strides");
+        out.shape.dims[axis] = static_cast<size_t>(dimension);
+        out.layout.strides[axis] = static_cast<size_t>(stride);
+    }
+    out.data = src.data_ptr<Element>();
+}
+
+// Reinterpret the same Torch-owned storage with the DMK view's shape/strides.
+// `out` must already own the same starting pointer; as_strided keeps that
+// storage alive and allocates no new HBM buffer.
+template <typename T, size_t Rank, MemorySpace Space,
+          typename Layout = typename DefaultTensorLayout<Rank, Space>::type>
+inline void to_torch(const Tensor<T, Rank, Space, Layout>& src,
+                     at::Tensor& out) {
+    static_assert(Space == MemorySpace::HBM, "Torch data maps only to HBM");
+    static_assert(is_same<Layout, StridedLayout<Rank>>::value,
+                  "Torch data requires a strided HBM layout");
+    static_assert(!is_const<T>::value,
+                  "A const DMK tensor cannot become a mutable Torch tensor");
+    TORCH_CHECK(out.defined(),
+                "to_torch requires an existing Torch tensor owning the storage");
+    TORCH_CHECK(out.is_cuda(), "to_torch requires a DCU/CUDA owner");
+    TORCH_CHECK(out.layout() == at::kStrided,
+                "to_torch requires a strided owner");
+    TORCH_CHECK(out.scalar_type() == c10::CppTypeToScalarType<T>::value,
+                "to_torch dtype mismatch");
+    TORCH_CHECK(out.data_ptr<T>() == src.data,
+                "to_torch owner must have the same starting data pointer");
+
+    size_t count = 0;
+    TORCH_CHECK(src.shape.try_numel(count), "to_torch shape overflow");
+    TORCH_CHECK(count == 0 || src.data != nullptr,
+                "to_torch requires a non-null pointer for nonempty data");
+    vector<int64_t> sizes(Rank);
+    vector<int64_t> strides(Rank);
+    constexpr size_t max_torch_index =
+        static_cast<size_t>(numeric_limits<int64_t>::max());
+    for (size_t axis = 0; axis < Rank; ++axis) {
+        TORCH_CHECK(src.shape.dims[axis] <= max_torch_index &&
+                    src.layout.strides[axis] <= max_torch_index,
+                    "to_torch shape or stride exceeds int64 range");
+        sizes[axis] = static_cast<int64_t>(src.shape.dims[axis]);
+        strides[axis] = static_cast<int64_t>(src.layout.strides[axis]);
+    }
+    out = out.as_strided(sizes, strides);
+}
+#endif  // __HIP_DEVICE_COMPILE__
+
+}  // namespace dmk::tensor
