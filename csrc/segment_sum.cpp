@@ -39,6 +39,17 @@ void check_offsets(const Tensor& offsets, const char* name) {
               name, " must be a one-dimensional exclusive prefix sum");
 }
 
+void check_order(const c10::optional<Tensor>& order, int64_t edges) {
+  if (!order.has_value()) return;
+  const Tensor& permutation = *order;
+  TORCH_CHECK(permutation.is_cuda() &&
+                  permutation.scalar_type() == torch::kInt64 &&
+                  permutation.is_contiguous(),
+              "segment sum order must be a contiguous DCU int64 tensor");
+  TORCH_CHECK(permutation.dim() == 1 && permutation.size(0) == edges,
+              "segment sum order must have shape (n_edges,)");
+}
+
 void check_edges(const Tensor& dst, int64_t edges, const char* name) {
   TORCH_CHECK(dst.is_cuda() && dst.scalar_type() == torch::kInt64 &&
                   dst.is_contiguous(),
@@ -66,8 +77,9 @@ unsigned int grid_for(int64_t blocks, const char* name) {
 template <bool kHasEdgeScale>
 __global__ void segment_sum_forward_kernel(
     const float* __restrict__ src, const float* __restrict__ edge_scale,
-    const int64_t* __restrict__ offsets, const float* __restrict__ node_scale,
-    float* __restrict__ out, int64_t channels) {
+    const int64_t* __restrict__ offsets, const int64_t* __restrict__ order,
+    const float* __restrict__ node_scale, float* __restrict__ out,
+    int64_t channels) {
   const int64_t segment = blockIdx.x;
   const int64_t begin = offsets[segment];
   const int64_t end = offsets[segment + 1];
@@ -75,7 +87,10 @@ __global__ void segment_sum_forward_kernel(
   for (int64_t channel = threadIdx.x; channel < channels;
        channel += blockDim.x) {
     float accumulator = 0.0f;
-    for (int64_t edge = begin; edge < end; ++edge) {
+    for (int64_t slot = begin; slot < end; ++slot) {
+      // ``order`` maps the grouped position to the natural edge index, so the
+      // sorted view costs no materialized gather.
+      const int64_t edge = order == nullptr ? slot : order[slot];
       const int64_t index = edge * channels + channel;
       accumulator += kHasEdgeScale ? src[index] * edge_scale[edge]
                                    : src[index];
@@ -89,8 +104,9 @@ __global__ void segment_sum_forward_kernel(
 template <bool kHasEdgeScale>
 __global__ void segment_sum_forward_vec4_kernel(
     const float* __restrict__ src, const float* __restrict__ edge_scale,
-    const int64_t* __restrict__ offsets, const float* __restrict__ node_scale,
-    float* __restrict__ out, int64_t channels) {
+    const int64_t* __restrict__ offsets, const int64_t* __restrict__ order,
+    const float* __restrict__ node_scale, float* __restrict__ out,
+    int64_t channels) {
   const int64_t segment = blockIdx.x;
   const int64_t begin = offsets[segment];
   const int64_t end = offsets[segment + 1];
@@ -98,7 +114,8 @@ __global__ void segment_sum_forward_vec4_kernel(
   const int64_t groups = channels / 4;
   for (int64_t group = threadIdx.x; group < groups; group += blockDim.x) {
     float4 accumulator = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-    for (int64_t edge = begin; edge < end; ++edge) {
+    for (int64_t slot = begin; slot < end; ++slot) {
+      const int64_t edge = order == nullptr ? slot : order[slot];
       const float4 value =
           reinterpret_cast<const float4*>(src + edge * channels)[group];
       const float weight = kHasEdgeScale ? edge_scale[edge] : 1.0f;
@@ -137,7 +154,8 @@ __global__ void segment_sum_grad_src_kernel(
 __global__ void segment_sum_grad_node_scale_kernel(
     const float* __restrict__ grad_out, const float* __restrict__ src,
     const float* __restrict__ edge_scale, const int64_t* __restrict__ offsets,
-    float* __restrict__ grad_scale, int64_t channels) {
+    const int64_t* __restrict__ order, float* __restrict__ grad_scale,
+    int64_t channels) {
   __shared__ float partial[kMaxChannelThreads];
   const int64_t segment = blockIdx.x;
   const int64_t begin = offsets[segment];
@@ -147,7 +165,8 @@ __global__ void segment_sum_grad_node_scale_kernel(
   for (int64_t channel = threadIdx.x; channel < channels;
        channel += blockDim.x) {
     float prefix = 0.0f;
-    for (int64_t edge = begin; edge < end; ++edge) {
+    for (int64_t slot = begin; slot < end; ++slot) {
+      const int64_t edge = order == nullptr ? slot : order[slot];
       const int64_t index = edge * channels + channel;
       prefix += edge_scale == nullptr ? src[index]
                                       : src[index] * edge_scale[edge];
@@ -165,7 +184,8 @@ __global__ void segment_sum_grad_node_scale_kernel(
 
 void check_segment_sum_inputs(const Tensor& src, const Tensor& offsets,
                               const c10::optional<Tensor>& edge_scale,
-                              const c10::optional<Tensor>& node_scale) {
+                              const c10::optional<Tensor>& node_scale,
+                              const c10::optional<Tensor>& order) {
   f32(src);
   TORCH_CHECK(src.dim() == 2, "segment sum src must have shape (n_edges, channels)");
   const int64_t edges = src.size(0);
@@ -185,14 +205,17 @@ void check_segment_sum_inputs(const Tensor& src, const Tensor& offsets,
                 "segment sum node_scale must have one value per segment");
     same_device(src, {*node_scale});
   }
+  check_order(order, edges);
+  if (order.has_value()) same_device(src, {*order});
   same_device(src, {offsets});
 }
 }  // namespace
 
 Tensor segment_sum_forward_hip(Tensor src, Tensor offsets,
                                c10::optional<Tensor> edge_scale,
-                               c10::optional<Tensor> node_scale) {
-  check_segment_sum_inputs(src, offsets, edge_scale, node_scale);
+                               c10::optional<Tensor> node_scale,
+                               c10::optional<Tensor> order) {
+  check_segment_sum_inputs(src, offsets, edge_scale, node_scale, order);
   const int64_t edges = src.size(0);
   const int64_t channels = src.size(1);
   const int64_t nodes = offsets.size(0) - 1;
@@ -209,6 +232,8 @@ Tensor segment_sum_forward_hip(Tensor src, Tensor offsets,
       edge_scale.has_value() ? edge_scale->data_ptr<float>() : nullptr;
   const float* node_scale_ptr =
       node_scale.has_value() ? node_scale->data_ptr<float>() : nullptr;
+  const int64_t* order_ptr =
+      order.has_value() ? order->data_ptr<int64_t>() : nullptr;
   const dim3 grid(grid_for(nodes, "segment sum segment count"));
   const dim3 block(channel_threads(channels));
   c10::cuda::CUDAGuard guard(src.device());
@@ -219,24 +244,24 @@ Tensor segment_sum_forward_hip(Tensor src, Tensor offsets,
       hipLaunchKernelGGL(segment_sum_forward_vec4_kernel<false>, grid, block, 0,
                          at::cuda::getCurrentCUDAStream(),
                          src.data_ptr<float>(), nullptr,
-                         offsets.data_ptr<int64_t>(), node_scale_ptr,
+                         offsets.data_ptr<int64_t>(), order_ptr, node_scale_ptr,
                          out.data_ptr<float>(), channels);
     } else {
       hipLaunchKernelGGL(segment_sum_forward_vec4_kernel<true>, grid, block, 0,
                          at::cuda::getCurrentCUDAStream(),
                          src.data_ptr<float>(), edge_scale_ptr,
-                         offsets.data_ptr<int64_t>(), node_scale_ptr,
+                         offsets.data_ptr<int64_t>(), order_ptr, node_scale_ptr,
                          out.data_ptr<float>(), channels);
     }
   } else if (edge_scale_ptr == nullptr) {
     hipLaunchKernelGGL(segment_sum_forward_kernel<false>, grid, block, 0,
                        at::cuda::getCurrentCUDAStream(), src.data_ptr<float>(),
-                       nullptr, offsets.data_ptr<int64_t>(), node_scale_ptr,
-                       out.data_ptr<float>(), channels);
+                       nullptr, offsets.data_ptr<int64_t>(), order_ptr,
+                       node_scale_ptr, out.data_ptr<float>(), channels);
   } else {
     hipLaunchKernelGGL(segment_sum_forward_kernel<true>, grid, block, 0,
                        at::cuda::getCurrentCUDAStream(), src.data_ptr<float>(),
-                       edge_scale_ptr, offsets.data_ptr<int64_t>(),
+                       edge_scale_ptr, offsets.data_ptr<int64_t>(), order_ptr,
                        node_scale_ptr, out.data_ptr<float>(), channels);
   }
   launch_check();
@@ -246,8 +271,8 @@ Tensor segment_sum_forward_hip(Tensor src, Tensor offsets,
 std::tuple<Tensor, Tensor> segment_sum_backward_hip(
     Tensor grad_out, Tensor src, Tensor dst, Tensor offsets,
     c10::optional<Tensor> edge_scale, c10::optional<Tensor> node_scale,
-    bool want_node_scale_grad) {
-  check_segment_sum_inputs(src, offsets, edge_scale, node_scale);
+    bool want_node_scale_grad, c10::optional<Tensor> order) {
+  check_segment_sum_inputs(src, offsets, edge_scale, node_scale, order);
   f32(grad_out);
   const int64_t edges = src.size(0);
   const int64_t channels = src.size(1);
@@ -265,6 +290,8 @@ std::tuple<Tensor, Tensor> segment_sum_backward_hip(
       edge_scale.has_value() ? edge_scale->data_ptr<float>() : nullptr;
   const float* node_scale_ptr =
       node_scale.has_value() ? node_scale->data_ptr<float>() : nullptr;
+  const int64_t* order_ptr =
+      order.has_value() ? order->data_ptr<int64_t>() : nullptr;
   c10::cuda::CUDAGuard guard(src.device());
   const dim3 block(channel_threads(channels));
 
@@ -283,7 +310,7 @@ std::tuple<Tensor, Tensor> segment_sum_backward_hip(
                      dim3(grid_for(nodes, "segment sum segment count")), block,
                      0, at::cuda::getCurrentCUDAStream(),
                      grad_out.data_ptr<float>(), src.data_ptr<float>(),
-                     edge_scale_ptr, offsets.data_ptr<int64_t>(),
+                     edge_scale_ptr, offsets.data_ptr<int64_t>(), order_ptr,
                      grad_node_scale.data_ptr<float>(), channels);
   launch_check();
   return std::make_tuple(grad_src, grad_node_scale);

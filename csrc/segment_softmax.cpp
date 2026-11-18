@@ -78,16 +78,17 @@ __device__ inline bool effective_logit(float logit_value, float envelope,
 template <bool kHasNull>
 __global__ void segment_softmax_forward_kernel(
     const float* __restrict__ logit, const float* __restrict__ env,
-    const int64_t* __restrict__ offsets, const float* __restrict__ null_logit,
-    float* __restrict__ alpha, float* __restrict__ null_alpha,
-    int64_t channels) {
+    const int64_t* __restrict__ offsets, const int64_t* __restrict__ order,
+    const float* __restrict__ null_logit, float* __restrict__ alpha,
+    float* __restrict__ null_alpha, int64_t channels) {
   const int64_t segment = blockIdx.x;
   const int64_t begin = offsets[segment];
   const int64_t end = offsets[segment + 1];
   for (int64_t channel = threadIdx.x; channel < channels;
        channel += blockDim.x) {
     float peak = -INFINITY;
-    for (int64_t edge = begin; edge < end; ++edge) {
+    for (int64_t slot = begin; slot < end; ++slot) {
+      const int64_t edge = order == nullptr ? slot : order[slot];
       float effective = 0.0f;
       if (!effective_logit(logit[edge * channels + channel], env[edge],
                            &effective))
@@ -99,14 +100,17 @@ __global__ void segment_softmax_forward_kernel(
     peak = fmaxf(peak, null_value);
 
     if (peak == -INFINITY) {
-      for (int64_t edge = begin; edge < end; ++edge)
+      for (int64_t slot = begin; slot < end; ++slot) {
+        const int64_t edge = order == nullptr ? slot : order[slot];
         alpha[edge * channels + channel] = 0.0f;
+      }
       if (kHasNull) null_alpha[segment * channels + channel] = 0.0f;
       continue;
     }
 
     float total = 0.0f;
-    for (int64_t edge = begin; edge < end; ++edge) {
+    for (int64_t slot = begin; slot < end; ++slot) {
+      const int64_t edge = order == nullptr ? slot : order[slot];
       float effective = 0.0f;
       if (!effective_logit(logit[edge * channels + channel], env[edge],
                            &effective))
@@ -117,7 +121,8 @@ __global__ void segment_softmax_forward_kernel(
     total += null_weight;
     const float inverse = 1.0f / total;
 
-    for (int64_t edge = begin; edge < end; ++edge) {
+    for (int64_t slot = begin; slot < end; ++slot) {
+      const int64_t edge = order == nullptr ? slot : order[slot];
       float effective = 0.0f;
       if (!effective_logit(logit[edge * channels + channel], env[edge],
                            &effective)) {
@@ -136,22 +141,25 @@ __global__ void segment_softmax_backward_logit_kernel(
     const float* __restrict__ alpha, const float* __restrict__ null_alpha,
     const float* __restrict__ grad_alpha,
     const float* __restrict__ grad_null_alpha,
-    const int64_t* __restrict__ offsets, float* __restrict__ grad_logit,
-    float* __restrict__ grad_null_logit, int64_t channels) {
+    const int64_t* __restrict__ offsets, const int64_t* __restrict__ order,
+    float* __restrict__ grad_logit, float* __restrict__ grad_null_logit,
+    int64_t channels) {
   const int64_t segment = blockIdx.x;
   const int64_t begin = offsets[segment];
   const int64_t end = offsets[segment + 1];
   for (int64_t channel = threadIdx.x; channel < channels;
        channel += blockDim.x) {
     float expectation = 0.0f;
-    for (int64_t edge = begin; edge < end; ++edge) {
+    for (int64_t slot = begin; slot < end; ++slot) {
+      const int64_t edge = order == nullptr ? slot : order[slot];
       const int64_t index = edge * channels + channel;
       expectation += alpha[index] * grad_alpha[index];
     }
     if (kHasNull)
       expectation += null_alpha[segment * channels + channel] *
                      grad_null_alpha[segment * channels + channel];
-    for (int64_t edge = begin; edge < end; ++edge) {
+    for (int64_t slot = begin; slot < end; ++slot) {
+      const int64_t edge = order == nullptr ? slot : order[slot];
       const int64_t index = edge * channels + channel;
       grad_logit[index] = alpha[index] * (grad_alpha[index] - expectation);
     }
@@ -186,8 +194,20 @@ __global__ void segment_softmax_backward_env_kernel(
   }
 }
 
+void check_order(const c10::optional<Tensor>& order, int64_t edges) {
+  if (!order.has_value()) return;
+  const Tensor& permutation = *order;
+  TORCH_CHECK(permutation.is_cuda() &&
+                  permutation.scalar_type() == torch::kInt64 &&
+                  permutation.is_contiguous(),
+              "segment softmax order must be a contiguous DCU int64 tensor");
+  TORCH_CHECK(permutation.dim() == 1 && permutation.size(0) == edges,
+              "segment softmax order must have shape (n_edges,)");
+}
+
 void check_softmax_inputs(const Tensor& logit, const Tensor& env,
-                          const Tensor& offsets) {
+                          const Tensor& offsets,
+                          const c10::optional<Tensor>& order) {
   f32(logit);
   f32(env);
   TORCH_CHECK(logit.dim() == 2,
@@ -198,6 +218,8 @@ void check_softmax_inputs(const Tensor& logit, const Tensor& env,
   TORCH_CHECK(env.dim() == 1 && env.size(0) == edges,
               "segment softmax env must have shape (n_edges,)");
   check_offsets(offsets, "segment softmax offsets");
+  check_order(order, edges);
+  if (order.has_value()) same_device(logit, {*order});
   same_device(logit, {env, offsets});
 }
 
@@ -212,8 +234,8 @@ void check_null(const c10::optional<Tensor>& null_tensor, int64_t nodes,
 
 std::tuple<Tensor, Tensor> segment_softmax_forward_hip(
     Tensor logit, Tensor env, Tensor offsets,
-    c10::optional<Tensor> null_logit) {
-  check_softmax_inputs(logit, env, offsets);
+    c10::optional<Tensor> null_logit, c10::optional<Tensor> order) {
+  check_softmax_inputs(logit, env, offsets, order);
   const int64_t edges = logit.size(0);
   const int64_t channels = logit.size(1);
   const int64_t nodes = offsets.size(0) - 1;
@@ -233,18 +255,21 @@ std::tuple<Tensor, Tensor> segment_softmax_forward_hip(
   c10::cuda::CUDAGuard guard(logit.device());
   const dim3 grid(grid_for(nodes, "segment softmax segment count"));
   const dim3 block(channel_threads(channels));
+  const int64_t* order_ptr =
+      order.has_value() ? order->data_ptr<int64_t>() : nullptr;
   const float* null_ptr =
       null_logit.has_value() ? null_logit->data_ptr<float>() : nullptr;
   if (null_ptr == nullptr) {
     hipLaunchKernelGGL(segment_softmax_forward_kernel<false>, grid, block, 0,
                        at::cuda::getCurrentCUDAStream(), logit.data_ptr<float>(),
                        env.data_ptr<float>(), offsets.data_ptr<int64_t>(),
-                       nullptr, alpha.data_ptr<float>(), nullptr, channels);
+                       order_ptr, nullptr, alpha.data_ptr<float>(), nullptr,
+                       channels);
   } else {
     hipLaunchKernelGGL(segment_softmax_forward_kernel<true>, grid, block, 0,
                        at::cuda::getCurrentCUDAStream(), logit.data_ptr<float>(),
                        env.data_ptr<float>(), offsets.data_ptr<int64_t>(),
-                       null_ptr, alpha.data_ptr<float>(),
+                       order_ptr, null_ptr, alpha.data_ptr<float>(),
                        null_alpha.data_ptr<float>(), channels);
   }
   launch_check();
@@ -254,8 +279,8 @@ std::tuple<Tensor, Tensor> segment_softmax_forward_hip(
 std::tuple<Tensor, Tensor, Tensor> segment_softmax_backward_hip(
     Tensor alpha, Tensor grad_alpha, Tensor env, Tensor offsets,
     c10::optional<Tensor> null_alpha,
-    c10::optional<Tensor> grad_null_alpha) {
-  check_softmax_inputs(alpha, env, offsets);
+    c10::optional<Tensor> grad_null_alpha, c10::optional<Tensor> order) {
+  check_softmax_inputs(alpha, env, offsets, order);
   f32(grad_alpha);
   const int64_t edges = alpha.size(0);
   const int64_t channels = alpha.size(1);
@@ -284,6 +309,8 @@ std::tuple<Tensor, Tensor, Tensor> segment_softmax_backward_hip(
     return std::make_tuple(grad_logit, grad_null_logit, grad_env);
   }
 
+  const int64_t* order_ptr =
+      order.has_value() ? order->data_ptr<int64_t>() : nullptr;
   c10::cuda::CUDAGuard guard(alpha.device());
   const dim3 grid(grid_for(nodes, "segment softmax segment count"));
   const dim3 block(channel_threads(channels));
@@ -293,15 +320,16 @@ std::tuple<Tensor, Tensor, Tensor> segment_softmax_backward_hip(
                        alpha.data_ptr<float>(),
                        null_alpha->data_ptr<float>(), grad_alpha.data_ptr<float>(),
                        grad_null_alpha->data_ptr<float>(),
-                       offsets.data_ptr<int64_t>(), grad_logit.data_ptr<float>(),
+                       offsets.data_ptr<int64_t>(), order_ptr,
+                       grad_logit.data_ptr<float>(),
                        grad_null_logit.data_ptr<float>(), channels);
   } else {
     hipLaunchKernelGGL(segment_softmax_backward_logit_kernel<false>, grid, block,
                        0, at::cuda::getCurrentCUDAStream(),
                        alpha.data_ptr<float>(), nullptr,
                        grad_alpha.data_ptr<float>(), nullptr,
-                       offsets.data_ptr<int64_t>(), grad_logit.data_ptr<float>(),
-                       nullptr, channels);
+                       offsets.data_ptr<int64_t>(), order_ptr,
+                       grad_logit.data_ptr<float>(), nullptr, channels);
   }
   launch_check();
 

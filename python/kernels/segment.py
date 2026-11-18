@@ -71,7 +71,19 @@ def group_by_source(src: torch.Tensor, n_nodes: int) -> tuple[torch.Tensor, torc
     return order, segment_offsets(src, n_nodes)
 
 
-def _validate_segment_sum(src, dst, offsets, edge_scale, node_scale):
+def _validate_order(order, edges, name):
+    if order is None:
+        return None
+    if not isinstance(order, torch.Tensor) or order.dtype != torch.int64:
+        raise TypeError(f"{name} order must be an int64 tensor")
+    if order.shape != (edges,):
+        raise ValueError(f"{name} order must have shape (n_edges,)")
+    if not order.is_contiguous():
+        raise ValueError(f"{name} order must be contiguous")
+    return order
+
+
+def _validate_segment_sum(src, dst, offsets, edge_scale, node_scale, order=None):
     for name, tensor in (("src", src), ("dst", dst), ("offsets", offsets)):
         if not isinstance(tensor, torch.Tensor):
             raise TypeError(f"segment sum {name} must be a tensor")
@@ -96,7 +108,10 @@ def _validate_segment_sum(src, dst, offsets, edge_scale, node_scale):
             raise TypeError("segment sum node_scale must be a float32 tensor")
         if node_scale.numel() != n_nodes:
             raise ValueError("segment sum node_scale must have one value per segment")
-    tensors = [src, dst, offsets] + [t for t in (edge_scale, node_scale) if t is not None]
+    _validate_order(order, int(src.shape[0]), "segment sum")
+    tensors = [src, dst, offsets, order] + [
+        t for t in (edge_scale, node_scale) if t is not None
+    ]
     if any(not tensor.is_contiguous() for tensor in tensors):
         raise ValueError("segment sum inputs must be contiguous")
     if len({tensor.device for tensor in tensors}) != 1:
@@ -104,7 +119,7 @@ def _validate_segment_sum(src, dst, offsets, edge_scale, node_scale):
     return n_nodes
 
 
-def _validate_segment_softmax(logit, env, offsets, null_logit):
+def _validate_segment_softmax(logit, env, offsets, null_logit, order=None):
     for name, tensor in (("logit", logit), ("env", env), ("offsets", offsets)):
         if not isinstance(tensor, torch.Tensor):
             raise TypeError(f"segment softmax {name} must be a tensor")
@@ -124,7 +139,8 @@ def _validate_segment_softmax(logit, env, offsets, null_logit):
             raise TypeError("segment softmax null_logit must be a float32 tensor")
         if null_logit.shape != (n_nodes, channels):
             raise ValueError("segment softmax null_logit must have shape (n_nodes, channels)")
-    tensors = [logit, env, offsets] + [t for t in (null_logit,) if t is not None]
+    _validate_order(order, int(logit.shape[0]), "segment softmax")
+    tensors = [logit, env, offsets, order] + [t for t in (null_logit,) if t is not None]
     if any(not tensor.is_contiguous() for tensor in tensors):
         raise ValueError("segment softmax inputs must be contiguous")
     if len({tensor.device for tensor in tensors}) != 1:
@@ -179,16 +195,18 @@ def _check_csr(dst: torch.Tensor, offsets: torch.Tensor, n_nodes: int, name: str
 
 class _SegmentSumFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, src, dst, offsets, edge_scale, node_scale):
+    def forward(ctx, src, dst, offsets, edge_scale, node_scale, order):
         extension = _extension("segment_sum_forward")
-        output = extension.segment_sum_forward(src, offsets, edge_scale, node_scale)
-        ctx.save_for_backward(src, dst, offsets, edge_scale, node_scale)
+        output = extension.segment_sum_forward(
+            src, offsets, edge_scale, node_scale, order
+        )
+        ctx.save_for_backward(src, dst, offsets, edge_scale, node_scale, order)
         ctx.needs_node_scale_grad = node_scale is not None and node_scale.requires_grad
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
-        src, dst, offsets, edge_scale, node_scale = ctx.saved_tensors
+        src, dst, offsets, edge_scale, node_scale, order = ctx.saved_tensors
         extension = _extension("segment_sum_backward")
         grad_src, grad_node_scale = extension.segment_sum_backward(
             grad_output.contiguous(),
@@ -198,43 +216,53 @@ class _SegmentSumFunction(torch.autograd.Function):
             edge_scale,
             node_scale,
             ctx.needs_node_scale_grad,
+            order,
         )
         if not ctx.needs_node_scale_grad:
-            return grad_src, None, None, None, None
-        return grad_src, None, None, None, grad_node_scale.reshape(node_scale.shape)
+            return grad_src, None, None, None, None, None
+        return (
+            grad_src,
+            None,
+            None,
+            None,
+            grad_node_scale.reshape(node_scale.shape),
+            None,
+        )
 
 
 class _SegmentSoftmaxFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, logit, env, offsets):
+    def forward(ctx, logit, env, offsets, order):
         extension = _extension("segment_softmax_forward")
-        alpha, _ = extension.segment_softmax_forward(logit, env, offsets, None)
-        ctx.save_for_backward(alpha, env, offsets)
+        alpha, _ = extension.segment_softmax_forward(
+            logit, env, offsets, None, order
+        )
+        ctx.save_for_backward(alpha, env, offsets, order)
         return alpha
 
     @staticmethod
     def backward(ctx, grad_alpha):
-        alpha, env, offsets = ctx.saved_tensors
+        alpha, env, offsets, order = ctx.saved_tensors
         extension = _extension("segment_softmax_backward")
         grad_logit, _, grad_env = extension.segment_softmax_backward(
-            alpha, grad_alpha.contiguous(), env, offsets, None, None
+            alpha, grad_alpha.contiguous(), env, offsets, None, None, order
         )
-        return grad_logit, grad_env, None
+        return grad_logit, grad_env, None, None
 
 
 class _SegmentSoftmaxNullFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, logit, env, offsets, null_logit):
+    def forward(ctx, logit, env, offsets, null_logit, order):
         extension = _extension("segment_softmax_forward")
         alpha, null_alpha = extension.segment_softmax_forward(
-            logit, env, offsets, null_logit
+            logit, env, offsets, null_logit, order
         )
-        ctx.save_for_backward(alpha, null_alpha, env, offsets)
+        ctx.save_for_backward(alpha, null_alpha, env, offsets, order)
         return alpha, null_alpha
 
     @staticmethod
     def backward(ctx, grad_alpha, grad_null_alpha):
-        alpha, null_alpha, env, offsets = ctx.saved_tensors
+        alpha, null_alpha, env, offsets, order = ctx.saved_tensors
         if grad_alpha is None:
             grad_alpha = torch.zeros_like(alpha)
         if grad_null_alpha is None:
@@ -247,11 +275,14 @@ class _SegmentSoftmaxNullFunction(torch.autograd.Function):
             offsets,
             null_alpha,
             grad_null_alpha.contiguous(),
+            order,
         )
-        return grad_logit, grad_env, None, grad_null_logit
+        return grad_logit, grad_env, None, grad_null_logit, None
 
 
-def segment_sum(src, dst, offsets, edge_scale=None, node_scale=None, *, check_grouping=None):
+def segment_sum(
+    src, dst, offsets, edge_scale=None, node_scale=None, *, order=None, check_grouping=None
+):
     """``out[n] = node_scale[n] * sum_{dst(e)=n} edge_scale[e] * src[e]``.
 
     ``src`` is contiguous float32 ``(n_edges, channels)``, ``dst`` int64
@@ -259,25 +290,25 @@ def segment_sum(src, dst, offsets, edge_scale=None, node_scale=None, *, check_gr
     Gradients are defined for ``src``, ``edge_scale`` (not yet implemented) and
     ``node_scale``, never for the indices.
     """
-    n_nodes = _validate_segment_sum(src, dst, offsets, edge_scale, node_scale)
+    n_nodes = _validate_segment_sum(src, dst, offsets, edge_scale, node_scale, order)
     if _should_check(check_grouping):
         _check_csr(dst, offsets, n_nodes, "segment sum")
-    require_dcu(src, dst, offsets, edge_scale, node_scale)
-    return _SegmentSumFunction.apply(src, dst, offsets, edge_scale, node_scale)
+    require_dcu(src, dst, offsets, edge_scale, node_scale, order)
+    return _SegmentSumFunction.apply(src, dst, offsets, edge_scale, node_scale, order)
 
 
-def segment_softmax(logit, env, offsets, null_logit=None, *, check_grouping=None):
+def segment_softmax(logit, env, offsets, null_logit=None, *, order=None, check_grouping=None):
     """Gated destination-segmented softmax over the incoming edges.
 
     Returns ``alpha`` with shape ``(n_edges, channels)``; when ``null_logit``
     is given also returns the per-channel null mass ``(n_nodes, channels)``.
     Edges with a non-positive envelope carry no mass.
     """
-    _validate_segment_softmax(logit, env, offsets, null_logit)
-    require_dcu(logit, env, offsets, null_logit)
+    _validate_segment_softmax(logit, env, offsets, null_logit, order)
+    require_dcu(logit, env, offsets, null_logit, order)
     if null_logit is None:
-        return _SegmentSoftmaxFunction.apply(logit, env, offsets)
-    return _SegmentSoftmaxNullFunction.apply(logit, env, offsets, null_logit)
+        return _SegmentSoftmaxFunction.apply(logit, env, offsets, order)
+    return _SegmentSoftmaxNullFunction.apply(logit, env, offsets, null_logit, order)
 
 
 def force_assembly(grad_edge, edge_vec, src, dst, dst_offsets, src_offsets=None, src_order=None):

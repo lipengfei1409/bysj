@@ -25,19 +25,22 @@ std::tuple<Tensor, Tensor, Tensor> so2_envelope_reduce_backward_hip(Tensor grad_
 
 Tensor segment_sum_forward_hip(Tensor src, Tensor offsets,
                                c10::optional<Tensor> edge_scale,
-                               c10::optional<Tensor> node_scale);
+                               c10::optional<Tensor> node_scale,
+                               c10::optional<Tensor> order);
 
 std::tuple<Tensor, Tensor> segment_sum_backward_hip(
     Tensor grad_out, Tensor src, Tensor dst, Tensor offsets,
     c10::optional<Tensor> edge_scale, c10::optional<Tensor> node_scale,
-    bool want_node_scale_grad);
+    bool want_node_scale_grad, c10::optional<Tensor> order);
 
 std::tuple<Tensor, Tensor> segment_softmax_forward_hip(
-    Tensor logit, Tensor env, Tensor offsets, c10::optional<Tensor> null_logit);
+    Tensor logit, Tensor env, Tensor offsets, c10::optional<Tensor> null_logit,
+    c10::optional<Tensor> order);
 
 std::tuple<Tensor, Tensor, Tensor> segment_softmax_backward_hip(
     Tensor alpha, Tensor grad_alpha, Tensor env, Tensor offsets,
-    c10::optional<Tensor> null_alpha, c10::optional<Tensor> grad_null_alpha);
+    c10::optional<Tensor> null_alpha, c10::optional<Tensor> grad_null_alpha,
+    c10::optional<Tensor> order);
 
 std::tuple<Tensor, Tensor> force_assembly_hip(Tensor grad_edge,
                                              Tensor edge_vec,
