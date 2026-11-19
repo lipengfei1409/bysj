@@ -26,4 +26,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("force_assembly", &force_assembly_hip, py::arg("grad_edge"),
         py::arg("edge_vec"), py::arg("dst_offsets"), py::arg("src_offsets"),
         py::arg("src_order"), py::arg("dst_order") = py::none());
+  m.def("slot_pack_scale", &slot_pack_scale_hip, py::arg("src"),
+        py::arg("slot"), py::arg("scale") = py::none());
+  m.def("slot_reduce", &slot_reduce_hip, py::arg("src"),
+        py::arg("weight") = py::none());
 }

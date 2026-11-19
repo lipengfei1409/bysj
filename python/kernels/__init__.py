@@ -2,6 +2,7 @@
 
 from .gie import gie_available, gie_zonal_scatter, zonal_scatter
 from .rmsnorm import rmsnorm, rmsnorm_available
+from .slot import slot_available, slot_pack_scale, slot_reduce
 from .segment import (
     force_assembly,
     group_by_source,
@@ -22,5 +23,8 @@ __all__ = [
     "segment_offsets",
     "segment_softmax",
     "segment_sum",
+    "slot_available",
+    "slot_pack_scale",
+    "slot_reduce",
     "zonal_scatter",
 ]

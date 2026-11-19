@@ -4,9 +4,9 @@ The optional HIP extension in this checkout builds standalone RMSNorm, GIE (`zon
 
 ## Scope
 
-- `python/kernels/`: native RMSNorm/GIE/fused-segment APIs with DCU extension checks.
+- `python/kernels/`: native RMSNorm/GIE/fused-segment/slot-axis APIs with DCU extension checks.
 - `python/reference/`: explicit PyTorch oracles; these are not imported as production fallbacks.
-- `csrc/rmsnorm.cpp`, `csrc/gie.cpp`, `csrc/segment_sum.cpp`, `csrc/segment_softmax.cpp` and `csrc/force_assembly.cpp`: native HIP operator sources included by the optional extension build.
+- `csrc/rmsnorm.cpp`, `csrc/gie.cpp`, `csrc/segment_sum.cpp`, `csrc/segment_softmax.cpp`, `csrc/force_assembly.cpp` and `csrc/slot_ops.cpp`: native HIP operator sources included by the optional extension build.
 - `tests/`: Python contracts, host-side helper contracts, and opt-in DTK/DCU accuracy tests.
 - `docs/kernel-model.html`: architecture overview for the native operators and the DeepMD adapter.
 - `docs/optimization-status.md`: 优化项状态表（每个优化项解决什么、方案、完成度、预期收益）。

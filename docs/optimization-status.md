@@ -36,13 +36,13 @@
 
 | # | 优化项 | 解决的问题 | 方案 | 状态 | 收益（估算） |
 | --- | --- | --- | --- | --- | --- |
-| C1 | SO(2) 前置流水合并 | `index_select`+`mul`+`copy_`+`cat` 共 4 趟全量 E-major，前向 75.7 ms | gather + 加权一次写进 GEMM 的 A 矩阵，`cat` 直接消失 | ⬜ 未做 | −45…−55 ms |
-| C2 | 注意力段内链 | 3 个 10 槽小 bmm + 轴向 `sum`（有效 56 GB/s）+ 加权，65.6 ms | 每段一 block，10 槽进寄存器，qk→门控→softmax→加权一次算完 | ⬜ 未做 | −40…−50 ms |
+| C1 | 槽打包 + 缩放（`slot_pack_scale`） | `index_select`+`mul`+`copy_`+`fill_` 共 4 趟全量 E-major，前向 75.7 ms | `out[e,r,c] = slot[r]<0 ? 0 : src[e,slot[r],c]·scale[e,r,c]`，一趟写完（保留行由负 slot 直接置零，省掉 `fill_`） | 🟡 算子 + 参考实现 + 测试完成（`csrc/slot_ops.cpp`），未接 DeepMD | 估算 −45…−55 ms（`cat` 那 22.3 ms 仍需 GEMM 支持双源，未含在内） |
+| C2′ | 10 槽加权归约（`slot_reduce`） | `sum [E,10,1,64]` 有效带宽 56 GB/s（约 10× 浪费），3 次 24.9 ms | `out[e,c] = Σ_r w[e,r]·src[e,r,c]`，一 block 一边，10 行留在寄存器 | 🟡 算子完成，未接 DeepMD | 估算 −20…−22 ms（按 630 GB/s 折算 3 次共约 2.2 ms） |
 | C3 | GEMM + 残差 epilogue | 两个 E-major GEMM 仅 8.1 TFLOP/s（roofline 13.7），残差 `add [E,10,64]` 又是一趟 | DMK 分块 GEMM，epilogue 吸收残差 | ⬜ 未做（属 megakernel 线） | −30…−35 ms |
 | C4 | 小轴归约重写 | `sum [E,10,1,64]` 有效带宽 56 GB/s（约 10× 浪费），24.9 ms | 小轴映射到 lane，`__shfl` 归约，或并进 C2 | ⬜ 未做 | −20…−22 ms |
 | C5 | readout 瘦 GEMM | `bmm [1,152,48]×[1,48,576000]`，K=48 算力空转，17.3 ms | `float4` 向量化 + 融合 scale/add epilogue | ⬜ 未做 | −6…−10 ms |
 | C6 | 边流逐元素链融合 | `add_/mul/copy_/fill_` 587 ms 池，同一条 3–4 核链重复 9 次 | 项表驱动的多输入 FMAD，k 趟合 1 趟 | ⬜ 仅设计 | −180…−220 ms |
-| C7 | SO(2) 消息链全融合 | rotate → radial → GEMM → rotate-back 的中间量落 HBM | 旋转保持寄存器，走 `_flash_atten_fn` 接缝 | ⬜ 仅设计 | −60…−80 ms |
+| C7 | SO(2) 消息链全融合（含 10 槽小矩阵乘） | rotate → radial → GEMM → rotate-back 的中间量落 HBM；`bmm [E,10,10]`/`[E,16,10]`/`[E,10,16]`（31.5 ms）也在这里 | 旋转保持寄存器，走 `_flash_atten_fn` 接缝；10 槽按段进寄存器 | ⬜ 仅设计 | −60…−80 ms（含 10 槽 bmm 的 −25…−30） |
 
 ## 4. 工程与质量
 
@@ -59,7 +59,8 @@
 | --- | --- | --- | --- |
 | 已实测 | B2 `softmax` 接缝 | **≈0**（−150 launch，时间不变） | ❌ 已证明在本 checkpoint 无效 |
 | 待实测 | B3 `force` + B1 `aggregate` | **−75…−110 ms**（1.08–1.12×） | 🟡 代码已接，等真机 |
-| 未实现 | C1 + C2 + C4 | −105…−127 ms | ⬜ 需新 kernel |
+| 待实测 | C1 `slot_pack_scale` + C2′ `slot_reduce` | **−65…−77 ms** | 🟡 算子已落地，未接线、未测 |
+| 未实现 | C4 小轴归约（若与 C2′ 合并则只剩一半） | −20…−22 ms | ⬜ 需新 kernel |
 | 未实现 | C3 + C5 | −36…−45 ms | ⬜ 需 DMK GEMM |
 | 未实现 | C6 + C7（全图池子） | −240…−300 ms | ⬜ 设计阶段 |
 
@@ -98,6 +99,7 @@ python3 tests/deepmd/profile/compare_fused_runs.py \
 | 日期 | 变更 |
 | --- | --- |
 | 2026-11-19 | 建表。A1–A4、B2（算子 + 接缝）、D1、D2 标记完成；B2 端到端实测 ≈0 并标注为"本 checkpoint 无效"；B1/B3/B4 标 🟡 待真机；C1–C7 为未实现或设计阶段 |
+| 2026-11-19 | C1 落地为 `slot_pack_scale`、C2 修正归因后拆为 C2′（`slot_reduce`，已实现）+ 10 槽小矩阵乘（并入 C7）。原 C2 把 `bmm [E,10,10]` 归给 attention 是错的：它来自 `so2.py:848` 的 `einsum("eoic,eic->eoc")`，属 SO(2) mixing；attention 的 logits 是 `(q_edge*k_edge).sum(-1)`，本来就是 elementwise |
 
 ## 8. 边界说明
 
@@ -106,3 +108,6 @@ python3 tests/deepmd/profile/compare_fused_runs.py \
 2. **B2 的 ≈0 不是 bug**：该 checkpoint `n_atten_head=1`，被替换的是 `[3000,C]` 量级小张量，成本由 launch 主导；
    这条接缝的价值要在 attention 宽度更大的模型上才体现。
 3. **C6/C7 的收益是"池子"不是"承诺"**：按 trace 元素池子折算，落地后要减去融合核的新成本，因此一律给区间。
+4. **C1/C2′ 尚未接线**：两个算子在 `csrc/slot_ops.cpp`，参考实现与主机测试齐备，但没有像 B1–B3 那样挂到 DeepMD 的接缝上；
+   接线需要先确认 `so2_message` 里 3→9→10 的 slot 映射与 scale 来源（`radial_feat` 的哪一维），否则宁可先不接。
+   算子级延迟用 `DPA4_RUN_SLOT_LATENCY=1` 测，跑的是真实尺寸（181838 边 × 10 行 × 64 通道）。

@@ -44,3 +44,9 @@ std::tuple<Tensor, Tensor> force_assembly_hip(Tensor grad_edge,
                                              Tensor src_offsets,
                                              Tensor src_order,
                                              c10::optional<Tensor> dst_order);
+
+// --- Slot-axis operators (see docs/optimization-status.md, C1/C2) ----------
+
+Tensor slot_pack_scale_hip(Tensor src, Tensor slot, c10::optional<Tensor> scale);
+
+Tensor slot_reduce_hip(Tensor src, c10::optional<Tensor> weight);

@@ -60,6 +60,7 @@ class GIEBuildConfigurationTests(unittest.TestCase):
                 "csrc/segment_sum.cpp",
                 "csrc/segment_softmax.cpp",
                 "csrc/force_assembly.cpp",
+                "csrc/slot_ops.cpp",
             ],
         )
         self.assertEqual(extension_args["define_macros"], [])
