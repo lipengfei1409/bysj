@@ -66,10 +66,13 @@ class FusedStats:
     force_fallbacks: int = 0
     aggregate_hits: int = 0
     aggregate_fallbacks: int = 0
+    pack_hits: int = 0
+    pack_fallbacks: int = 0
     bound_softmax: bool = False
     bound_envelope: bool = False
     bound_force: bool = False
     bound_aggregate: bool = False
+    bound_pack: bool = False
     blocks: int = 0
     last_error: str | None = None
 
@@ -83,10 +86,13 @@ class FusedStats:
             "force_fallbacks": self.force_fallbacks,
             "aggregate_hits": self.aggregate_hits,
             "aggregate_fallbacks": self.aggregate_fallbacks,
+            "pack_hits": self.pack_hits,
+            "pack_fallbacks": self.pack_fallbacks,
             "bound_softmax": self.bound_softmax,
             "bound_envelope": self.bound_envelope,
             "bound_force": self.bound_force,
             "bound_aggregate": self.bound_aggregate,
+            "bound_pack": self.bound_pack,
             "blocks": self.blocks,
             "last_error": self.last_error,
         }
@@ -99,6 +105,15 @@ def _usable_tensor(value: Any, *, dtype: torch.dtype = torch.float32) -> bool:
         and value.dtype == dtype
         and value.is_contiguous()
     )
+
+
+def _load_slot_ops() -> Any:
+    """Return the slot-axis operator module, or ``None`` when it cannot run here."""
+    try:
+        from kernels import slot as slot_ops
+    except ImportError:
+        return None
+    return slot_ops if hasattr(slot_ops, "slot_pack_scale") else None
 
 
 def _load_ops() -> Any:
@@ -142,6 +157,7 @@ class _Session:
     stats: FusedStats
     reference_softmax: Any
     reference_force: Any = None
+    slot_ops: Any = None
     csr: _CsrView = field(default_factory=_CsrView)
     warned: bool = False
 
@@ -253,6 +269,68 @@ class _Session:
             return original(x, edge_cache, radial_feat)
         stats.envelope_hits += 1
         return out.reshape(x.shape)
+
+    # -- gated activation seam (slot pack) -----------------------------------
+    def gated_activation(self, block, x, gate, original):
+        """Rebuild ``GatedActivation.forward`` for the ``fndc`` layout.
+
+        The stock body expands the per-gate scalars with
+        ``index_select(dim=2, expand_index)``, multiplies by the value rows and
+        copies the product into a fresh ``out``. ``slot_pack_scale`` does the
+        gather and the multiply in one pass; the copy into ``out`` stays because
+        row zero carries the separately computed scalar activation.
+        """
+        stats = self.stats
+        expand_index = getattr(block, "expand_index", None)
+        if (
+            bool(getattr(block, "training", False))
+            or getattr(block, "layout", None) != "fndc"
+            or int(getattr(block, "lmax", 0)) < 1
+            or not _usable_tensor(x)
+            or x.ndim != 4
+            or not isinstance(expand_index, torch.Tensor)
+            or expand_index.dtype != torch.int64
+            or expand_index.numel() == 0
+            or not callable(getattr(block, "gate_linear", None))
+            or not callable(getattr(block, "scalar_act", None))
+            or int(x.shape[2]) != int(expand_index.numel()) + 1
+            or (gate is not None and not _usable_tensor(gate))
+        ):
+            stats.pack_fallbacks += 1
+            return original(x, gate)
+        n_focus, n_edge, rows, channels = x.shape
+        try:
+            degree_axis = 2
+            source = gate if gate is not None else x
+            gate_scalar_source = source.select(dim=degree_axis, index=0)
+            if gate is not None:
+                x0 = x.narrow(degree_axis, 0, 1) * block.scalar_act(
+                    gate.narrow(degree_axis, 0, 1)
+                )
+            else:
+                x0 = block.scalar_act(x.narrow(degree_axis, 0, 1))
+            input_dtype = gate_scalar_source.dtype
+            gate_src = gate_scalar_source.to(dtype=block.dtype)
+            gate_logits = block.gate_linear(gate_src.transpose(0, 1)).transpose(0, 1)
+            gating_scalars = torch.sigmoid(gate_logits).to(dtype=input_dtype)
+            gating_scalars = gating_scalars.reshape(
+                n_focus, gate_scalar_source.shape[1], int(block.lmax), channels
+            )
+            value_rows = x.narrow(degree_axis, 1, rows - 1)
+            packed = self.slot_ops.slot_pack_scale(
+                gating_scalars.reshape(n_focus * n_edge, int(block.lmax), channels),
+                expand_index,
+                value_rows.reshape(n_focus * n_edge, rows - 1, channels),
+            ).reshape(n_focus, n_edge, rows - 1, channels)
+            out = x.new_empty(x.shape)
+            out.narrow(degree_axis, 0, 1).copy_(x0)
+            out.narrow(degree_axis, 1, rows - 1).copy_(packed)
+        except Exception as error:  # noqa: BLE001 - fall back, never break inference
+            self._record(error)
+            stats.pack_fallbacks += 1
+            return original(x, gate)
+        stats.pack_hits += 1
+        return out
 
     # -- dense attention aggregation seam ------------------------------------
     _BLOCK_ATTRIBUTES = (
@@ -544,7 +622,7 @@ def describe_module(module: Any, *, max_depth: int = 2, max_rows: int = 40) -> l
 
 def deepmd_patch(module: Any, *, ops: Any = None, softmax: bool = True,
                  envelope: bool = True, force: bool = True,
-                 aggregate: bool = True,
+                 aggregate: bool = True, pack: bool = True, slot_ops: Any = None,
                  blocks: Iterable[Any] | None = None,
                  namespaces: Iterable[Any] | None = None,
                  force_targets: Any = None,
@@ -595,7 +673,12 @@ def deepmd_patch(module: Any, *, ops: Any = None, softmax: bool = True,
         if not namespace_list:
             raise ValueError("deepmd_patch requires one module namespace to patch")
         reference = namespace_list[0].segment_envelope_gated_softmax
-    _SESSION = _Session(ops=ops, stats=stats, reference_softmax=reference)
+    _SESSION = _Session(
+        ops=ops,
+        stats=stats,
+        reference_softmax=reference,
+        slot_ops=slot_ops if slot_ops is not None else _load_slot_ops(),
+    )
 
     if softmax:
         def bound_softmax(logits, edge_env, dst, n_nodes, z_bias_raw, eps, src_weight=None):
@@ -690,6 +773,36 @@ def deepmd_patch(module: Any, *, ops: Any = None, softmax: bool = True,
                         flush=True,
                     )
 
+    if pack and _SESSION.slot_ops is not None:
+        activations = [
+            module
+            for module in (root.modules() if root is not None else [])
+            if callable(getattr(module, "expand_index", None)) or
+            isinstance(getattr(module, "expand_index", None), torch.Tensor)
+        ]
+        patched = 0
+        for activation in activations:
+            original_forward = getattr(activation, "forward", None)
+            if not callable(original_forward):
+                continue
+            _SAVED[f"activation:{id(activation)}"] = (activation, original_forward)
+
+            def patched_forward(self, x, gate=None, _original=original_forward):
+                session = _SESSION
+                if session is None:
+                    return _original(x, gate)
+                return session.gated_activation(self, x, gate, _original)
+
+            activation.forward = MethodType(patched_forward, activation)
+            patched += 1
+        stats.bound_pack = bool(patched)
+        if verbose and patched:
+            print(
+                f"[deepmd_patch] replace GatedActivation.forward on {patched} "
+                "module(s) -> slot_pack_scale",
+                flush=True,
+            )
+
     if aggregate:
         patched = 0
         for block in module_list:
@@ -722,7 +835,8 @@ def deepmd_patch(module: Any, *, ops: Any = None, softmax: bool = True,
         print(
             f"[deepmd_patch] installed: softmax={stats.bound_softmax} "
             f"envelope={stats.bound_envelope} force={stats.bound_force} "
-            f"aggregate={stats.bound_aggregate} blocks={stats.blocks}",
+            f"aggregate={stats.bound_aggregate} pack={stats.bound_pack} "
+            f"blocks={stats.blocks}",
             flush=True,
         )
     return stats
@@ -740,6 +854,9 @@ def uninstall(module: Any = None) -> None:
         elif key.startswith("block-dense:"):
             if "forward_attention_dense" in getattr(owner, "__dict__", {}):
                 del owner.__dict__["forward_attention_dense"]
+        elif key.startswith("activation:"):
+            if "forward" in getattr(owner, "__dict__", {}):
+                del owner.__dict__["forward"]
         else:
             setattr(owner, key.rsplit(".", 1)[-1], original)
     _SAVED.clear()

@@ -317,6 +317,117 @@ class FusedDispatchTests(unittest.TestCase):
         self.assertEqual(fused_deepmd.status(None), {})
 
 
+class FakeSlotOps:
+    """Mirror kernels.slot, computed by the torch reference."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def slot_pack_scale(self, src, slot, scale=None):
+        from reference.slot import slot_pack_scale_reference
+
+        self.calls.append(tuple(src.shape))
+        return slot_pack_scale_reference(src, slot, scale)
+
+
+class FakeGatedActivation:
+    """``GatedActivation`` in the ``fndc`` layout, with the stock forward body."""
+
+    layout = "fndc"
+    lmax = 2
+    channels = 2
+    n_focus = 1
+    dtype = torch.float32
+    training = False
+
+    def __init__(self, seed=0):
+        generator = torch.Generator().manual_seed(seed)
+        self.expand_index = torch.tensor([0, 1, 1, 0, 1, 1, 0, 1, 1], dtype=torch.int64)
+        self._linear = torch.nn.Linear(self.channels, self.lmax * self.channels, bias=False)
+        with torch.no_grad():
+            self._linear.weight.copy_(torch.randn_like(self._linear.weight))
+        self.scalar_act = lambda tensor: torch.nn.functional.silu(tensor)
+
+    def gate_linear(self, tensor):
+        return self._linear(tensor)
+
+    def forward(self, x, gate=None):
+        degree_axis = 2
+        source = gate if gate is not None else x
+        gate_scalar_source = source.select(dim=degree_axis, index=0)
+        if gate is not None:
+            x0 = x.narrow(degree_axis, 0, 1) * self.scalar_act(gate.narrow(degree_axis, 0, 1))
+        else:
+            x0 = self.scalar_act(x.narrow(degree_axis, 0, 1))
+        gate_src = gate_scalar_source.to(dtype=self.dtype)
+        gate_logits = self.gate_linear(gate_src.transpose(0, 1)).transpose(0, 1)
+        gating = torch.sigmoid(gate_logits).to(dtype=gate_scalar_source.dtype)
+        gating = gating.reshape(
+            x.shape[0], gate_scalar_source.shape[1], self.lmax, self.channels
+        )
+        gates = gating.index_select(dim=2, index=self.expand_index)
+        out = x.new_empty(x.shape)
+        out.narrow(degree_axis, 0, 1).copy_(x0)
+        out.narrow(degree_axis, 1, x.shape[degree_axis] - 1).copy_(
+            x.narrow(degree_axis, 1, x.shape[degree_axis] - 1) * gates
+        )
+        return out
+
+
+class GatedActivationSeamTests(unittest.TestCase):
+    """The gate expansion plus the value multiply is one slot_pack_scale."""
+
+    def setUp(self):
+        fused_deepmd._ACCEPT_ANY_DEVICE = True
+        self.addCleanup(fused_deepmd.uninstall)
+        self.addCleanup(setattr, fused_deepmd, "_ACCEPT_ANY_DEVICE", False)
+
+    @staticmethod
+    def _model(activation):
+        return SimpleNamespace(modules=lambda: [activation])
+
+    def test_seam_matches_the_stock_forward(self):
+        activation = FakeGatedActivation()
+        slot_ops = FakeSlotOps()
+        stats = fused_deepmd.deepmd_patch(
+            self._model(activation), ops=FakeOps(), softmax=False, envelope=False,
+            force=False, aggregate=False, pack=True, slot_ops=slot_ops, verbose=False,
+        )
+        self.assertTrue(stats.bound_pack)
+        x = torch.randn(1, 5, 10, 2)
+        actual = activation.forward(x)
+        fused_deepmd.uninstall()
+        expected = activation.forward(x)
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+        self.assertEqual(stats.pack_hits, 1)
+        self.assertEqual(stats.pack_fallbacks, 0)
+        self.assertEqual(len(slot_ops.calls), 1)
+
+    def test_seam_falls_back_when_the_layout_is_not_fndc(self):
+        activation = FakeGatedActivation()
+        activation.layout = "ndfc"
+        stats = fused_deepmd.deepmd_patch(
+            self._model(activation), ops=FakeOps(), softmax=False, envelope=False,
+            force=False, aggregate=False, pack=True, slot_ops=FakeSlotOps(), verbose=False,
+        )
+        x = torch.randn(1, 5, 10, 2)
+        result = activation.forward(x)
+        self.assertEqual(tuple(result.shape), (1, 5, 10, 2))
+        self.assertEqual(stats.pack_hits, 0)
+        self.assertEqual(stats.pack_fallbacks, 1)
+
+    def test_uninstall_restores_the_stock_forward(self):
+        activation = FakeGatedActivation()
+        fused_deepmd.deepmd_patch(
+            self._model(activation), ops=FakeOps(), softmax=False, envelope=False,
+            force=False, aggregate=False, pack=True, slot_ops=FakeSlotOps(), verbose=False,
+        )
+        self.assertIn("forward", activation.__dict__)
+        fused_deepmd.uninstall()
+        self.assertNotIn("forward", activation.__dict__)
+        self.assertIs(activation.forward.__func__, FakeGatedActivation.forward)
+
+
 class AggregationSeamTests(unittest.TestCase):
     """The dense attention reduction is one segment_sum over the edge weights."""
 
@@ -604,7 +715,13 @@ class FusedSwitchTests(unittest.TestCase):
     def test_true_enables_every_seam(self):
         self.assertEqual(
             _normalize_fused(True),
-            {"softmax": True, "envelope": True, "force": True, "aggregate": True},
+            {
+                "softmax": True,
+                "envelope": True,
+                "force": True,
+                "aggregate": True,
+                "pack": True,
+            },
         )
 
     def test_names_and_sequences_select_seams(self):
@@ -613,7 +730,13 @@ class FusedSwitchTests(unittest.TestCase):
         self.assertEqual(_normalize_fused(("force",)), {"force": True})
         self.assertEqual(
             _normalize_fused({"softmax": True, "envelope": False}),
-            {"softmax": True, "envelope": False, "force": False, "aggregate": False},
+            {
+                "softmax": True,
+                "envelope": False,
+                "force": False,
+                "aggregate": False,
+                "pack": False,
+            },
         )
 
     def test_unknown_seam_is_rejected(self):

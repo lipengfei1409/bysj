@@ -91,12 +91,23 @@ class DPA4ModelFacadeTests(unittest.TestCase):
         ):
             model = DPA4Model("water.pt", fused=True)
         patch.assert_called_once_with(
-            fake, softmax=True, envelope=True, force=True, aggregate=True
+            fake,
+            softmax=True,
+            envelope=True,
+            force=True,
+            aggregate=True,
+            pack=True,
         )
         self.assertEqual(model.fused_ops, report)
         self.assertEqual(
             model.fused_seams,
-            {"softmax": True, "envelope": True, "force": True, "aggregate": True},
+            {
+                "softmax": True,
+                "envelope": True,
+                "force": True,
+                "aggregate": True,
+                "pack": True,
+            },
         )
 
     def test_no_fused_switch_leaves_deepmd_untouched(self):
