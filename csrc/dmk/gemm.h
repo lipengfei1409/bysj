@@ -81,6 +81,19 @@ public:
     static constexpr unsigned wave_size = static_cast<unsigned>(kWaveSize);
     static constexpr size_t stage_count = kStageCount;
 
+    // 16 B staging chunks: four floats or eight halves/bf16 values.
+    static constexpr size_t kVector = 16 / sizeof(T);
+    static constexpr size_t kAVectorsPerRow =
+        static_cast<size_t>(tile_k) / kVector;
+    static constexpr size_t kBVectorsPerRow =
+        static_cast<size_t>(tile_n) / kVector;
+    static constexpr size_t kCVectorsPerRow = static_cast<size_t>(tile_n) / 4;
+
+    static_assert(static_cast<size_t>(tile_k) % kVector == 0,
+                  "the K tile must be a whole number of 16 B chunks");
+    static_assert(static_cast<size_t>(tile_n) % kVector == 0,
+                  "the N tile must be a whole number of 16 B chunks");
+
     using AFragment = ::du::dumma::DUFragment<::du::dumma::matrix_a,
                                                tile_m, tile_n, tile_k, T,
                                                ::du::dumma::row_major>;
@@ -144,27 +157,96 @@ public:
         batch_consumed_ = 0;
         fragments_ready_ = false;
         const size_t lane = threadIdx.x;
+
+        // A 16xK tile: four floats or eight halves per 16 B chunk. The fast
+        // path needs contiguous columns, 16 B aligned rows and a tile that is
+        // fully in bounds; a partial tile falls back to the masked scalar loop.
+        const bool a_vectors =
+            params_.a.layout.strides[1] == 1 &&
+            params_.a.layout.strides[0] % kVector == 0 &&
+            copy::aligned<float4>(params_.a.data);
+        const bool b_vectors =
+            params_.b.layout.strides[1] == 1 &&
+            params_.b.layout.strides[0] % kVector == 0 &&
+            copy::aligned<float4>(params_.b.data);
+
         for (size_t stage = 0; stage < batch_count_; ++stage) {
             const size_t k_start = batch_start_ + stage * tile_k;
-            size_t row, col;
-            tile_indices(lane, tile_m, tile_k, params_.a.layout, row, col);
-            const size_t a_row = row_start_ + row;
-            const size_t a_col = k_start + col;
-            shared_.a_tile[stage][row * tile_k + col] =
-                a_row < params_.a.shape.dims[0] && a_col < k
-                    ? params_.a.data[a_row * params_.a.layout.strides[0] +
-                                     a_col * params_.a.layout.strides[1]]
-                    : dtype::from_float<T>(0.0f);
+            const size_t a_cols_left =
+                k_start < k ? k - k_start : 0;
+            const size_t b_rows_left =
+                k_start < params_.b.shape.dims[0]
+                    ? params_.b.shape.dims[0] - k_start
+                    : 0;
+            const bool a_full =
+                row_start_ + tile_m <= params_.a.shape.dims[0] &&
+                a_cols_left >= static_cast<size_t>(tile_k);
+            const bool b_full =
+                col_start_ + tile_n <= params_.b.shape.dims[1] &&
+                b_rows_left >= static_cast<size_t>(tile_k);
 
-            tile_indices(lane, tile_k, tile_n, params_.b.layout, row, col);
-            const size_t b_row = k_start + row;
-            const size_t b_col = col_start_ + col;
-            shared_.b_tile[stage][row * tile_n + col] =
-                b_row < params_.b.shape.dims[0] &&
-                b_col < params_.b.shape.dims[1]
-                    ? params_.b.data[b_row * params_.b.layout.strides[0] +
-                                     b_col * params_.b.layout.strides[1]]
-                    : dtype::from_float<T>(0.0f);
+            if (a_vectors && a_full) {
+                const T* source =
+                    params_.a.data +
+                    row_start_ * params_.a.layout.strides[0] + k_start;
+                const size_t stride = params_.a.layout.strides[0];
+                const size_t total = tile_m * kAVectorsPerRow;
+                for (size_t vector = lane; vector < total;
+                     vector += wave_size) {
+                    const size_t row = vector / kAVectorsPerRow;
+                    const size_t col = (vector % kAVectorsPerRow) * kVector;
+                    copy::store_vec<float4>(
+                        shared_.a_tile[stage] + row * tile_k + col,
+                        copy::load_vec<float4>(source + row * stride + col));
+                }
+            } else {
+                for (size_t index = lane; index < tile_m * tile_k;
+                     index += wave_size) {
+                    size_t row, col;
+                    tile_indices(index, tile_m, tile_k, params_.a.layout, row,
+                                 col);
+                    const size_t a_row = row_start_ + row;
+                    const size_t a_col = k_start + col;
+                    shared_.a_tile[stage][row * tile_k + col] =
+                        a_row < params_.a.shape.dims[0] && a_col < k
+                            ? params_.a.data[
+                                  a_row * params_.a.layout.strides[0] +
+                                  a_col * params_.a.layout.strides[1]]
+                            : dtype::from_float<T>(0.0f);
+                }
+            }
+
+            if (b_vectors && b_full) {
+                const T* source =
+                    params_.b.data +
+                    k_start * params_.b.layout.strides[0] + col_start_;
+                const size_t stride = params_.b.layout.strides[0];
+                const size_t total = tile_k * kBVectorsPerRow;
+                for (size_t vector = lane; vector < total;
+                     vector += wave_size) {
+                    const size_t row = vector / kBVectorsPerRow;
+                    const size_t col = (vector % kBVectorsPerRow) * kVector;
+                    copy::store_vec<float4>(
+                        shared_.b_tile[stage] + row * tile_n + col,
+                        copy::load_vec<float4>(source + row * stride + col));
+                }
+            } else {
+                for (size_t index = lane; index < tile_k * tile_n;
+                     index += wave_size) {
+                    size_t row, col;
+                    tile_indices(index, tile_k, tile_n, params_.b.layout, row,
+                                 col);
+                    const size_t b_row = k_start + row;
+                    const size_t b_col = col_start_ + col;
+                    shared_.b_tile[stage][row * tile_n + col] =
+                        b_row < params_.b.shape.dims[0] &&
+                        b_col < params_.b.shape.dims[1]
+                            ? params_.b.data[
+                                  b_row * params_.b.layout.strides[0] +
+                                  b_col * params_.b.layout.strides[1]]
+                            : dtype::from_float<T>(0.0f);
+                }
+            }
         }
         __syncthreads();
     }
@@ -210,6 +292,33 @@ public:
                             dumma::native::mem_row_major);
         __syncthreads();
         const size_t lane = threadIdx.x;
+
+        // The 256-element epilogue tile is exactly 64 float4 chunks, one per
+        // lane, when C is contiguous and the tile is in bounds.
+        const bool c_full =
+            row_start_ + tile_m <= params_.c.shape.dims[0] &&
+            col_start_ + tile_n <= params_.c.shape.dims[1];
+        const bool c_vectors =
+            params_.c.layout.strides[1] == 1 &&
+            params_.c.layout.strides[0] % 4 == 0 &&
+            copy::aligned<float4>(params_.c.data);
+        if (c_vectors && c_full) {
+            float* destination =
+                params_.c.data +
+                row_start_ * params_.c.layout.strides[0] + col_start_;
+            const size_t stride = params_.c.layout.strides[0];
+            const size_t total = tile_m * kCVectorsPerRow;
+            for (size_t vector = lane; vector < total; vector += wave_size) {
+                const size_t row = vector / kCVectorsPerRow;
+                const size_t col = (vector % kCVectorsPerRow) * 4;
+                copy::store_vec<float4>(
+                    destination + row * stride + col,
+                    copy::load_vec<float4>(shared_.output_tile +
+                                           row * tile_n + col));
+            }
+            return;
+        }
+
         for (size_t index = lane; index < tile_m * tile_n; index += wave_size) {
             size_t row, col;
             tile_indices(index, tile_m, tile_n, params_.c.layout, row, col);

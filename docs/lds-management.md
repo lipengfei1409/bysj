@@ -453,7 +453,7 @@ megakernel 之外还有一条独立路径，先把算子本身跑对，再考虑
 
 | 算子 | 入口 | 说明 |
 | --- | --- | --- |
-| GEMM `C = A*B` | `dmk::gemm::run_gemm_wave<T, K>` | 一条 wave 算一个 16×16 输出 tile，K 方向 3 个 stage 预取 |
+| GEMM `C = A*B` | `dmk::gemm::run_gemm_wave<T, K>` | 一条 wave 算一个 16×16 输出 tile，K 方向 3 个 stage 预取；A/B 装载和 C epilogue 都是 16 B 向量，tile 越界或非连续时退回带边界检查的标量循环 |
 | attention | `dmk::attention::run_attention<T>` | 一条 wave 算一行 query，online softmax |
 
 dtype 与 MMA 尺寸按 DUMMA 手册表 3.1 用模板参数表达（累加器固定 float）：
@@ -477,11 +477,17 @@ Q tile 常驻 LDS；K/V 按 16 行 key tile（`kKeyTile`）搬进 LDS，被这 1
 输出 tile 每个 key tile 只按 `exp(m_old - m_new)` 缩放一次，最后除 `l` 写回。
 分数矩阵 M×N 从不落 HBM，K/V 的 HBM 流量是每 query tile 一遍。
 
-LDS 预算（D=128）：float 约 34 KiB（`AttentionSharedT<float>` = 35,008 B），
-fp16/bf16 约 22 KiB；一个 block 只有一条 wave（64 线程），D=128 时再放一条 wave
-就超预算了。当前 QK^T 和 P*V 还是标量 MAC 循环；tile 宽度都是 16，正好是
-DUMMA m16n16 的形状，换成 fragment 需要先在硬件上确认「按行缩放累加器」的做法。
-没有 causal mask 和多 head/批次维度。
+访存：HBM 侧走 16 B 向量（lane i 取一行里的第 i 个 chunk，一条 wave 一次盖
+1 KiB 连续地址）；标量回退仍按最小 stride 轴排 lane，所以列主序的 K/V 也是合并
+的。LDS tile 每行补一个 16 B chunk（`kElementStride` = 132 floats / 136 halves），
+行起始保持 16 B 对齐给向量拷贝用，同时相邻行错开 4 个 bank（132 words % 32 = 4、
+68 words % 32 = 4），消掉 S tile 列读和行归约的 bank 冲突；`s_tile`/`p_tile`
+再补 1 列（17）避免行归约同 bank。
+
+LDS 预算（D=128）：float 36,160 B，fp16/bf16 约 23 KiB；一个 block 只有一条
+wave（64 线程），D=128 时再放一条 wave 就超预算了。当前 QK^T 和 P*V 还是标量
+MAC 循环；tile 宽度都是 16，正好是 DUMMA m16n16 的形状，换成 fragment 需要先在
+硬件上确认「按行缩放累加器」的做法。没有 causal mask 和多 head/批次维度。
 
 两者都不进 `mk_internal`，各自 hipcc 直编、各自启动：
 
