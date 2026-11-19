@@ -2,8 +2,10 @@
 // reference in double precision, and no megakernel anywhere in the path.
 //
 // The operator is dmk::attention::run_attention, templated on the element type
-// (float, __half, __hip_bfloat16); the softmax arithmetic stays in float and
-// the output follows the input dtype.
+// (float, __half, __hip_bfloat16). It runs the FlashAttention block structure:
+// 16 query rows per block, 16-key tiles through LDS, online softmax with one
+// rescale per key tile; the softmax arithmetic stays in float and the output
+// follows the input dtype.
 //
 // Build/run through: python tests/csrc/run_dmk_ops_test.py --op attention
 #include "attention.h"
@@ -123,17 +125,20 @@ std::vector<double> reference_attention(const std::vector<T>& q,
 
 __global__ void attention_kernel_f32(
     dmk::attention::AttentionParamsT<float> params) {
-    dmk::attention::run_attention(params);
+    __shared__ dmk::attention::AttentionSharedT<float> shared;
+    dmk::attention::run_attention(params, shared);
 }
 
 __global__ void attention_kernel_f16(
     dmk::attention::AttentionParamsT<__half> params) {
-    dmk::attention::run_attention(params);
+    __shared__ dmk::attention::AttentionSharedT<__half> shared;
+    dmk::attention::run_attention(params, shared);
 }
 
 __global__ void attention_kernel_bf16(
     dmk::attention::AttentionParamsT<__hip_bfloat16> params) {
-    dmk::attention::run_attention(params);
+    __shared__ dmk::attention::AttentionSharedT<__hip_bfloat16> shared;
+    dmk::attention::run_attention(params, shared);
 }
 
 template <typename T>
@@ -231,16 +236,18 @@ void run_case(const char* name, size_t rows, size_t keys, size_t dim,
 
 int main() {
     std::printf("attention operator (standalone)\n");
-    run_case<float>("dense 8x64x64", 8, 64, 64, false, 3e-4);
-    run_case<float>("dense 3x37x32", 3, 37, 32, false, 3e-4);
+    run_case<float>("one query tile 16x64x64", 16, 64, 64, false, 3e-4);
+    run_case<float>("partial rows 3x37x32", 3, 37, 32, false, 3e-4);
     run_case<float>("single row and key", 1, 1, 128, false, 3e-4);
+    run_case<float>("cross-tile 17x129x96", 17, 129, 96, false, 3e-4);
     run_case<float>("odd shapes 5x129x17", 5, 129, 17, false, 3e-4);
     run_case<float>("head dim 1", 2, 9, 1, false, 3e-4);
     run_case<float>("transposed K/V", 4, 50, 96, true, 3e-4);
+    run_case<float>("long keys 16x512x64", 16, 512, 64, false, 3e-4);
 
-    run_case<__half>("dense 8x64x64 f16", 8, 64, 64, false, 8e-3);
+    run_case<__half>("dense 16x64x64 f16", 16, 64, 64, false, 8e-3);
     run_case<__half>("transposed K/V f16", 4, 50, 96, true, 8e-3);
-    run_case<__hip_bfloat16>("dense 8x64x64 bf16", 8, 64, 64, false, 3e-2);
+    run_case<__hip_bfloat16>("dense 16x64x64 bf16", 16, 64, 64, false, 3e-2);
     run_case<__hip_bfloat16>("transposed K/V bf16", 4, 50, 96, true, 3e-2);
 
     std::printf("attention checks passed\n");

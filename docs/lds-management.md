@@ -470,11 +470,18 @@ dtype 与 MMA 尺寸按 DUMMA 手册表 3.1 用模板参数表达（累加器固
 按 `--offload-arch` 决定是否定义 `DMK_MMA_F32K8` / `DMK_MMA_F16`。attention 的
 Q/K/V/O 同 dtype（float / `__half` / `__hip_bfloat16`），内部统一转 float 计算。
 
-attention 的约定：Q[M,D]、K[N,D]、V[N,D]、O[M,D]，四者都可以是 strided view；
-D ≤ `kMaxHeadDim = 128`，每个 lane 持有 query 的 1–2 个元素。每个 key 做一次
-wave 归约（6 次 `__shfl_xor`）得到分数，`running_max / running_sum / acc` 常驻
-寄存器，K/V 各读一遍；不占 LDS page，后续可以整体包成 `load/run/store`。
-每块 `kRowsPerBlock = 4` 条 wave，即 256 线程、grid = ceil(M/4)。
+attention 是 FlashAttention-2 的块结构：Q[M,D]、K[N,D]、V[N,D]、O[M,D] 都可以是
+strided view，D ≤ `kMaxHeadDim = 128`。一个 block 负责 16 行 query（`kQueryTile`），
+Q tile 常驻 LDS；K/V 按 16 行 key tile（`kKeyTile`）搬进 LDS，被这 16 行共用；
+分数 tile 在 LDS 里做行 max/行和（每行 4 个 lane，2 次 `__shfl_xor` 归约），
+输出 tile 每个 key tile 只按 `exp(m_old - m_new)` 缩放一次，最后除 `l` 写回。
+分数矩阵 M×N 从不落 HBM，K/V 的 HBM 流量是每 query tile 一遍。
+
+LDS 预算（D=128）：float 约 34 KiB（`AttentionSharedT<float>` = 35,008 B），
+fp16/bf16 约 22 KiB；一个 block 只有一条 wave（64 线程），D=128 时再放一条 wave
+就超预算了。当前 QK^T 和 P*V 还是标量 MAC 循环；tile 宽度都是 16，正好是
+DUMMA m16n16 的形状，换成 fragment 需要先在硬件上确认「按行缩放累加器」的做法。
+没有 causal mask 和多 head/批次维度。
 
 两者都不进 `mk_internal`，各自 hipcc 直编、各自启动：
 
@@ -499,7 +506,7 @@ python tests/csrc/run_dmk_ops_test.py --op attention
 | `csrc/dmk/demo_op.h` | `ElementwiseOp<Globals>` |
 | `csrc/dmk/gemm.h` | 低层 `GemmWave`/`run_gemm_wave` + 页面版 `GemmOp` |
 | `csrc/dmk/embedding.h` | `EmbeddingOp<Globals>` |
-| `csrc/dmk/attention.h` | 独立 attention 算子（wave 一行 + online softmax，不进 page VM） |
+| `csrc/dmk/attention.h` | 独立 flash-attention 算子（16 行一块 + key tile + online softmax，不进 page VM） |
 | `csrc/dmk/dtype.h` | float/`__half`/`__hip_bfloat16` 与 float 之间的转换 trait |
 | `csrc/dmk/megakernel.h` | `MkGlobals`、`mk_internal`、`mk` kernel 模板、`launch_mk` 声明 |
 | `csrc/megakernel.cpp` | demo kernel 实例、动态 LDS/设备检查、`launch_mk` |
