@@ -126,10 +126,10 @@ Each operator can also be built and run on its own, before anything is fused int
 
 | Operator | Entry point | Test |
 | --- | --- | --- |
-| GEMM `C = A * B` | `dmk::gemm::run_gemm_wave` ([gemm.h](csrc/dmk/gemm.h)) | [test_dmk_gemm_standalone.cpp](tests/csrc/test_dmk_gemm_standalone.cpp) |
-| Attention `softmax(Q K^T / sqrt(D)) V` | `dmk::attention::run_attention` ([attention.h](csrc/dmk/attention.h)) | [test_dmk_attention.cpp](tests/csrc/test_dmk_attention.cpp) |
+| GEMM `C = A * B` | `dmk::gemm::run_gemm_wave<T, K>` ([gemm.h](csrc/dmk/gemm.h)) | [test_dmk_gemm_standalone.cpp](tests/csrc/test_dmk_gemm_standalone.cpp) |
+| Attention `softmax(Q K^T / sqrt(D)) V` | `dmk::attention::run_attention<T>` ([attention.h](csrc/dmk/attention.h)) | [test_dmk_attention.cpp](tests/csrc/test_dmk_attention.cpp) |
 
-The GEMM path is the existing 16x16 DUMMA wave. The attention path is new: one wave64 computes one query row, the query row stays in registers, and the softmax is online (flash-style), so K and V are read once and no LDS page is used.
+GEMM covers the DUMMA tile shapes from the manual (表 3.1), templated on the input dtype and the tile K: `float` m16n16k4 on every DCU, `float` m16n16k8 and `__half`/`__hip_bfloat16` m16n16k16 on gfx928/936/938. The accumulator is always `float`. The test runner enables the pairs its `--offload-arch` supports. Attention is templated the same way (float, half, bfloat16 in and out, arithmetic in float): one wave64 computes one query row, the query row stays in registers, and the softmax is online (flash-style), so K and V are read once and no LDS page is used.
 
 ```bash
 python tests/csrc/run_dmk_ops_test.py                 # both, each in its own executable

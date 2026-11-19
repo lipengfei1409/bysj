@@ -3,6 +3,10 @@
 Every operator is compiled into its own executable and launched on its own:
 one kernel per operator, no megakernel, no fusion.
 
+The DUMMA tile K depends on the dtype and the device (DTK 26.04 DUMMA 使用手册,
+表 3.1), so gfx928/936/938 additionally build the float m16n16k8 and the
+half/bfloat16 m16n16k16 cases through DMK_MMA_F32K8 / DMK_MMA_F16.
+
 Usage:
     python tests/csrc/run_dmk_ops_test.py [--op all|attention|gemm]
 
@@ -97,6 +101,8 @@ def main() -> int:
         f"-I{root / 'csrc' / 'dmk'}",
         *(f"-I{path}" for path in include_paths()),
     ]
+    if arch in {"gfx928", "gfx936", "gfx938"}:
+        common += ["-DDMK_MMA_F32K8=1", "-DDMK_MMA_F16=1"]
 
     selected = list(TESTS) if args.op == "all" else [args.op]
     with tempfile.TemporaryDirectory(prefix="dmk-ops-test-") as directory:

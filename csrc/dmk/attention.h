@@ -7,6 +7,11 @@
 // Q is [M, D], K and V are [N, D] and out is [M, D]; every view may be strided.
 // D must be 1..kMaxHeadDim, so one query row fits in two registers per lane.
 //
+// The element type is a template parameter: Q/K/V may be float, __half or
+// __hip_bfloat16 and the output follows the input. All arithmetic happens in
+// float and the loads/stores convert, which keeps fp16/bf16 exact enough for
+// the softmax while avoiding a second kernel for each dtype.
+//
 // One wave64 computes one query row and a block runs kRowsPerBlock rows:
 //   - lane l owns query elements l, l + 64, ...,
 //   - for every key the wave reduces the partial dot product (six shuffles) and
@@ -24,6 +29,7 @@
 // this version is validated.
 
 #include "config.h"
+#include "dtype.h"
 #include "tensor.h"
 
 #include <cmath>
@@ -35,7 +41,7 @@ using tensor::Tensor;
 
 inline constexpr int kMaxHeadDim = 128;
 inline constexpr int kWaveSize = config::kWaveSize;
-inline constexpr int kMaxVectors = kMaxHeadDim / kWaveSize;  // 2 elements per lane
+inline constexpr int kMaxVectors = kMaxHeadDim / kWaveSize;  // 2 per lane
 inline constexpr int kRowsPerBlock = 4;
 inline constexpr int kThreadsPerBlock = kRowsPerBlock * kWaveSize;
 
@@ -43,11 +49,12 @@ static_assert(kMaxHeadDim % kWaveSize == 0,
               "the head dim must map to whole vectors per lane");
 
 // O[M, D] = softmax(Q[M, D] * K[N, D]^T / sqrt(D)) * V[N, D].
-struct AttentionParams {
-    Tensor<const float, 2, MemorySpace::HBM> q;
-    Tensor<const float, 2, MemorySpace::HBM> k;
-    Tensor<const float, 2, MemorySpace::HBM> v;
-    Tensor<float, 2, MemorySpace::HBM> out;
+template <typename T>
+struct AttentionParamsT {
+    Tensor<const T, 2, MemorySpace::HBM> q;
+    Tensor<const T, 2, MemorySpace::HBM> k;
+    Tensor<const T, 2, MemorySpace::HBM> v;
+    Tensor<T, 2, MemorySpace::HBM> out;
 
     DMK_HOST_DEVICE bool valid() const {
         const size_t rows = out.shape.dims[0];
@@ -63,6 +70,8 @@ struct AttentionParams {
     }
 };
 
+using AttentionParams = AttentionParamsT<float>;
+
 // Grid size for a launch with kThreadsPerBlock threads.
 inline unsigned attention_blocks(size_t rows) {
     return static_cast<unsigned>((rows + kRowsPerBlock - 1) / kRowsPerBlock);
@@ -77,8 +86,9 @@ __device__ inline float wave_sum(float value) {
 }
 
 // One query row, computed by one wave. All lanes call this together.
-__device__ inline void attention_row(const AttentionParams& params, size_t row,
-                                     int lane) {
+template <typename T>
+__device__ inline void attention_row(const AttentionParamsT<T>& params,
+                                     size_t row, int lane) {
     const size_t dim = params.out.shape.dims[1];
     const size_t keys = params.k.shape.dims[0];
     const float scale = rsqrtf(static_cast<float>(dim));
@@ -89,9 +99,9 @@ __device__ inline void attention_row(const AttentionParams& params, size_t row,
     for (int vector = 0; vector < kMaxVectors; ++vector) {
         const size_t index = static_cast<size_t>(lane) + vector * kWaveSize;
         if (index < dim) {
-            query[vector] =
+            query[vector] = dtype::to_float(
                 params.q.data[row * params.q.layout.strides[0] +
-                              index * params.q.layout.strides[1]];
+                              index * params.q.layout.strides[1]]);
         }
     }
 
@@ -109,8 +119,9 @@ __device__ inline void attention_row(const AttentionParams& params, size_t row,
             const size_t index = static_cast<size_t>(lane) + vector * kWaveSize;
             if (index < dim) {
                 partial += query[vector] *
-                           params.k.data[k_row +
-                                         index * params.k.layout.strides[1]];
+                           dtype::to_float(
+                               params.k.data[k_row +
+                                             index * params.k.layout.strides[1]]);
             }
         }
         const float score = wave_sum(partial) * scale;
@@ -126,8 +137,9 @@ __device__ inline void attention_row(const AttentionParams& params, size_t row,
             const size_t index = static_cast<size_t>(lane) + vector * kWaveSize;
             float value = 0.0f;
             if (index < dim) {
-                value = params.v.data[v_row +
-                                      index * params.v.layout.strides[1]];
+                value = dtype::to_float(
+                    params.v.data[v_row +
+                                  index * params.v.layout.strides[1]]);
             }
             acc[vector] = acc[vector] * alpha + weight * value;
         }
@@ -141,14 +153,15 @@ __device__ inline void attention_row(const AttentionParams& params, size_t row,
         if (index < dim) {
             params.out.data[row * params.out.layout.strides[0] +
                             index * params.out.layout.strides[1]] =
-                acc[vector] * inverse;
+                dtype::from_float<T>(acc[vector] * inverse);
         }
     }
 }
 
 // Entry point for a kernel whose block is a multiple of 64 threads. Every wave
 // of the block takes one query row, so the block's row count is blockDim.x / 64.
-__device__ inline void run_attention(const AttentionParams& params) {
+template <typename T>
+__device__ inline void run_attention(const AttentionParamsT<T>& params) {
     if (!params.valid()) return;
     const int lane = static_cast<int>(threadIdx.x % kWaveSize);
     const int wave = static_cast<int>(threadIdx.x / kWaveSize);
@@ -157,7 +170,7 @@ __device__ inline void run_attention(const AttentionParams& params) {
     const size_t row =
         static_cast<size_t>(blockIdx.x) * rows_per_block + wave;
     if (row >= params.out.shape.dims[0]) return;
-    attention_row(params, row, lane);
+    attention_row<T>(params, row, lane);
 }
 
 }  // namespace dmk::attention

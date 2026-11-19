@@ -453,8 +453,22 @@ megakernel 之外还有一条独立路径，先把算子本身跑对，再考虑
 
 | 算子 | 入口 | 说明 |
 | --- | --- | --- |
-| GEMM `C = A*B` | `dmk::gemm::run_gemm_wave` | 一条 wave 算一个 16×16 输出 tile，DUMMA m16n16k4，K 方向 3 个 stage 预取 |
-| attention | `dmk::attention::run_attention` | 一条 wave 算一行 query，online softmax |
+| GEMM `C = A*B` | `dmk::gemm::run_gemm_wave<T, K>` | 一条 wave 算一个 16×16 输出 tile，K 方向 3 个 stage 预取 |
+| attention | `dmk::attention::run_attention<T>` | 一条 wave 算一行 query，online softmax |
+
+dtype 与 MMA 尺寸按 DUMMA 手册表 3.1 用模板参数表达（累加器固定 float）：
+
+| 输入 | tile 形状 | 支持设备 |
+| --- | --- | --- |
+| `float` | m16n16k4 | gfx926 / 928 / 936 / 938 |
+| `float` | m16n16k8 | gfx928 / 936 / 938 |
+| `__half` | m16n16k16 | gfx928 / 936 / 938 |
+| `__hip_bfloat16` | m16n16k16 | gfx928 / 936 / 938 |
+
+`K` 只影响每条 MMA 的 k 步长和 LDS staging 大小，wave/staging/epilogue 三者共用。
+不支持的 `(T, K)` 组合会在 `mma_supported` 的 `static_assert` 处报错；测试 runner
+按 `--offload-arch` 决定是否定义 `DMK_MMA_F32K8` / `DMK_MMA_F16`。attention 的
+Q/K/V/O 同 dtype（float / `__half` / `__hip_bfloat16`），内部统一转 float 计算。
 
 attention 的约定：Q[M,D]、K[N,D]、V[N,D]、O[M,D]，四者都可以是 strided view；
 D ≤ `kMaxHeadDim = 128`，每个 lane 持有 query 的 1–2 个元素。每个 key 做一次
@@ -486,6 +500,7 @@ python tests/csrc/run_dmk_ops_test.py --op attention
 | `csrc/dmk/gemm.h` | 低层 `GemmWave`/`run_gemm_wave` + 页面版 `GemmOp` |
 | `csrc/dmk/embedding.h` | `EmbeddingOp<Globals>` |
 | `csrc/dmk/attention.h` | 独立 attention 算子（wave 一行 + online softmax，不进 page VM） |
+| `csrc/dmk/dtype.h` | float/`__half`/`__hip_bfloat16` 与 float 之间的转换 trait |
 | `csrc/dmk/megakernel.h` | `MkGlobals`、`mk_internal`、`mk` kernel 模板、`launch_mk` 声明 |
 | `csrc/megakernel.cpp` | demo kernel 实例、动态 LDS/设备检查、`launch_mk` |
 | `tests/csrc/test_dmk_lds.cpp` | host 逻辑测试 |

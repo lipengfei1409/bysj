@@ -2,9 +2,12 @@
 
 #include "tensor.h"
 #include "copy.h"
+#include "dtype.h"
 #include "dumma.h"
 #include "op.h"
 #include "state.h"
+
+#include <type_traits>
 
 namespace dmk::gemm {
 
@@ -12,10 +15,37 @@ using tensor::MemorySpace;
 using tensor::StridedLayout;
 using tensor::Tensor;
 
-// C[M,N] = A[M,K] * B[K,N]. The three HBM views may be strided.
-struct GemmParams {
-    Tensor<const float, 2, MemorySpace::HBM> a;
-    Tensor<const float, 2, MemorySpace::HBM> b;
+// DUMMA exposes a single output tile shape, m16n16, and picks the K of that
+// tile from the input type and the device (DTK 26.04 DUMMA 使用手册, 表 3.1):
+//
+//   float           m16n16k4    gfx926, gfx928, gfx936, gfx938
+//   float           m16n16k8    gfx928, gfx936, gfx938
+//   __half          m16n16k16   gfx928, gfx936, gfx938
+//   __hip_bfloat16  m16n16k16   gfx928, gfx936, gfx938
+//
+// K is therefore a template parameter: a bigger K only means fewer k-steps,
+// and every supported dtype flows through the same wave, staging and epilogue.
+// Instantiating an unsupported (T, K) pair fails the static_assert below (the
+// DTK header would reject the fragment type as well); the test runner only
+// enables the pairs its --offload-arch supports.
+inline constexpr size_t kTileM = 16;
+inline constexpr size_t kTileN = 16;
+inline constexpr size_t kWaveSize = 64;
+inline constexpr size_t kStageCount = 3;
+
+template <typename T, int K>
+inline constexpr bool mma_supported =
+    (std::is_same<T, float>::value && (K == 4 || K == 8)) ||
+    ((std::is_same<T, __half>::value ||
+      std::is_same<T, __hip_bfloat16>::value) &&
+     K == 16);
+
+// C[M,N] = A[M,K] * B[K,N]. A and B carry the input dtype, C accumulates in
+// float (the accumulator type of every supported DUMMA shape).
+template <typename T>
+struct GemmParamsT {
+    Tensor<const T, 2, MemorySpace::HBM> a;
+    Tensor<const T, 2, MemorySpace::HBM> b;
     Tensor<float, 2, MemorySpace::HBM> c;
 
     DMK_HOST_DEVICE bool valid() const {
@@ -31,33 +61,39 @@ struct GemmParams {
 };
 
 // Exactly one wave64 owns this LDS region. Each array starts on a 16-byte
-// boundary; A and B are row-major even when their HBM views are strided.
-struct alignas(16) GemmShared {
-    float a_tile[3][16 * 4];
-    float b_tile[3][4 * 16];
-    float output_tile[16 * 16];
+// boundary; A and B are row-major in LDS even when the HBM views are strided.
+// The staging depth is kStageCount K-tiles.
+template <typename T, int K>
+struct alignas(16) GemmSharedT {
+    T a_tile[kStageCount][kTileM * K];
+    T b_tile[kStageCount][K * kTileN];
+    float output_tile[kTileM * kTileN];
 };
 
-class GemmWave final {
+template <typename T, int K>
+class GemmWaveT final {
 public:
-    static constexpr size_t tile_m = 16;
-    static constexpr size_t tile_n = 16;
-    static constexpr size_t tile_k = 4;
-    static constexpr unsigned wave_size = 64;
-    static constexpr size_t stage_count = 3;
+    static_assert(mma_supported<T, K>, "unsupported DUMMA (dtype, K) pair");
+
+    static constexpr size_t tile_m = kTileM;
+    static constexpr size_t tile_n = kTileN;
+    static constexpr int tile_k = K;
+    static constexpr unsigned wave_size = static_cast<unsigned>(kWaveSize);
+    static constexpr size_t stage_count = kStageCount;
 
     using AFragment = ::du::dumma::DUFragment<::du::dumma::matrix_a,
-                                               tile_m, tile_n, tile_k,
-                                               float, ::du::dumma::row_major>;
+                                               tile_m, tile_n, tile_k, T,
+                                               ::du::dumma::row_major>;
     using BFragment = ::du::dumma::DUFragment<::du::dumma::matrix_b,
-                                               tile_m, tile_n, tile_k,
-                                               float, ::du::dumma::row_major>;
+                                               tile_m, tile_n, tile_k, T,
+                                               ::du::dumma::row_major>;
     using Accumulator = ::du::dumma::DUFragment<::du::dumma::accumulator,
                                                  tile_m, tile_n, tile_k, float>;
 
-    __device__ GemmWave(const GemmParams& params, GemmShared& shared)
+    __device__ GemmWaveT(const GemmParamsT<T>& params,
+                         GemmSharedT<T, K>& shared)
         : params_(params), shared_(shared) {}
-    __device__ ~GemmWave() = default;
+    __device__ ~GemmWaveT() = default;
 
     __device__ void shard() {
         row_start_ = static_cast<size_t>(blockIdx.y) * tile_m;
@@ -102,7 +138,8 @@ public:
         const size_t k = params_.a.shape.dims[1];
         assert(batch_start_ < k);
         const size_t remaining = k - batch_start_;
-        const size_t tiles_left = remaining / tile_k + (remaining % tile_k != 0);
+        const size_t tiles_left =
+            remaining / tile_k + (remaining % tile_k != 0);
         batch_count_ = tiles_left < stage_count ? tiles_left : stage_count;
         batch_consumed_ = 0;
         fragments_ready_ = false;
@@ -117,7 +154,7 @@ public:
                 a_row < params_.a.shape.dims[0] && a_col < k
                     ? params_.a.data[a_row * params_.a.layout.strides[0] +
                                      a_col * params_.a.layout.strides[1]]
-                    : 0.0f;
+                    : dtype::from_float<T>(0.0f);
 
             tile_indices(lane, tile_k, tile_n, params_.b.layout, row, col);
             const size_t b_row = k_start + row;
@@ -127,7 +164,7 @@ public:
                 b_col < params_.b.shape.dims[1]
                     ? params_.b.data[b_row * params_.b.layout.strides[0] +
                                      b_col * params_.b.layout.strides[1]]
-                    : 0.0f;
+                    : dtype::from_float<T>(0.0f);
         }
         __syncthreads();
     }
@@ -138,13 +175,17 @@ public:
         assert(batch_consumed_ < batch_count_);
         const size_t stage = batch_consumed_;
         if (!fragments_ready_) {
-            dumma::ld_matrix(*active_a_, shared_.a_tile[stage], tile_k);
-            dumma::ld_matrix(*active_b_, shared_.b_tile[stage], tile_n);
+            dumma::ld_matrix(*active_a_, shared_.a_tile[stage],
+                             static_cast<unsigned>(tile_k));
+            dumma::ld_matrix(*active_b_, shared_.b_tile[stage],
+                             static_cast<unsigned>(tile_n));
             fragments_ready_ = true;
         }
         if (stage + 1 < batch_count_) {
-            dumma::ld_matrix(*spare_a_, shared_.a_tile[stage + 1], tile_k);
-            dumma::ld_matrix(*spare_b_, shared_.b_tile[stage + 1], tile_n);
+            dumma::ld_matrix(*spare_a_, shared_.a_tile[stage + 1],
+                             static_cast<unsigned>(tile_k));
+            dumma::ld_matrix(*spare_b_, shared_.b_tile[stage + 1],
+                             static_cast<unsigned>(tile_n));
         }
         k_start_ = batch_start_ + stage * tile_k;
         dumma::mma(*next_, *active_a_, *active_b_, *current_);
@@ -198,8 +239,8 @@ private:
         }
     }
 
-    GemmParams params_;
-    GemmShared& shared_;
+    GemmParamsT<T> params_;
+    GemmSharedT<T, K>& shared_;
     size_t row_start_ = 0;
     size_t col_start_ = 0;
     size_t k_start_ = 0;
@@ -221,23 +262,29 @@ private:
     Accumulator* next_ = nullptr;
 };
 
-// Launch with one wave64 per block and one distinct __shared__ GemmShared per
+// Short names for the float m16n16k4 configuration, which the megakernel GEMM
+// op and the existing perf test use.
+using GemmParams = GemmParamsT<float>;
+using GemmShared = GemmSharedT<float, 4>;
+using GemmWave = GemmWaveT<float, 4>;
+
+// Launch with one wave64 per block and one distinct __shared__ GemmSharedT per
 // block; grid=(ceil(N/16), ceil(M/16)). Every lane follows the same K loop.
-__device__ inline void run_gemm_wave(const GemmParams& params,
-                                     GemmShared& shared) {
-    assert(blockDim.x == GemmWave::wave_size &&
-           blockDim.y == 1 && blockDim.z == 1);
+template <typename T, int K>
+__device__ inline void run_gemm_wave(const GemmParamsT<T>& params,
+                                     GemmSharedT<T, K>& shared) {
+    static_assert(mma_supported<T, K>, "unsupported DUMMA (dtype, K) pair");
+    assert(blockDim.x == kWaveSize && blockDim.y == 1 && blockDim.z == 1);
     if (!params.valid()) return;
-    GemmWave op(params, shared);
+    GemmWaveT<T, K> op(params, shared);
     op.shard();
     if (!op.has_output()) return;
     op.prepare();
     for (size_t k_start = 0; k_start < params.a.shape.dims[1];
-         k_start += GemmWave::tile_k * GemmWave::stage_count) {
+         k_start += static_cast<size_t>(K) * kStageCount) {
         op.set_k_tile(k_start);
         op.loader();
-        for (size_t tile = 0; tile < op.batch_tiles(); ++tile)
-            op.consumer();
+        for (size_t tile = 0; tile < op.batch_tiles(); ++tile) op.consumer();
     }
     op.storer();
 }

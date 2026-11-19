@@ -17,7 +17,7 @@ profile 结果（`dpa4_inference_profile_summary.json`、`dpa4_inference_trace.j
 | 0.6 | 多个 kernel 固定 `num_warps=1/2`、`BLOCK_M` 偏小（pointwise/softmax/force assemble），是按 32 线程 warp 与 228 KB LDS 的假设写的；DCU 是 wave64 + 64 KB LDS + 32 bank×4B。 | `triton/sezm/segment_softmax.py`、`force_assembly.py`、`so2_value_path.py` |
 | 0.7 | `DP_TRITON_INFER` 分 4 级（0 关 / 1 通用 kernel / 2 查表 tile config / 3 fp16x3），`DP_TRITON_TRAIN` 独立；这是现成的分级灰度开关。 | `deepmd-kit/deepmd/pt_expt/kernels/utils.py` |
 | 0.8 | DMK GEMM 现状：16×16×4 单 wave 一块、k 步长 4、**每批 12 个 k（3 个 stage）一次 `__syncthreads`**（k=2048 时单块 171 次屏障、512 次 MMA）、标量 4B 访存、`tile_indices()` 里每元素做 **64-bit 除/取模**、epilogue 也是标量；`ShmemSwizzleLayout` 已实现，但取片仍是 row-major 裸 `ld_matrix`，没有接 swizzle。 | `csrc/dmk/gemm.h`、`csrc/dmk/tensor.h`、`csrc/dmk/copy.h` |
-| 0.9 | DUMMA FP32 支持 `m16n16k4`（gfx926/928/936/938）与 **`m16n16k8`（gfx928/936/938）**；当前代码只用了 k4，gfx928 上可以先把 MMA 指令数减半。 | `dtk_doc/DTK 26.04 DUMMA使用手册.pdf` 表 3.1 |
+| 0.9 | DUMMA FP32 支持 `m16n16k4`（gfx926/928/936/938）与 **`m16n16k8`（gfx928/936/938）**；独立 `run_gemm_wave<T,K>` 现在把 K 作为模板参数（float k4/k8、half/bf16 k16），page 版 `GemmOp` 仍是标量参考。 | `dtk_doc/DTK 26.04 DUMMA使用手册.pdf` 表 3.1 |
 | 0.10 | megakernel 脚手架仍是空壳：`megakernel.cpp` 里 `uint` 未定义、`WARP_SZIE` 拼写错误、`launch_mk()` 空实现；`rmsnorm.h` / `attention.h` 语法错误不能编译；`embedding.h` 为空；`setup.py` 不编译 dmk；`bindings.cpp` 无 dmk 入口。 | `csrc/megakernel.cpp`、`csrc/dmk/rmsnorm.h`、`csrc/setup.py` |
 | 0.11 | 已有可复用测试设施：GEMM 自带 rocBLAS 对照的 C++ 用例、hipcc 直编 runner。 | `tests/csrc/test_dmk_gemm_accuracy_perf.cpp`、`tests/csrc/run_dmk_gemm_test.py`、`tests/dcu/test_dcu_gemm_compare.py` |
 | 0.12 | 参考实现是五角色（controller / loader / consumer / storer / launcher）+ instruction pipeline 的持久化 megakernel；DMK 的 `BaseOp<Globals>` 现在提供 release_lid / init_semaphores / load / run / store 五个多态 hook（`load/run/store` 与角色无关，由 kernel 把 role 映射过去），controller 与 worker 直接虚调用。 | `Megakernels/include/megakernel.cuh`、`csrc/dmk/op.h` |
@@ -129,7 +129,7 @@ P1/P2 是"在现有结构里榨 1.2–1.8x"。如果 P3 的目标算子用 Trito
 4. **访存未向量化**：A/B/C 全是 4B 标量访存；A 的 16×4 小段只占 25% 的 cacheline。
 5. **LDS 无 swizzle**：`a_tile[16*4]` 行距 16 B，`du_load_matrix_sync` 的 bank 冲突不可避免；
    `ShmemSwizzleLayout` 写了但取片路径只接受 row-major。
-6. **MMA 用了 k4**：gfx928 支持 `m16n16k8`，指令数可以减半。
+6. **MMA 用了 k4**：gfx928 支持 `m16n16k8`，指令数可以减半；独立算子已能用 k8，page 版还没接。
 7. **无 L2 复用调度**：block 按行优先走，A/B 的 HBM 流量是理论值的 ~4 倍。
 8. **epilogue 标量 + 边界判断**：每 lane 4 次 scalar store，带 div/mod 与 predicate。
 
@@ -168,7 +168,7 @@ P1/P2 是"在现有结构里榨 1.2–1.8x"。如果 P3 的目标算子用 Trito
 
 - **层次**：CTA = 4 waves（256 线程）；macro tile 128×128（起步可以 128×64）；每个 wave 承担
   32×64 或 64×32，即 2×4 / 4×2 个 16×16 累加器；k tile 16 或 32。
-- **MMA**：改用 `m16n16k8`（gfx928/936/938 支持），片段类型在 `GemmOp` 里参数化。
+- **MMA**：`run_gemm_wave<T, K>` 已支持 `m16n16k4/k8` 和 half/bf16 的 k16，下一步是让 page 版 `GemmOp` 复用它。
 - **LDS 双缓冲 + swizzle**：取片路径现在只接受 row-major，需要让 `GemmWave` 支持
   `ShmemSwizzleLayout`；HBM→LDS 的搬运已经按行主序向量化（`GemmOp::copy_tile`）。
 - **访存**：A/B 用 16 B 向量化（`float4`），布局以"相邻 lane 访相邻地址"为准则；删掉 inner loop
