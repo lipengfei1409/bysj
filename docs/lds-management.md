@@ -447,6 +447,30 @@ for (size_t e = vector_end + lane; e < count; e += config::kWaveSize)
 
 ---
 
+### 5.7 独立算子：GEMM 与 attention（不属于 page VM）
+
+megakernel 之外还有一条独立路径，先把算子本身跑对，再考虑融合：
+
+| 算子 | 入口 | 说明 |
+| --- | --- | --- |
+| GEMM `C = A*B` | `dmk::gemm::run_gemm_wave` | 一条 wave 算一个 16×16 输出 tile，DUMMA m16n16k4，K 方向 3 个 stage 预取 |
+| attention | `dmk::attention::run_attention` | 一条 wave 算一行 query，online softmax |
+
+attention 的约定：Q[M,D]、K[N,D]、V[N,D]、O[M,D]，四者都可以是 strided view；
+D ≤ `kMaxHeadDim = 128`，每个 lane 持有 query 的 1–2 个元素。每个 key 做一次
+wave 归约（6 次 `__shfl_xor`）得到分数，`running_max / running_sum / acc` 常驻
+寄存器，K/V 各读一遍；不占 LDS page，后续可以整体包成 `load/run/store`。
+每块 `kRowsPerBlock = 4` 条 wave，即 256 线程、grid = ceil(M/4)。
+
+两者都不进 `mk_internal`，各自 hipcc 直编、各自启动：
+
+```bash
+python tests/csrc/run_dmk_ops_test.py --op gemm
+python tests/csrc/run_dmk_ops_test.py --op attention
+```
+
+---
+
 ## 6. 代码结构
 
 | 文件 | 内容 |
@@ -461,10 +485,14 @@ for (size_t e = vector_end + lane; e < count; e += config::kWaveSize)
 | `csrc/dmk/demo_op.h` | `ElementwiseOp<Globals>` |
 | `csrc/dmk/gemm.h` | 低层 `GemmWave`/`run_gemm_wave` + 页面版 `GemmOp` |
 | `csrc/dmk/embedding.h` | `EmbeddingOp<Globals>` |
+| `csrc/dmk/attention.h` | 独立 attention 算子（wave 一行 + online softmax，不进 page VM） |
 | `csrc/dmk/megakernel.h` | `MkGlobals`、`mk_internal`、`mk` kernel 模板、`launch_mk` 声明 |
 | `csrc/megakernel.cpp` | demo kernel 实例、动态 LDS/设备检查、`launch_mk` |
 | `tests/csrc/test_dmk_lds.cpp` | host 逻辑测试 |
 | `tests/csrc/test_dmk_lds_megakernel.cpp` | DCU 设备测试 |
+| `tests/csrc/test_dmk_gemm_standalone.cpp` | 独立 GEMM 算子测试（CPU 参考） |
+| `tests/csrc/test_dmk_attention.cpp` | 独立 attention 算子测试（CPU 参考） |
+| `tests/csrc/run_dmk_ops_test.py` | 独立算子测试的 hipcc 直编 + 运行 |
 | `tests/csrc/run_dmk_lds_test.py` | hipcc 直编 + 运行 |
 
 ---

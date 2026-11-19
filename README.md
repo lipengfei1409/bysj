@@ -120,6 +120,23 @@ python tests/csrc/run_dmk_lds_test.py --host-only
 
 Set `DMK_GPU_ARCH=gfx928` if the architecture cannot be detected through Torch. Design notes, page/semaphore protocol, the op interface and the H100-to-DCU mapping are in [docs/lds-management.md](docs/lds-management.md).
 
+## Standalone GEMM and attention operators
+
+Each operator can also be built and run on its own, before anything is fused into a megakernel: one kernel launch per operator, compared against a double-precision CPU reference.
+
+| Operator | Entry point | Test |
+| --- | --- | --- |
+| GEMM `C = A * B` | `dmk::gemm::run_gemm_wave` ([gemm.h](csrc/dmk/gemm.h)) | [test_dmk_gemm_standalone.cpp](tests/csrc/test_dmk_gemm_standalone.cpp) |
+| Attention `softmax(Q K^T / sqrt(D)) V` | `dmk::attention::run_attention` ([attention.h](csrc/dmk/attention.h)) | [test_dmk_attention.cpp](tests/csrc/test_dmk_attention.cpp) |
+
+The GEMM path is the existing 16x16 DUMMA wave. The attention path is new: one wave64 computes one query row, the query row stays in registers, and the softmax is online (flash-style), so K and V are read once and no LDS page is used.
+
+```bash
+python tests/csrc/run_dmk_ops_test.py                 # both, each in its own executable
+python tests/csrc/run_dmk_ops_test.py --op gemm
+python tests/csrc/run_dmk_ops_test.py --op attention
+```
+
 ## DPA4 hotspot profiling
 
 The three supported scenarios (single-card DeepMD inference, single-card LAMMPS,
