@@ -62,6 +62,16 @@ float sample(size_t index) {
     return x - 1.0f;
 }
 
+struct Event {
+    hipEvent_t event{};
+    Event() { check_hip(hipEventCreate(&event), "hipEventCreate"); }
+    ~Event() {
+        if (event) hipEventDestroy(event);
+    }
+    Event(const Event&) = delete;
+    Event& operator=(const Event&) = delete;
+};
+
 template <typename T>
 const char* dtype_name() {
     if (std::is_same<T, float>::value) return "f32";
@@ -233,6 +243,61 @@ void run_case(const char* name, size_t m, size_t n, size_t k, bool column_b,
     }
 }
 
+// Same launch path as the correctness cases, without the reference: reports
+// the kernel time and the arithmetic throughput.
+void time_case(const char* name, size_t m, size_t n, size_t k, int repeats) {
+    std::vector<float> host_a = make_matrix<float>(m, k, false, 1);
+    std::vector<float> host_b = make_matrix<float>(k, n, false, 2);
+    std::vector<float> host_c(m * n, 0.0f);
+
+    DeviceBuffer device_a(host_a.size() * sizeof(float));
+    DeviceBuffer device_b(host_b.size() * sizeof(float));
+    DeviceBuffer device_c(host_c.size() * sizeof(float));
+    check_hip(hipMemcpy(device_a.data<void>(), host_a.data(),
+                        host_a.size() * sizeof(float), hipMemcpyHostToDevice),
+              "copy a");
+    check_hip(hipMemcpy(device_b.data<void>(), host_b.data(),
+                        host_b.size() * sizeof(float), hipMemcpyHostToDevice),
+              "copy b");
+    check_hip(hipMemcpy(device_c.data<void>(), host_c.data(),
+                        host_c.size() * sizeof(float), hipMemcpyHostToDevice),
+              "copy c");
+
+    const dmk::gemm::GemmParamsT<float> params{
+        Tensor<const float, 2, MemorySpace::HBM>{device_a.data<const float>(),
+                                                 Shape<2>{{m, k}},
+                                                 HbmLayout<2>{{k, 1}}},
+        Tensor<const float, 2, MemorySpace::HBM>{device_b.data<const float>(),
+                                                 Shape<2>{{k, n}},
+                                                 HbmLayout<2>{{n, 1}}},
+        Tensor<float, 2, MemorySpace::HBM>{device_c.data<float>(),
+                                           Shape<2>{{m, n}},
+                                           HbmLayout<2>{{n, 1}}},
+    };
+    const dim3 grid(static_cast<unsigned>((n + 15) / 16),
+                    static_cast<unsigned>((m + 15) / 16));
+
+    Launch<float, 4>::run(params, grid);
+    check_hip(hipDeviceSynchronize(), "warm-up");
+
+    Event start;
+    Event stop;
+    check_hip(hipEventRecord(start.event), "start");
+    for (int repeat = 0; repeat < repeats; ++repeat)
+        Launch<float, 4>::run(params, grid);
+    check_hip(hipEventRecord(stop.event), "stop");
+    check_hip(hipEventSynchronize(stop.event), "synchronize");
+
+    float total_ms = 0.0f;
+    check_hip(hipEventElapsedTime(&total_ms, start.event, stop.event),
+              "elapsed");
+    const double flops = 2.0 * static_cast<double>(m) * n * k * repeats;
+    const double seconds = static_cast<double>(total_ms) * 1e-3;
+    std::printf("%-26s %7.2f ms  %8.1f GFLOP/s\n", name,
+                total_ms / static_cast<float>(repeats),
+                seconds > 0.0 ? flops / seconds / 1e9 : 0.0);
+}
+
 }  // namespace
 
 int main() {
@@ -245,12 +310,16 @@ int main() {
     run_case<float, 4>("32x32x8 column C", 32, 32, 8, false, true, 2e-3);
     run_case<float, 4>("7x5x3", 7, 5, 3, false, false, 2e-3);
     run_case<float, 4>("128x80x64 column B/C", 128, 80, 64, true, true, 2e-3);
+    run_case<float, 4>("256x256x256", 256, 256, 256, false, false, 2e-3);
+    run_case<float, 4>("512x384x256 column B", 512, 384, 256, true, false,
+                       2e-3);
 
 #if DMK_MMA_F32K8
     // float m16n16k8 (gfx928/936/938).
     run_case<float, 8>("16x16x16 k8", 16, 16, 16, false, false, 2e-3);
     run_case<float, 8>("64x48x96 k8 column B", 64, 48, 96, true, false, 2e-3);
     run_case<float, 8>("33x17x29 k8", 33, 17, 29, false, false, 2e-3);
+    run_case<float, 8>("256x256x256 k8", 256, 256, 256, false, false, 2e-3);
 #endif
 
 #if DMK_MMA_F16
@@ -258,12 +327,17 @@ int main() {
     run_case<__half, 16>("16x16x16 f16", 16, 16, 16, false, false, 8e-3);
     run_case<__half, 16>("64x48x96 f16 column B", 64, 48, 96, true, false,
                          8e-3);
+    run_case<__half, 16>("128x96x64 f16", 128, 96, 64, false, false, 8e-3);
     // __hip_bfloat16 m16n16k16 (gfx928/936/938).
     run_case<__hip_bfloat16, 16>("16x16x16 bf16", 16, 16, 16, false, false,
                                  3e-2);
     run_case<__hip_bfloat16, 16>("64x48x96 bf16 column B", 64, 48, 96, true,
                                  false, 3e-2);
+    run_case<__hip_bfloat16, 16>("128x96x64 bf16", 128, 96, 64, false, false,
+                                 3e-2);
 #endif
+
+    time_case("1024x1024x1024 timing", 1024, 1024, 1024, 3);
 
     std::printf("gemm checks passed\n");
     return 0;

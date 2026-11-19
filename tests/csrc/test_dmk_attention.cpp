@@ -57,6 +57,16 @@ float sample(size_t index) {
     return x - 1.0f;
 }
 
+struct Event {
+    hipEvent_t event{};
+    Event() { check_hip(hipEventCreate(&event), "hipEventCreate"); }
+    ~Event() {
+        if (event) hipEventDestroy(event);
+    }
+    Event(const Event&) = delete;
+    Event& operator=(const Event&) = delete;
+};
+
 template <typename T>
 const char* dtype_name() {
     if (std::is_same<T, float>::value) return "f32";
@@ -232,6 +242,71 @@ void run_case(const char* name, size_t rows, size_t keys, size_t dim,
     }
 }
 
+// Same launch path as the correctness cases, without the reference: reports
+// the kernel time and the arithmetic throughput (QK^T plus P*V).
+void time_case(const char* name, size_t rows, size_t keys, size_t dim,
+               int repeats) {
+    std::vector<float> host_q = make_matrix<float>(rows, dim, false, 1);
+    std::vector<float> host_k = make_matrix<float>(keys, dim, false, 2);
+    std::vector<float> host_v = make_matrix<float>(keys, dim, false, 3);
+    std::vector<float> host_out(rows * dim, 0.0f);
+
+    DeviceBuffer device_q(host_q.size() * sizeof(float));
+    DeviceBuffer device_k(host_k.size() * sizeof(float));
+    DeviceBuffer device_v(host_v.size() * sizeof(float));
+    DeviceBuffer device_out(host_out.size() * sizeof(float));
+    check_hip(hipMemcpy(device_q.data<void>(), host_q.data(),
+                        host_q.size() * sizeof(float), hipMemcpyHostToDevice),
+              "copy q");
+    check_hip(hipMemcpy(device_k.data<void>(), host_k.data(),
+                        host_k.size() * sizeof(float), hipMemcpyHostToDevice),
+              "copy k");
+    check_hip(hipMemcpy(device_v.data<void>(), host_v.data(),
+                        host_v.size() * sizeof(float), hipMemcpyHostToDevice),
+              "copy v");
+    check_hip(hipMemcpy(device_out.data<void>(), host_out.data(),
+                        host_out.size() * sizeof(float), hipMemcpyHostToDevice),
+              "copy out");
+
+    const Shape<2> shape{{rows, dim}};
+    const dmk::attention::AttentionParamsT<float> params{
+        Tensor<const float, 2, MemorySpace::HBM>{device_q.data<const float>(),
+                                                 shape,
+                                                 HbmLayout<2>{{dim, 1}}},
+        Tensor<const float, 2, MemorySpace::HBM>{
+            device_k.data<const float>(), Shape<2>{{keys, dim}},
+            HbmLayout<2>{{dim, 1}}},
+        Tensor<const float, 2, MemorySpace::HBM>{
+            device_v.data<const float>(), Shape<2>{{keys, dim}},
+            HbmLayout<2>{{dim, 1}}},
+        Tensor<float, 2, MemorySpace::HBM>{device_out.data<float>(), shape,
+                                           HbmLayout<2>{{dim, 1}}},
+    };
+    const unsigned blocks = dmk::attention::attention_blocks(rows);
+
+    launch_attention<float>(params, blocks);
+    check_hip(hipDeviceSynchronize(), "warm-up");
+
+    Event start;
+    Event stop;
+    check_hip(hipEventRecord(start.event), "start");
+    for (int repeat = 0; repeat < repeats; ++repeat)
+        launch_attention<float>(params, blocks);
+    check_hip(hipEventRecord(stop.event), "stop");
+    check_hip(hipEventSynchronize(stop.event), "synchronize");
+
+    float total_ms = 0.0f;
+    check_hip(hipEventElapsedTime(&total_ms, start.event, stop.event),
+              "elapsed");
+    // Both products move rows*keys*dim multiply-adds.
+    const double flops =
+        4.0 * static_cast<double>(rows) * keys * dim * repeats;
+    const double seconds = static_cast<double>(total_ms) * 1e-3;
+    std::printf("%-26s %7.2f ms  %8.1f GFLOP/s\n", name,
+                total_ms / static_cast<float>(repeats),
+                seconds > 0.0 ? flops / seconds / 1e9 : 0.0);
+}
+
 }  // namespace
 
 int main() {
@@ -244,11 +319,18 @@ int main() {
     run_case<float>("head dim 1", 2, 9, 1, false, 3e-4);
     run_case<float>("transposed K/V", 4, 50, 96, true, 3e-4);
     run_case<float>("long keys 16x512x64", 16, 512, 64, false, 3e-4);
+    run_case<float>("64 rows 64x1024x64", 64, 1024, 64, false, 3e-4);
+    run_case<float>("128 rows 128x256x64", 128, 256, 64, false, 3e-4);
+    run_case<float>("head dim 128 32x512x128", 32, 512, 128, false, 3e-4);
 
     run_case<__half>("dense 16x64x64 f16", 16, 64, 64, false, 8e-3);
     run_case<__half>("transposed K/V f16", 4, 50, 96, true, 8e-3);
+    run_case<__half>("64x1024x64 f16", 64, 1024, 64, false, 8e-3);
     run_case<__hip_bfloat16>("dense 16x64x64 bf16", 16, 64, 64, false, 3e-2);
     run_case<__hip_bfloat16>("transposed K/V bf16", 4, 50, 96, true, 3e-2);
+    run_case<__hip_bfloat16>("64x1024x64 bf16", 64, 1024, 64, false, 3e-2);
+
+    time_case("128x2048x64 timing", 128, 2048, 64, 5);
 
     std::printf("attention checks passed\n");
     return 0;
