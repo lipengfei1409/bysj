@@ -20,6 +20,8 @@ model.close()                                     # 自动 uninstall
 | --- | --- | --- | --- | --- |
 | S1 | `segment_envelope_gated_softmax(logits, edge_env, dst, n_nodes, z_bias_raw, eps, src_weight=None)` | `sezm_nn/so2.py::SO2Convolution.attention_weights` 的 else 分支（`so2.py:2242`） | `kernels.segment.segment_softmax` | `src_weight is None`（SFPG 关闭）、fp32、CUDA、`logits` 3 维，`z_bias_raw.numel() == F*H` |
 | S2 | `SO2Convolution.forward_envelope(self, x, edge_cache, radial_feat)` | `block.py` 的 SO(2) unit（`n_atten_head == 0` 的无注意力路径） | `kernels.segment.segment_sum` | 推理模式、fp32、`dst` int64、`edge_env`/`inv_sqrt_deg` 形状匹配 |
+| S3 | `SO2Convolution.forward_attention_dense` 的 `zeros + index_add_(dst)` | `so2.py` dense 注意力路径（**本模型走这条**） | `kernels.segment.segment_sum`（`edge_scale = α`） | 块属性齐全、fp32、`dst` int64、`α` 形状 `(E,Fa,H)` |
+| S4 | `pt_expt.kernels.triton.sezm.force_assembly.edge_force_assembly` + `transform_output.triton_infer_level()` | `transform_output.py:306-368`（力/维里装配） | `kernels.segment.force_assembly` | 无 `create_graph`、fp32、两对 CSR 置换长度一致；cuTile 开启时跳过 |
 
 两个接缝都是**官方结构**，不是硬改：S1 是 DeepMD 自己在没有 Triton 时调用的参考实现（`attention.py`），
 S2 是 `SO2Convolution` 的公开方法。`deepmd_patch()` 只是把这两个名字绑成我们的包装器，并保留原实现用于回退。
@@ -123,7 +125,7 @@ DeepMD 自己也为我们准备好了 CSR 视图：`edge_cache.py::cached_edge_c
 
 | 位置 | 状态 | 原因 / 需要的下一步 |
 | --- | --- | --- |
-| 力/维里装配 `deepmd/pt/model/model/transform_output.py::edge_energy_deriv` | 未接 | 里面是 `torch.autograd.grad(energy, edge_vec)`，散射发生在 autograd 图内部。要接 `force_assembly` 得把"逐边梯度 → 原子力"这一步挪出图（`create_graph=False` 的推理专用路径），属于下一阶段，且要重新验证力/维里的符号与 ghost 布局 |
+| 力/维里装配 `deepmd/pt/model/model/transform_output.py::edge_energy_deriv` | ✅ 已接（S4） | 不在 autograd 里：`g = autograd.grad(...)` 之后是一段独立后处理，DeepMD 自带 Triton/CUDA/cuTile 三条分支；我们替换 Triton 分支并抬 `triton_infer_level()`。符号与 ghost 布局沿用它的 `(force, per-atom virial)` 契约，`frame_virial` 由它自己 `sum(dim=1)` |
 | flash 聚合 `SO2Convolution._flash_atten_fn` | 未接 | 签名是 `(x_local, rotation, rotate_inv_rescale, attn_alpha, order, row_ptr, dst, lmax, heads)`，内部要做 block-diagonal rotate-back。这正是 C5，需要先有 HIP 版旋转，才能把 `segment_sum` 接进去 |
 | dense 注意力路径 `so2.py:2124` 的 `out_heads.index_add_` | 未接 | 内联在 `forward_attention_dense` 里，没有接缝；要么方法级补丁（复制约 40 行），要么等上游加参数。本 checkpoint 有 attention 但 `_flash_atten_fn` 未绑定时走这条，所以这是 S1 之后剩下的下一块收益 |
 

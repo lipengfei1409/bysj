@@ -148,7 +148,9 @@ def _validate_segment_softmax(logit, env, offsets, null_logit, order=None):
     return n_nodes, channels
 
 
-def _validate_force_assembly(grad_edge, edge_vec, dst_offsets, src_offsets, src_order):
+def _validate_force_assembly(
+    grad_edge, edge_vec, dst_offsets, src_offsets, src_order, dst_order=None
+):
     for name, tensor in (
         ("grad_edge", grad_edge),
         ("edge_vec", edge_vec),
@@ -171,7 +173,12 @@ def _validate_force_assembly(grad_edge, edge_vec, dst_offsets, src_offsets, src_
         raise ValueError("force assembly offsets must describe the same atom count")
     if src_order.dtype != torch.int64 or src_order.shape != (grad_edge.shape[0],):
         raise ValueError("force assembly src_order must be int64 with shape (n_edges,)")
-    tensors = [grad_edge, edge_vec, dst_offsets, src_offsets, src_order]
+    _validate_order(dst_order, int(grad_edge.shape[0]), "force assembly")
+    tensors = [
+        t
+        for t in (grad_edge, edge_vec, dst_offsets, src_offsets, src_order, dst_order)
+        if t is not None
+    ]
     if any(not tensor.is_contiguous() for tensor in tensors):
         raise ValueError("force assembly inputs must be contiguous")
     if len({tensor.device for tensor in tensors}) != 1:
@@ -311,24 +318,39 @@ def segment_softmax(logit, env, offsets, null_logit=None, *, order=None, check_g
     return _SegmentSoftmaxNullFunction.apply(logit, env, offsets, null_logit, order)
 
 
-def force_assembly(grad_edge, edge_vec, src, dst, dst_offsets, src_offsets=None, src_order=None):
+def force_assembly(
+    grad_edge,
+    edge_vec,
+    src=None,
+    dst=None,
+    dst_offsets=None,
+    src_offsets=None,
+    src_order=None,
+    *,
+    dst_order=None,
+):
     """Assemble ``(force, virial)`` from per-edge energy gradients.
 
     ``src_order`` and ``src_offsets`` group the edge list by source atom; when
     omitted they are derived from ``src`` (one stable sort -- cache them across
-    invocations when this runs per step). Inference-only: the caller keeps the
-    reference path whenever the force graph must stay differentiable.
+    invocations when this runs per step). ``dst_order`` is the same view for the
+    destination side; omit it when the natural edge order is already grouped by
+    destination (the DeepMD layout), which is what the destination pass assumes
+    otherwise. Inference-only: the caller keeps the reference path whenever the
+    force graph must stay differentiable.
     """
     n_nodes = int(dst_offsets.numel()) - 1
     if src_order is None or src_offsets is None:
         order, offsets = group_by_source(src, n_nodes)
         src_order = order if src_order is None else src_order
         src_offsets = offsets if src_offsets is None else src_offsets
-    _validate_force_assembly(grad_edge, edge_vec, dst_offsets, src_offsets, src_order)
-    require_dcu(grad_edge, edge_vec, dst_offsets, src_offsets, src_order)
+    _validate_force_assembly(
+        grad_edge, edge_vec, dst_offsets, src_offsets, src_order, dst_order
+    )
+    require_dcu(grad_edge, edge_vec, dst_offsets, src_offsets, src_order, dst_order)
     extension = _extension("force_assembly")
     return extension.force_assembly(
-        grad_edge, edge_vec, dst_offsets, src_offsets, src_order
+        grad_edge, edge_vec, dst_offsets, src_offsets, src_order, dst_order
     )
 
 

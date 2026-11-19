@@ -42,4 +42,5 @@ std::tuple<Tensor, Tensor> force_assembly_hip(Tensor grad_edge,
                                              Tensor edge_vec,
                                              Tensor dst_offsets,
                                              Tensor src_offsets,
-                                             Tensor src_order);
+                                             Tensor src_order,
+                                             c10::optional<Tensor> dst_order);

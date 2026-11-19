@@ -785,7 +785,7 @@ def _run_dpa4(args) -> int:
             from model.fused_deepmd import deepmd_patch
 
             seams = (
-                {"softmax": True, "envelope": True}
+                {"softmax": True, "envelope": True, "force": True, "aggregate": True}
                 if args.fused == "on"
                 else {args.fused: True}
             )
@@ -1427,7 +1427,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dpa4.add_argument(
         "--fused", default="off",
-        choices=("off", "on", "softmax", "envelope"),
+        choices=("off", "on", "softmax", "envelope", "force", "aggregate"),
         help="bind this project's fused HIP operators into the loaded DeepMD "
              "model before profiling (off by default); 'on' installs every seam",
     )

@@ -25,5 +25,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("grad_null_alpha") = py::none(), py::arg("order") = py::none());
   m.def("force_assembly", &force_assembly_hip, py::arg("grad_edge"),
         py::arg("edge_vec"), py::arg("dst_offsets"), py::arg("src_offsets"),
-        py::arg("src_order"));
+        py::arg("src_order"), py::arg("dst_order") = py::none());
 }

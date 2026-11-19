@@ -7,7 +7,7 @@
 | --- | --- | --- | --- | --- | --- |
 | `segment_sum` | `out[n,c] = s[n]·Σ_{dst(e)=n} w[e]·src[e,c]` | `sezm_nn/so2.py:1860-1873` | 加权 + 零初始化 + 原子散射 + 归一共 4 次 launch | 1 次 | ✅ 已接（`envelope` 接缝） |
 | `segment_softmax` | `α_e = w_e/D`，见下 | `sezm_nn/attention.py:100-131` | max + exp + 2 次散射 + 除共 6 次 launch | 1 次 | ✅ 已接（`softmax` 接缝） |
-| `force_assembly` | `F_k = Σ_{dst=k}g − Σ_{src=k}g`，`W_k = Σ_{src=k}(−g⊗v)` | `model/transform_output.py:300-345` | 2 次原子散射 + `(E,9)` 物化 | 2 次只读遍历 | ⬜ 接缝已存在，待接 |
+| `force_assembly` | `F_k = Σ_{dst=k}g − Σ_{src=k}g`，`W_k = Σ_{src=k}(−g⊗v)` | `model/transform_output.py:300-345` | 2 次原子散射 + `(E,9)` 物化 | 2 次只读遍历 | ✅ 已接（`force`） |
 
 profile 数据、候选排序与收益预算见 [`task2-hip-fusion-plan.md`](task2-hip-fusion-plan.md)；本文只讲**公式与代码对照**。
 
@@ -154,8 +154,12 @@ the colliding edges of each atom) and a materialized `(E, 9)` outer product"*。
 ### 融合后
 
 ```python
-force, virial = force_assembly(g, edge_vec, dst_offsets, src_offsets, src_order)
+force, virial = force_assembly(g, edge_vec, None, None, dst_row_ptr, src_row_ptr,
+                               src_order, dst_order=dst_order)
 ```
+
+DeepMD 在进这个分支前已经 `argsort` 出 `dst_order/src_order` 与两个 `row_ptr`，正好是我们核的入参；
+`dst_order` 是这次新加的形参（此前只支持"自然序已按 dst 分组"）。
 
 一个 block 带 5 个原子（60 lane 填满一个 wave64），lane 0–2 算力、3–11 算维里，`double` 累加，
 零原子、无 `(E,9)` 中间量、累加顺序确定。签名与上游 `fused_edge_force_virial` 的
@@ -171,8 +175,12 @@ force, virial = force_assembly(g, edge_vec, dst_offsets, src_offsets, src_order)
 | 算子 | DeepMD 名字 | 接法 | 开关 |
 | --- | --- | --- | --- |
 | `segment_softmax` | `sezm_nn.attention.segment_envelope_gated_softmax` | 模块级替换（`so2` 里的同名 import 一起换） | `fused=("softmax",)` |
-| `segment_sum` | `SO2Convolution.forward_envelope` | 实例方法替换 | `fused=("envelope",)` |
-| `force_assembly` | `pt_expt.kernels.edge_force_virial.edge_force_virial` | 待接（签名已对齐） | — |
+| `segment_sum` | `SO2Convolution.forward_envelope` | 实例方法替换（attention-free 路径） | `fused=("envelope",)` |
+| `segment_sum` | `SO2Convolution.forward_attention_dense` 里的 `zeros + index_add_` | 实例方法替换（dense 注意力路径，本模型走这条） | `fused=("aggregate",)` |
+| `force_assembly` | `pt_expt...triton.sezm.force_assembly.edge_force_assembly` | 替换该 callable，并把 `transform_output.triton_infer_level()` 抬到 1 让分支生效 | `fused=("force",)` |
+
+四个 seam 的公共契约：调用前逐次检查前置条件（fp32 / CUDA / 形状 / CSR 长度），任一不满足就走原实现并把异常记进
+`last_error`；`fused=True` 装全部，也可以只装一个。
 
 细节见 [`deepmd-fused-dispatch.md`](deepmd-fused-dispatch.md)（接缝、前置条件、回退计数）。
 

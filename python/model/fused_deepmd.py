@@ -62,8 +62,14 @@ class FusedStats:
     softmax_fallbacks: int = 0
     envelope_hits: int = 0
     envelope_fallbacks: int = 0
+    force_hits: int = 0
+    force_fallbacks: int = 0
+    aggregate_hits: int = 0
+    aggregate_fallbacks: int = 0
     bound_softmax: bool = False
     bound_envelope: bool = False
+    bound_force: bool = False
+    bound_aggregate: bool = False
     blocks: int = 0
     last_error: str | None = None
 
@@ -73,8 +79,14 @@ class FusedStats:
             "softmax_fallbacks": self.softmax_fallbacks,
             "envelope_hits": self.envelope_hits,
             "envelope_fallbacks": self.envelope_fallbacks,
+            "force_hits": self.force_hits,
+            "force_fallbacks": self.force_fallbacks,
+            "aggregate_hits": self.aggregate_hits,
+            "aggregate_fallbacks": self.aggregate_fallbacks,
             "bound_softmax": self.bound_softmax,
             "bound_envelope": self.bound_envelope,
+            "bound_force": self.bound_force,
+            "bound_aggregate": self.bound_aggregate,
             "blocks": self.blocks,
             "last_error": self.last_error,
         }
@@ -129,6 +141,7 @@ class _Session:
     ops: Any
     stats: FusedStats
     reference_softmax: Any
+    reference_force: Any = None
     csr: _CsrView = field(default_factory=_CsrView)
     warned: bool = False
 
@@ -206,7 +219,7 @@ class _Session:
             or (gate is not None and not _usable_tensor(gate))
         ):
             stats.envelope_fallbacks += 1
-            return original(block, x, edge_cache, radial_feat)
+            return original(x, edge_cache, radial_feat)
         n_node = x.shape[0]
         n_edges = dst.shape[0]
         if (
@@ -216,7 +229,7 @@ class _Session:
             or not _usable_tensor(dst, dtype=torch.int64)
         ):
             stats.envelope_fallbacks += 1
-            return original(block, x, edge_cache, radial_feat)
+            return original(x, edge_cache, radial_feat)
         try:
             message, _ = block.edge_message(x, edge_cache, radial_feat)
             if not _usable_tensor(message) or message.shape[0] != n_edges:
@@ -237,9 +250,173 @@ class _Session:
         except Exception as error:  # noqa: BLE001 - fall back, never break inference
             self._record(error)
             stats.envelope_fallbacks += 1
-            return original(block, x, edge_cache, radial_feat)
+            return original(x, edge_cache, radial_feat)
         stats.envelope_hits += 1
         return out.reshape(x.shape)
+
+    # -- dense attention aggregation seam ------------------------------------
+    _BLOCK_ATTRIBUTES = (
+        "ebed_dim_full",
+        "attn_n_focus",
+        "attn_focus_dim",
+        "n_atten_head",
+        "head_dim",
+        "hidden_channels",
+        "compute_dtype",
+        "dtype",
+    )
+
+    def attention_dense(self, block, x, edge_cache, radial_feat, x_l0_node, original):
+        """Rebuild ``forward_attention_dense`` with one segment reduction.
+
+        The stock method materializes the per-head weighted value and then does
+        ``zeros -> index_add_(dst) -> head gate``; the reduction is exactly
+        :func:`kernels.segment.segment_sum` with the attention weight as the
+        per-edge scale, so the zero init, the atomics and one full pass over the
+        (E, D, Fa, H, Ch) tensor disappear. Everything else is delegated to the
+        block's own building blocks, in the stock order.
+        """
+        stats = self.stats
+        dst = getattr(edge_cache, "dst", None)
+        if (
+            not _usable_tensor(x)
+            or not isinstance(dst, torch.Tensor)
+            or dst.dtype != torch.int64
+            or dst.ndim != 1
+            or dst.numel() == 0
+            or not _usable_tensor(x_l0_node)
+            or any(not hasattr(block, name) for name in self._BLOCK_ATTRIBUTES)
+        ):
+            stats.aggregate_fallbacks += 1
+            return original(x, edge_cache, radial_feat, x_l0_node)
+        n_node = int(x.shape[0])
+        n_edge = int(dst.numel())
+        try:
+            message, rad_feat = block.edge_message(x, edge_cache, radial_feat)
+            alpha = block.attention_weights(x_l0_node, edge_cache, rad_feat)
+            head_gate = block.attention_head_gate(x_l0_node)
+            value_focus = message.reshape(
+                n_edge,
+                block.ebed_dim_full,
+                block.attn_n_focus,
+                block.attn_focus_dim,
+            ).to(dtype=block.compute_dtype)
+            if getattr(block, "attn_v_proj", None) is not None:
+                value_focus = block.attn_v_proj(value_focus)
+            value_heads = value_focus.reshape(
+                n_edge,
+                block.ebed_dim_full,
+                block.attn_n_focus,
+                block.n_atten_head,
+                block.head_dim,
+            )
+            if alpha.shape != (n_edge, block.attn_n_focus, block.n_atten_head):
+                raise ValueError(f"unexpected attention weight shape {tuple(alpha.shape)}")
+            weighted = value_heads * alpha.reshape(
+                n_edge, 1, block.attn_n_focus, block.n_atten_head, 1
+            )
+            if not _usable_tensor(weighted, dtype=block.compute_dtype):
+                raise ValueError("weighted value is not a contiguous compute_dtype tensor")
+            offsets, order = self.csr.get(dst, n_node)
+            reduced = self.ops.segment_sum(
+                weighted.reshape(n_edge, -1), dst, offsets, None, None, order=order
+            )
+            out_heads = reduced.reshape(
+                n_node,
+                block.ebed_dim_full,
+                block.attn_n_focus,
+                block.n_atten_head,
+                block.head_dim,
+            )
+            out_heads = out_heads * head_gate.reshape(
+                n_node, 1, block.attn_n_focus, block.n_atten_head, 1
+            )
+            out_focus = out_heads.reshape(
+                n_node, block.ebed_dim_full, block.attn_n_focus, block.attn_focus_dim
+            )
+            if getattr(block, "attn_o_proj", None) is not None:
+                out_focus = block.attn_o_proj(out_focus)
+            result = out_focus.reshape(
+                n_node, block.ebed_dim_full, block.hidden_channels
+            ).to(dtype=block.dtype)
+        except Exception as error:  # noqa: BLE001 - fall back, never break inference
+            self._record(error)
+            stats.aggregate_fallbacks += 1
+            return original(x, edge_cache, radial_feat, x_l0_node)
+        stats.aggregate_hits += 1
+        return result
+
+    # -- force / virial seam ------------------------------------------------
+    @staticmethod
+    def _segments_from_csr(offsets: torch.Tensor, order: torch.Tensor) -> torch.Tensor:
+        """Recover the natural-order segment ids from a CSR view."""
+        counts = (offsets[1:] - offsets[:-1]).tolist()
+        grouped = torch.repeat_interleave(
+            torch.arange(offsets.numel() - 1, dtype=torch.int64, device=order.device),
+            torch.tensor(counts, dtype=torch.int64, device=order.device),
+        )
+        return torch.empty_like(grouped).scatter_(0, order, grouped)
+
+    def force(self, g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr):
+        """Assemble force and per-atom virial for DeepMD's ``edge_force_virial``.
+
+        DeepMD hands over the two CSR permutations it just sorted; the dense
+        fallback it would otherwise use is four atomic scatters plus an
+        ``(E, 9)`` outer product.
+        """
+        stats = self.stats
+        edges = int(g.shape[0]) if isinstance(g, torch.Tensor) else -1
+        if (
+            not _usable_tensor(g)
+            or not _usable_tensor(edge_vec)
+            or g.shape != edge_vec.shape
+            or g.shape[-1] != 3
+            or not _usable_tensor(dst_row_ptr, dtype=torch.int64)
+            or not _usable_tensor(src_row_ptr, dtype=torch.int64)
+            or not _usable_tensor(dst_order, dtype=torch.int64)
+            or not _usable_tensor(src_order, dtype=torch.int64)
+            or dst_order.numel() != edges
+            or src_order.numel() != edges
+            or dst_row_ptr.numel() != src_row_ptr.numel()
+        ):
+            stats.force_fallbacks += 1
+            return self._force_fallback(
+                g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr
+            )
+        try:
+            force, virial = self.ops.force_assembly(
+                g.reshape(edges, 3).contiguous(),
+                edge_vec.reshape(edges, 3).contiguous(),
+                None,
+                None,
+                dst_row_ptr,
+                src_row_ptr,
+                src_order,
+                dst_order=dst_order,
+            )
+        except Exception as error:  # noqa: BLE001 - fall back, never break inference
+            self._record(error)
+            stats.force_fallbacks += 1
+            return self._force_fallback(
+                g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr
+            )
+        stats.force_hits += 1
+        return force, virial
+
+    def _force_fallback(self, g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr):
+        """The dense reference: two atomic scatters plus the materialised outer product."""
+        g = g.reshape(-1, 3)
+        edge_vec = edge_vec.reshape(-1, 3)
+        dst_ext = self._segments_from_csr(dst_row_ptr, dst_order)
+        src_ext = self._segments_from_csr(src_row_ptr, src_order)
+        n_ext = int(dst_row_ptr.numel()) - 1
+        force = g.new_zeros(n_ext, 3)
+        force.index_add_(0, dst_ext, g)
+        force.index_add_(0, src_ext, -g)
+        w_edge = -torch.einsum("ek,ej->ekj", g, edge_vec).reshape(-1, 9)
+        virial = g.new_zeros(n_ext, 9)
+        virial.index_add_(0, src_ext, w_edge)
+        return force, virial
 
     def _record(self, error: Exception) -> None:
         self.stats.last_error = f"{type(error).__name__}: {error}"
@@ -255,6 +432,24 @@ class _Session:
 
 _SESSION: _Session | None = None
 _SAVED: dict[str, Any] = {}
+
+
+def _force_targets():
+    """DeepMD's force/virial seam: the module that gates it and the callable.
+
+    ``transform_output.edge_energy_deriv`` takes the fused branch only when
+    ``triton_infer_level() >= 1`` (or the CUDA/cuTile equivalents), and then
+    imports ``edge_force_assembly`` from the Triton module. Both are rebound here
+    so the branch runs this project's operator instead.
+    """
+    try:
+        import deepmd.pt.model.model.transform_output as transform_module
+        import deepmd.pt_expt.kernels.triton.sezm.force_assembly as assembly_module
+    except ImportError:
+        return None
+    if not callable(getattr(assembly_module, "edge_force_assembly", None)):
+        return None
+    return transform_module, assembly_module
 
 
 def _softmax_namespaces() -> list[Any]:
@@ -348,8 +543,11 @@ def describe_module(module: Any, *, max_depth: int = 2, max_rows: int = 40) -> l
 
 
 def deepmd_patch(module: Any, *, ops: Any = None, softmax: bool = True,
-                 envelope: bool = True, blocks: Iterable[Any] | None = None,
+                 envelope: bool = True, force: bool = True,
+                 aggregate: bool = True,
+                 blocks: Iterable[Any] | None = None,
                  namespaces: Iterable[Any] | None = None,
+                 force_targets: Any = None,
                  verbose: bool = True) -> FusedStats:
     """Bind the fused operators on ``model`` (a ``DeepPot`` or an ``nn.Module``).
 
@@ -427,7 +625,7 @@ def deepmd_patch(module: Any, *, ops: Any = None, softmax: bool = True,
             def patched(self, x, edge_cache, radial_feat, _original=original):
                 session = _SESSION
                 if session is None:
-                    return _original(self, x, edge_cache, radial_feat)
+                    return _original(x, edge_cache, radial_feat)
                 return session.envelope(_original, self, x, edge_cache, radial_feat)
 
             block.forward_envelope = MethodType(patched, block)
@@ -438,10 +636,93 @@ def deepmd_patch(module: Any, *, ops: Any = None, softmax: bool = True,
                 f"{len(module_list)} block(s) -> model.fused_deepmd.patched",
                 flush=True,
             )
+    if force:
+        targets = force_targets if force_targets is not None else _force_targets()
+        if targets is None:
+            if verbose:
+                print(
+                    "[deepmd_patch] force seam unavailable (no DeepMD force_assembly "
+                    "module on this host) -> left on DeepMD's path",
+                    flush=True,
+                )
+        else:
+            transform_module, assembly_module = targets
+            cutile = getattr(transform_module, "use_cutile_infer", None)
+            if callable(cutile) and cutile():
+                if verbose:
+                    print(
+                        "[deepmd_patch] cuTile force path is enabled -> force seam "
+                        "skipped",
+                        flush=True,
+                    )
+            else:
+                original_level = transform_module.triton_infer_level
+                original_assembly = assembly_module.edge_force_assembly
+
+                def bound_force(g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr):
+                    session = _SESSION
+                    if session is None:
+                        raise RuntimeError(
+                            "the fused force seam was called after uninstall(); "
+                            "call deepmd_patch() again or drop fused=('force',)"
+                        )
+                    return session.force(
+                        g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr
+                    )
+
+                _SAVED[f"{transform_module.__name__}.triton_infer_level"] = (
+                    transform_module,
+                    original_level,
+                )
+                _SAVED[f"{assembly_module.__name__}.edge_force_assembly"] = (
+                    assembly_module,
+                    original_assembly,
+                )
+                transform_module.triton_infer_level = lambda: max(int(original_level()), 1)
+                assembly_module.edge_force_assembly = bound_force
+                stats.bound_force = True
+                if verbose:
+                    print(
+                        "[deepmd_patch] replace "
+                        f"{assembly_module.__name__}.edge_force_assembly "
+                        "-> model.fused_deepmd.bound_force "
+                        "(and force triton_infer_level() >= 1)",
+                        flush=True,
+                    )
+
+    if aggregate:
+        patched = 0
+        for block in module_list:
+            original_dense = getattr(block, "forward_attention_dense", None)
+            if not callable(original_dense):
+                continue
+            _SAVED[f"block-dense:{id(block)}"] = (block, original_dense)
+
+            def patched_dense(
+                self, x, edge_cache, radial_feat, x_l0_node, _original=original_dense
+            ):
+                session = _SESSION
+                if session is None:
+                    return _original(x, edge_cache, radial_feat, x_l0_node)
+                return session.attention_dense(
+                    self, x, edge_cache, radial_feat, x_l0_node, _original
+                )
+
+            block.forward_attention_dense = MethodType(patched_dense, block)
+            patched += 1
+        stats.bound_aggregate = bool(patched)
+        if verbose and patched:
+            print(
+                f"[deepmd_patch] replace SO2Convolution.forward_attention_dense on "
+                f"{patched} block(s) -> segment_sum",
+                flush=True,
+            )
+
     if verbose:
         print(
             f"[deepmd_patch] installed: softmax={stats.bound_softmax} "
-            f"envelope={stats.bound_envelope} blocks={stats.blocks}",
+            f"envelope={stats.bound_envelope} force={stats.bound_force} "
+            f"aggregate={stats.bound_aggregate} blocks={stats.blocks}",
             flush=True,
         )
     return stats
@@ -456,6 +737,9 @@ def uninstall(module: Any = None) -> None:
             # again, exactly as before the patch.
             if "forward_envelope" in getattr(owner, "__dict__", {}):
                 del owner.__dict__["forward_envelope"]
+        elif key.startswith("block-dense:"):
+            if "forward_attention_dense" in getattr(owner, "__dict__", {}):
+                del owner.__dict__["forward_attention_dense"]
         else:
             setattr(owner, key.rsplit(".", 1)[-1], original)
     _SAVED.clear()

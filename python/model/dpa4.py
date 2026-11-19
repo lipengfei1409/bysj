@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-_FUSED_SEAMS = ("softmax", "envelope")
+_FUSED_SEAMS = ("softmax", "envelope", "force", "aggregate")
 
 
 def _normalize_fused(fused: Any) -> dict[str, bool] | None:
@@ -88,7 +88,8 @@ class DPA4Model:
     fused
         Install this project's fused operators into the loaded model:
         ``True`` installs every seam, a string or sequence selects seams
-        (``"softmax"``, ``"envelope"``), a mapping sets each one, and
+        (``"softmax"``, ``"envelope"``, ``"force"``, ``"aggregate"``), a mapping sets
+        each one, and
         ``None``/``False`` leaves DeepMD untouched. See
         :mod:`model.fused_deepmd` for the seams and their fallback rules.
     **deepmd_kwargs

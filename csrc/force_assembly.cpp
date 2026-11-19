@@ -53,16 +53,21 @@ void check_offsets(const Tensor& offsets, const char* name) {
               name, " must be a one-dimensional exclusive prefix sum");
 }
 
-void check_permutation(const Tensor& order, int64_t edges, const char* name) {
-  TORCH_CHECK(order.is_cuda() && order.scalar_type() == torch::kInt64 &&
-                  order.is_contiguous(),
+void check_permutation(const c10::optional<Tensor>& order, int64_t edges,
+                       const char* name) {
+  if (!order.has_value()) return;
+  const Tensor& permutation = *order;
+  TORCH_CHECK(permutation.is_cuda() &&
+                  permutation.scalar_type() == torch::kInt64 &&
+                  permutation.is_contiguous(),
               name, " must be a contiguous DCU int64 tensor");
-  TORCH_CHECK(order.dim() == 1 && order.size(0) == edges,
+  TORCH_CHECK(permutation.dim() == 1 && permutation.size(0) == edges,
               name, " must have shape (n_edges,)");
 }
 
 __global__ void force_assembly_kernel(
     const float* __restrict__ grad_edge, const float* __restrict__ edge_vec,
+    const int64_t* __restrict__ dst_order,
     const int64_t* __restrict__ src_order,
     const int64_t* __restrict__ src_offsets,
     const int64_t* __restrict__ dst_offsets, float* __restrict__ force,
@@ -75,8 +80,10 @@ __global__ void force_assembly_kernel(
   if (lane < 3) {
     const int component = static_cast<int>(lane);
     double accumulator = 0.0;
-    for (int64_t edge = dst_offsets[atom]; edge < dst_offsets[atom + 1]; ++edge)
+    for (int64_t slot = dst_offsets[atom]; slot < dst_offsets[atom + 1]; ++slot) {
+      const int64_t edge = dst_order == nullptr ? slot : dst_order[slot];
       accumulator += grad_edge[edge * 3 + component];
+    }
     for (int64_t slot = src_offsets[atom]; slot < src_offsets[atom + 1]; ++slot)
       accumulator -= grad_edge[src_order[slot] * 3 + component];
     force[atom * 3 + component] = static_cast<float>(accumulator);
@@ -106,7 +113,8 @@ unsigned int grid_for(int64_t blocks, const char* name) {
 std::tuple<Tensor, Tensor> force_assembly_hip(Tensor grad_edge, Tensor edge_vec,
                                              Tensor dst_offsets,
                                              Tensor src_offsets,
-                                             Tensor src_order) {
+                                             Tensor src_order,
+                                             c10::optional<Tensor> dst_order) {
   f32(grad_edge);
   f32(edge_vec);
   TORCH_CHECK(grad_edge.dim() == 2 && grad_edge.size(1) == 3,
@@ -117,11 +125,13 @@ std::tuple<Tensor, Tensor> force_assembly_hip(Tensor grad_edge, Tensor edge_vec,
   check_offsets(dst_offsets, "force assembly dst_offsets");
   check_offsets(src_offsets, "force assembly src_offsets");
   check_permutation(src_order, edges, "force assembly src_order");
+  check_permutation(dst_order, edges, "force assembly dst_order");
   TORCH_CHECK(dst_offsets.size(0) == src_offsets.size(0),
               "force assembly offsets must describe the same atom count");
   const int64_t nodes = dst_offsets.size(0) - 1;
   TORCH_CHECK(nodes > 0, "force assembly requires at least one atom");
   same_device(grad_edge, {edge_vec, dst_offsets, src_offsets, src_order});
+  if (dst_order.has_value()) same_device(grad_edge, {*dst_order});
 
   Tensor force = torch::empty({nodes, 3}, grad_edge.options());
   Tensor virial = torch::empty({nodes, 9}, grad_edge.options());
@@ -137,6 +147,8 @@ std::tuple<Tensor, Tensor> force_assembly_hip(Tensor grad_edge, Tensor edge_vec,
                      dim3(grid_for(blocks, "force assembly atom count")),
                      dim3(kBlockThreads), 0, at::cuda::getCurrentCUDAStream(),
                      grad_edge.data_ptr<float>(), edge_vec.data_ptr<float>(),
+                     dst_order.has_value() ? dst_order->data_ptr<int64_t>()
+                                           : nullptr,
                      src_order.data_ptr<int64_t>(),
                      src_offsets.data_ptr<int64_t>(),
                      dst_offsets.data_ptr<int64_t>(), force.data_ptr<float>(),
