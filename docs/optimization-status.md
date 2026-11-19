@@ -36,13 +36,13 @@
 
 | # | 优化项 | 解决的问题 | 方案 | 状态 | 收益（估算） |
 | --- | --- | --- | --- | --- | --- |
-| C1 | 槽打包 + 缩放（`slot_pack_scale`） | `index_select`+`mul`+`copy_`+`fill_` 共 4 趟全量 E-major，前向 75.7 ms | `out[e,r,c] = slot[r]<0 ? 0 : src[e,slot[r],c]·scale[e,r,c]`，一趟写完（保留行由负 slot 直接置零，省掉 `fill_`） | 🟡 算子 + 参考实现 + 测试完成（`csrc/slot_ops.cpp`），未接 DeepMD | 估算 −45…−55 ms（`cat` 那 22.3 ms 仍需 GEMM 支持双源，未含在内） |
-| C2′ | 10 槽加权归约（`slot_reduce`） | `sum [E,10,1,64]` 有效带宽 56 GB/s（约 10× 浪费），3 次 24.9 ms | `out[e,c] = Σ_r w[e,r]·src[e,r,c]`，一 block 一边，10 行留在寄存器 | 🟡 算子完成，未接 DeepMD | 估算 −20…−22 ms（按 630 GB/s 折算 3 次共约 2.2 ms） |
+| C1 | 槽打包 + 缩放（`slot_pack_scale`） | `GatedActivation.forward`（`activation.py:213`）里 `index_select`+`mul`+`copy_` 三次 E-major 遍历：`index_select [1,E,3,64] idx[9]` 20.5 ms、`mul [1,E,9,64]` 17.3 ms、`copy_` 15.6 ms（各 9 次） | 映射已确认：`gates = gating_scalars.index_select(2, expand_index)`，随后 `out[:,1:] = x[:,1:] * gates`。`slot_pack_scale(gating_scalars, expand_index, scale=x[:,1:])` 正好是"按 gate 组展开 + 逐元素乘"，一趟出结果 | 🟡 算子 + 参考实现 + 测试完成（`csrc/slot_ops.cpp`）；**未接线**：`GatedActivation.forward` 是方法内部 3 条 layout 分支，接线要 fork 约 35 行 DeepMD 逻辑 | 下调至 **−20…−25 ms**（末端的 `narrow.copy_` 与 `x0` 拷贝仍在，只有 gather+mul 被合掉） |
+| C2′ | 10 槽加权归约（`slot_reduce`） | `SO2Linear.forward`（`so2.py:812`）`rank>0` 分支的 `sum(dim=2)`：`(mixed * channel_basis).sum(dim=2)`，权重依赖 `(o, r, c)` | 原以为可映射成 `Σ_r w[e,r]·src[e,r,c]`；实际是 `Σ_r kernel[e,o,r]·x[e,r,c]·channel_basis[o,r,c]`，**权重依赖输出槽 o** | 🟡 算子完成，但**与真实调用点不匹配**（需要 rank-K 收缩 + 逐通道基底的 epilogue） | 本行不再计收益；真实可做的是把它归入 C7 的"rank-K 收缩 + epilogue"（见 C7） |
 | C3 | GEMM + 残差 epilogue | 两个 E-major GEMM 仅 8.1 TFLOP/s（roofline 13.7），残差 `add [E,10,64]` 又是一趟 | DMK 分块 GEMM，epilogue 吸收残差 | ⬜ 未做（属 megakernel 线） | −30…−35 ms |
 | C4 | 小轴归约重写 | `sum [E,10,1,64]` 有效带宽 56 GB/s（约 10× 浪费），24.9 ms | 小轴映射到 lane，`__shfl` 归约，或并进 C2 | ⬜ 未做 | −20…−22 ms |
 | C5 | readout 瘦 GEMM | `bmm [1,152,48]×[1,48,576000]`，K=48 算力空转，17.3 ms | `float4` 向量化 + 融合 scale/add epilogue | ⬜ 未做 | −6…−10 ms |
 | C6 | 边流逐元素链融合 | `add_/mul/copy_/fill_` 587 ms 池，同一条 3–4 核链重复 9 次 | 项表驱动的多输入 FMAD，k 趟合 1 趟 | ⬜ 仅设计 | −180…−220 ms |
-| C7 | SO(2) 消息链全融合（含 10 槽小矩阵乘） | rotate → radial → GEMM → rotate-back 的中间量落 HBM；`bmm [E,10,10]`/`[E,16,10]`/`[E,10,16]`（31.5 ms）也在这里 | 旋转保持寄存器，走 `_flash_atten_fn` 接缝；10 槽按段进寄存器 | ⬜ 仅设计 | −60…−80 ms（含 10 槽 bmm 的 −25…−30） |
+| C7 | SO(2) 消息链全融合（含 rank-K 收缩） | rotate → radial → `SO2Linear` 的 `bmm(E,10,16)` + `*channel_basis` + `sum(dim=2)`（合计约 66 ms）→ rotate-back 的中间量落 HBM | 旋转保持寄存器；把 `einsum + 逐通道基底 + 归约` 合成一个 rank-K 收缩 kernel，走 `_flash_atten_fn` / 自建接缝 | ⬜ 仅设计 | −60…−80 ms（含 rank-K 收缩的 −35…−45） |
 
 ## 4. 工程与质量
 
@@ -59,8 +59,8 @@
 | --- | --- | --- | --- |
 | 已实测 | B2 `softmax` 接缝 | **≈0**（−150 launch，时间不变） | ❌ 已证明在本 checkpoint 无效 |
 | 待实测 | B3 `force` + B1 `aggregate` | **−75…−110 ms**（1.08–1.12×） | 🟡 代码已接，等真机 |
-| 待实测 | C1 `slot_pack_scale` + C2′ `slot_reduce` | **−65…−77 ms** | 🟡 算子已落地，未接线、未测 |
-| 未实现 | C4 小轴归约（若与 C2′ 合并则只剩一半） | −20…−22 ms | ⬜ 需新 kernel |
+| 待接线 | C1 `slot_pack_scale`（目标已确认） | **−20…−25 ms** | 🟡 算子已落地，接线需 fork 35 行 DeepMD 方法 |
+| 待重新设计 | C2′ `slot_reduce` | 0（不匹配真实调用点） | 🟡 算子存在但无对应站点；真实站点需要 rank-K 收缩 epilogue（并入 C7） |
 | 未实现 | C3 + C5 | −36…−45 ms | ⬜ 需 DMK GEMM |
 | 未实现 | C6 + C7（全图池子） | −240…−300 ms | ⬜ 设计阶段 |
 
@@ -100,6 +100,7 @@ python3 tests/deepmd/profile/compare_fused_runs.py \
 | --- | --- |
 | 2026-11-19 | 建表。A1–A4、B2（算子 + 接缝）、D1、D2 标记完成；B2 端到端实测 ≈0 并标注为"本 checkpoint 无效"；B1/B3/B4 标 🟡 待真机；C1–C7 为未实现或设计阶段 |
 | 2026-11-19 | C1 落地为 `slot_pack_scale`、C2 修正归因后拆为 C2′（`slot_reduce`，已实现）+ 10 槽小矩阵乘（并入 C7）。原 C2 把 `bmm [E,10,10]` 归给 attention 是错的：它来自 `so2.py:848` 的 `einsum("eoic,eic->eoc")`，属 SO(2) mixing；attention 的 logits 是 `(q_edge*k_edge).sum(-1)`，本来就是 elementwise |
+| 2026-11-19 | 用 launch→region 归因钉死两个真实站点：C1 的 `index_select`+`mul`+`copy_` 全在 **`GatedActivation.forward`**（`activation.py:213`，映射 `gates = gating_scalars.index_select(2, expand_index)`），不是 `so2_message`；C2′ 的 `sum [E,10,1,64]` 在 **`SO2Linear.forward`**（`so2.py:812`）的 `(mixed * channel_basis).sum(dim=2)`，权重依赖输出槽 → `slot_reduce` 不匹配。C1 估算由 −45…−55 下调到 −20…−25，C2′ 收益归零并并入 C7 |
 
 ## 8. 边界说明
 
@@ -108,6 +109,10 @@ python3 tests/deepmd/profile/compare_fused_runs.py \
 2. **B2 的 ≈0 不是 bug**：该 checkpoint `n_atten_head=1`，被替换的是 `[3000,C]` 量级小张量，成本由 launch 主导；
    这条接缝的价值要在 attention 宽度更大的模型上才体现。
 3. **C6/C7 的收益是"池子"不是"承诺"**：按 trace 元素池子折算，落地后要减去融合核的新成本，因此一律给区间。
-4. **C1/C2′ 尚未接线**：两个算子在 `csrc/slot_ops.cpp`，参考实现与主机测试齐备，但没有像 B1–B3 那样挂到 DeepMD 的接缝上；
-   接线需要先确认 `so2_message` 里 3→9→10 的 slot 映射与 scale 来源（`radial_feat` 的哪一维），否则宁可先不接。
-   算子级延迟用 `DPA4_RUN_SLOT_LATENCY=1` 测，跑的是真实尺寸（181838 边 × 10 行 × 64 通道）。
+4. **C1 的映射已确认、接缝不在方法边界上**：`GatedActivation.forward` 里 `gates = gating_scalars.index_select(2, expand_index)`
+   之后紧跟 `out.narrow(...).copy_(x.narrow(...) * gates)`，`slot_pack_scale(gating_scalars, expand_index, scale=x[:,1:])`
+   语义完全对应；但该方法内部有 3 条 layout 分支（`fndc` / `ndfc` / `nfdc`），接线只能 fork，约 35 行 DeepMD 逻辑，
+   换 **−20…−25 ms**（2.6%）。更划算的做法是让上游加一行 `self._gate_expand_fn` 钩子（类似 `_segment_softmax_fn`），
+   我们只绑定——那需要 DeepMD 侧 2 行改动，已记录为待决。
+5. **C2′ 的 `slot_reduce` 没有对应站点**：真实调用是 `Σ_r kernel[e,o,r]·x[e,r,c]·channel_basis[o,r,c]`，
+   权重随输出槽 `o` 变化，不是按 `(e, r)` 的加权和。要么把它重写成 rank-K 收缩（并入 C7），要么删掉这个算子。
