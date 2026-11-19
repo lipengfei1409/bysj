@@ -9,7 +9,8 @@
 | `segment_softmax` | `α_e = w_e/D`，见下 | `sezm_nn/attention.py:100-131` | max + exp + 2 次散射 + 除共 6 次 launch | 1 次 | ✅ 已接（`softmax` 接缝） |
 | `force_assembly` | `F_k = Σ_{dst=k}g − Σ_{src=k}g`，`W_k = Σ_{src=k}(−g⊗v)` | `model/transform_output.py:300-345` | 2 次原子散射 + `(E,9)` 物化 | 2 次只读遍历 | ✅ 已接（`force`） |
 
-profile 数据、候选排序与收益预算见 [`task2-hip-fusion-plan.md`](task2-hip-fusion-plan.md)；本文只讲**公式与代码对照**。
+profile 数据、候选排序与收益预算见 [`task2-hip-fusion-plan.md`](task2-hip-fusion-plan.md)，
+每项的完成状态与收益见 [`optimization-status.md`](optimization-status.md)；本文只讲**公式与代码对照**。
 
 ---
 
