@@ -454,7 +454,7 @@ megakernel 之外还有一条独立路径，先把算子本身跑对，再考虑
 | 算子 | 入口 | 说明 |
 | --- | --- | --- |
 | GEMM `C = A*B` | `dmk::gemm::run_gemm_wave<T, K>` | 一条 wave 算一个 16×16 输出 tile，K 方向 3 个 stage 预取；A/B 装载和 C epilogue 都是 16 B 向量，tile 越界或非连续时退回带边界检查的标量循环 |
-| attention | `dmk::attention::run_attention<T>` | 一条 wave 算一行 query，online softmax |
+| attention | `dmk::mk::AttentionOp<Globals>`（opcode 5） | 一条指令 = 一个 (query tile, key tile) 步，page 版 flash attention |
 
 dtype 与 MMA 尺寸按 DUMMA 手册表 3.1 用模板参数表达（累加器固定 float）：
 
@@ -470,12 +470,19 @@ dtype 与 MMA 尺寸按 DUMMA 手册表 3.1 用模板参数表达（累加器固
 按 `--offload-arch` 决定是否定义 `DMK_MMA_F32K8` / `DMK_MMA_F16`。attention 的
 Q/K/V/O 同 dtype（float / `__half` / `__hip_bfloat16`），内部统一转 float 计算。
 
-attention 是 FlashAttention-2 的块结构：Q[M,D]、K[N,D]、V[N,D]、O[M,D] 都可以是
-strided view，D ≤ `kMaxHeadDim = 128`。一个 block 负责 16 行 query（`kQueryTile`），
-Q tile 常驻 LDS；K/V 按 16 行 key tile（`kKeyTile`）搬进 LDS，被这 16 行共用；
-分数 tile 在 LDS 里做行 max/行和（每行 4 个 lane，2 次 `__shfl_xor` 归约），
-输出 tile 每个 key tile 只按 `exp(m_old - m_new)` 缩放一次，最后除 `l` 写回。
-分数矩阵 M×N 从不落 HBM，K/V 的 HBM 流量是每 query tile 一遍。
+attention 是 page 版 flash attention，一条指令 = 一个 (query tile, key tile) 步：
+query tile 是 16 行、key tile 是 16 个 key，算一个 16×16 分数 tile 并折进 16×D 的
+输出 tile，所以分数矩阵 M×N 从不落 HBM。Q/O/softmax 状态（m、l、alpha）放在
+lid 0/3/4 的 page 里，跨同一 query tile 的多条指令保留；K/V 每个 key tile 由
+loader 波重新装进 lid 1/2；S 和 P 用 lid 5 的 scratch page。最后一条 key tile
+的 `store()` 把 O/l 写回 out。
+
+因为 Q/O/状态 page 跨指令保留，`release_lid` 用 identity 映射；代价是 K/V 只有
+单缓冲——load(i+1) 要等 store(i) 释放 page 才能写，所以 loader 的预取还不能和
+run(i) 重叠。要重叠就得给 K/V 做双缓冲（现在 6 个 page 全用上了）。
+
+一条指令只由一个 consumer wave（wave 0）算，其余 wave 只负责 semaphore；每个
+instruction 有 5 个 page 数据 + 1 个 scratch。
 
 访存：HBM 侧走 16 B 向量（lane i 取一行里的第 i 个 chunk，一条 wave 一次盖
 1 KiB 连续地址）；标量回退仍按最小 stride 轴排 lane，所以列主序的 K/V 也是合并
@@ -512,7 +519,7 @@ python tests/csrc/run_dmk_ops_test.py --op attention
 | `csrc/dmk/demo_op.h` | `ElementwiseOp<Globals>` |
 | `csrc/dmk/gemm.h` | 低层 `GemmWave`/`run_gemm_wave` + 页面版 `GemmOp` |
 | `csrc/dmk/embedding.h` | `EmbeddingOp<Globals>` |
-| `csrc/dmk/attention.h` | 独立 flash-attention 算子（16 行一块 + key tile + online softmax，不进 page VM） |
+| `csrc/dmk/attention.h` | `AttentionGlobalsT<T>`、`AttentionOp<Globals>`（page 版 flash attention，opcode 5） |
 | `csrc/dmk/dtype.h` | float/`__half`/`__hip_bfloat16` 与 float 之间的转换 trait |
 | `csrc/dmk/megakernel.h` | `MkGlobals`、`mk_internal`、`mk` kernel 模板、`launch_mk` 声明 |
 | `csrc/megakernel.cpp` | demo kernel 实例、动态 LDS/设备检查、`launch_mk` |

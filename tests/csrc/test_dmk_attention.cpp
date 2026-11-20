@@ -1,14 +1,11 @@
-// Standalone attention operator test: one kernel launch per case, a CPU
-// reference in double precision, and no megakernel anywhere in the path.
-//
-// The operator is dmk::attention::run_attention, templated on the element type
-// (float, __half, __hip_bfloat16). It runs the FlashAttention block structure:
-// 16 query rows per block, 16-key tiles through LDS, online softmax with one
-// rescale per key tile; the softmax arithmetic stays in float and the output
-// follows the input dtype.
+// Attention operator test: the page-based AttentionOp runs inside the
+// megakernel VM (controller / loader / storer / consumer waves), but the op
+// pack contains nothing else, so this is still a single-operator test.
 //
 // Build/run through: python tests/csrc/run_dmk_ops_test.py --op attention
 #include "attention.h"
+
+#include "megakernel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +20,13 @@ using dmk::tensor::HbmLayout;
 using dmk::tensor::MemorySpace;
 using dmk::tensor::Shape;
 using dmk::tensor::Tensor;
+
+using AttnGlobalsF32 = dmk::attention::AttentionGlobalsT<float>;
+using AttnGlobalsF16 = dmk::attention::AttentionGlobalsT<__half>;
+using AttnGlobalsBF16 = dmk::attention::AttentionGlobalsT<__hip_bfloat16>;
+using AttnOpF32 = dmk::mk::AttentionOp<AttnGlobalsF32>;
+using AttnOpF16 = dmk::mk::AttentionOp<AttnGlobalsF16>;
+using AttnOpBF16 = dmk::mk::AttentionOp<AttnGlobalsBF16>;
 
 void check_hip(hipError_t status, const char* what) {
     if (status == hipSuccess) return;
@@ -51,12 +55,6 @@ struct DeviceBuffer {
     }
 };
 
-// Deterministic values in [-1, 1] without pulling in a generator.
-float sample(size_t index) {
-    const float x = static_cast<float>((index * 2654435761u) % 1000) / 500.0f;
-    return x - 1.0f;
-}
-
 struct Event {
     hipEvent_t event{};
     Event() { check_hip(hipEventCreate(&event), "hipEventCreate"); }
@@ -66,6 +64,12 @@ struct Event {
     Event(const Event&) = delete;
     Event& operator=(const Event&) = delete;
 };
+
+// Deterministic values in [-1, 1] without pulling in a generator.
+float sample(size_t index) {
+    const float x = static_cast<float>((index * 2654435761u) % 1000) / 500.0f;
+    return x - 1.0f;
+}
 
 template <typename T>
 const char* dtype_name() {
@@ -133,38 +137,71 @@ std::vector<double> reference_attention(const std::vector<T>& q,
     return out;
 }
 
-__global__ void attention_kernel_f32(
-    dmk::attention::AttentionParamsT<float> params) {
-    __shared__ dmk::attention::AttentionSharedT<float> shared;
-    dmk::attention::run_attention(params, shared);
+// One query tile per block, one instruction per key tile.
+std::vector<int> make_instructions(size_t blocks, size_t keys) {
+    const size_t tiles = (keys + dmk::attention::kKeyTile - 1) /
+                         dmk::attention::kKeyTile;
+    std::vector<int> words(blocks * tiles * 32, 0);
+    for (size_t block = 0; block < blocks; ++block) {
+        for (size_t tile = 0; tile < tiles; ++tile) {
+            int* word = &words[(block * tiles + tile) * 32];
+            word[0] = AttnOpF32::opcode;
+            word[1] = static_cast<int>(block);
+            word[2] = static_cast<int>(tile);
+            word[3] = static_cast<int>(keys);
+            word[4] = 0;  // patched by the caller with the head dim
+            word[5] = tile + 1 == tiles ? 1 : 0;
+        }
+    }
+    return words;
 }
 
-__global__ void attention_kernel_f16(
-    dmk::attention::AttentionParamsT<__half> params) {
-    __shared__ dmk::attention::AttentionSharedT<__half> shared;
-    dmk::attention::run_attention(params, shared);
+void set_instruction_dim(std::vector<int>& words, size_t dim) {
+    for (size_t index = 0; index + 32 <= words.size(); index += 32)
+        words[index + 4] = static_cast<int>(dim);
 }
 
-__global__ void attention_kernel_bf16(
-    dmk::attention::AttentionParamsT<__hip_bfloat16> params) {
-    __shared__ dmk::attention::AttentionSharedT<__hip_bfloat16> shared;
-    dmk::attention::run_attention(params, shared);
+__global__ void attention_kernel_f32(AttnGlobalsF32 g) {
+    dmk::mk::mk_internal<AttnGlobalsF32, AttnOpF32>(g);
+}
+
+__global__ void attention_kernel_f16(AttnGlobalsF16 g) {
+    dmk::mk::mk_internal<AttnGlobalsF16, AttnOpF16>(g);
+}
+
+__global__ void attention_kernel_bf16(AttnGlobalsBF16 g) {
+    dmk::mk::mk_internal<AttnGlobalsBF16, AttnOpBF16>(g);
 }
 
 template <typename T>
-void launch_attention(const dmk::attention::AttentionParamsT<T>& params,
+void launch_attention(typename dmk::attention::AttentionGlobalsT<T>& g,
                       unsigned blocks) {
-    const dim3 threads(dmk::attention::kThreadsPerBlock);
+    const dim3 grid(blocks);
+    const dim3 threads(dmk::config::kThreads);
+    const auto shared = static_cast<unsigned>(dmk::mk::kLaunchBytes);
     if constexpr (std::is_same<T, float>::value) {
-        hipLaunchKernelGGL(attention_kernel_f32, dim3(blocks), threads, 0, 0,
-                           params);
+        check_hip(hipFuncSetAttribute(
+                      reinterpret_cast<const void*>(&attention_kernel_f32),
+                      hipFuncAttributeMaxDynamicSharedMemorySize,
+                      static_cast<int>(shared)),
+                  "attribute");
+        hipLaunchKernelGGL(attention_kernel_f32, grid, threads, shared, 0, g);
     } else if constexpr (std::is_same<T, __half>::value) {
-        hipLaunchKernelGGL(attention_kernel_f16, dim3(blocks), threads, 0, 0,
-                           params);
+        check_hip(hipFuncSetAttribute(
+                      reinterpret_cast<const void*>(&attention_kernel_f16),
+                      hipFuncAttributeMaxDynamicSharedMemorySize,
+                      static_cast<int>(shared)),
+                  "attribute");
+        hipLaunchKernelGGL(attention_kernel_f16, grid, threads, shared, 0, g);
     } else {
-        hipLaunchKernelGGL(attention_kernel_bf16, dim3(blocks), threads, 0, 0,
-                           params);
+        check_hip(hipFuncSetAttribute(
+                      reinterpret_cast<const void*>(&attention_kernel_bf16),
+                      hipFuncAttributeMaxDynamicSharedMemorySize,
+                      static_cast<int>(shared)),
+                  "attribute");
+        hipLaunchKernelGGL(attention_kernel_bf16, grid, threads, shared, 0, g);
     }
+    check_hip(hipGetLastError(), "launch");
 }
 
 template <typename T>
@@ -177,15 +214,23 @@ void run_case(const char* name, size_t rows, size_t keys, size_t dim,
     std::vector<T> host_v = make_matrix<T>(keys, dim, column_major, 3);
     std::vector<T> host_out(rows * dim,
                             dmk::dtype::from_float<T>(-12345.0f));
-
     const std::vector<double> expected =
         reference_attention(host_q, host_k, host_v, rows, keys, dim,
                             column_major);
+
+    const unsigned blocks =
+        static_cast<unsigned>((rows + dmk::attention::kQueryTile - 1) /
+                              dmk::attention::kQueryTile);
+    const size_t tiles = (keys + dmk::attention::kKeyTile - 1) /
+                         dmk::attention::kKeyTile;
+    std::vector<int> host_words = make_instructions(blocks, keys);
+    set_instruction_dim(host_words, dim);
 
     DeviceBuffer device_q(host_q.size() * sizeof(T));
     DeviceBuffer device_k(host_k.size() * sizeof(T));
     DeviceBuffer device_v(host_v.size() * sizeof(T));
     DeviceBuffer device_out(host_out.size() * sizeof(T));
+    DeviceBuffer device_words(host_words.size() * sizeof(int));
     check_hip(hipMemcpy(device_q.data<void>(), host_q.data(),
                         host_q.size() * sizeof(T), hipMemcpyHostToDevice),
               "copy q");
@@ -198,24 +243,34 @@ void run_case(const char* name, size_t rows, size_t keys, size_t dim,
     check_hip(hipMemcpy(device_out.data<void>(), host_out.data(),
                         host_out.size() * sizeof(T), hipMemcpyHostToDevice),
               "copy out");
+    check_hip(hipMemcpy(device_words.data<void>(), host_words.data(),
+                        host_words.size() * sizeof(int),
+                        hipMemcpyHostToDevice),
+              "copy instructions");
 
-    const Shape<2> shape{{rows, dim}};
-    const dmk::attention::AttentionParamsT<T> params{
-        Tensor<const T, 2, MemorySpace::HBM>{device_q.data<const T>(), shape,
+    const Shape<2> matrix_shape{{rows, dim}};
+    const Shape<2> key_shape{{keys, dim}};
+    const Shape<3> word_shape{{blocks, tiles, 32}};
+    dmk::attention::AttentionGlobalsT<T> globals{
+        Tensor<const int, 3, MemorySpace::HBM>{
+            device_words.data<const int>(), word_shape,
+            HbmLayout<3>::contiguous(word_shape)},
+        Tensor<const T, 2, MemorySpace::HBM>{device_q.data<const T>(),
+                                             matrix_shape,
                                              HbmLayout<2>{{dim, 1}}},
         Tensor<const T, 2, MemorySpace::HBM>{
-            device_k.data<const T>(), Shape<2>{{keys, dim}},
+            device_k.data<const T>(), key_shape,
             matrix_layout(keys, dim, column_major)},
         Tensor<const T, 2, MemorySpace::HBM>{
-            device_v.data<const T>(), Shape<2>{{keys, dim}},
+            device_v.data<const T>(), key_shape,
             matrix_layout(keys, dim, column_major)},
-        Tensor<T, 2, MemorySpace::HBM>{device_out.data<T>(), shape,
+        Tensor<T, 2, MemorySpace::HBM>{device_out.data<T>(), matrix_shape,
                                        HbmLayout<2>{{dim, 1}}},
+        static_cast<int>(tiles),
     };
-    if (!params.valid()) fail("params rejected");
+    if (!globals.valid(blocks)) fail("globals rejected");
 
-    launch_attention(params, dmk::attention::attention_blocks(rows));
-    check_hip(hipGetLastError(), "launch");
+    launch_attention<T>(globals, blocks);
     check_hip(hipDeviceSynchronize(), "synchronize");
     check_hip(hipMemcpy(host_out.data(), device_out.data<void>(),
                         host_out.size() * sizeof(T), hipMemcpyDeviceToHost),
@@ -242,8 +297,8 @@ void run_case(const char* name, size_t rows, size_t keys, size_t dim,
     }
 }
 
-// Same launch path as the correctness cases, without the reference: reports
-// the kernel time and the arithmetic throughput (QK^T plus P*V).
+// Same launch path without the reference: reports kernel time and throughput
+// (QK^T plus P*V).
 void time_case(const char* name, size_t rows, size_t keys, size_t dim,
                int repeats) {
     std::vector<float> host_q = make_matrix<float>(rows, dim, false, 1);
@@ -251,10 +306,19 @@ void time_case(const char* name, size_t rows, size_t keys, size_t dim,
     std::vector<float> host_v = make_matrix<float>(keys, dim, false, 3);
     std::vector<float> host_out(rows * dim, 0.0f);
 
+    const unsigned blocks =
+        static_cast<unsigned>((rows + dmk::attention::kQueryTile - 1) /
+                              dmk::attention::kQueryTile);
+    const size_t tiles = (keys + dmk::attention::kKeyTile - 1) /
+                         dmk::attention::kKeyTile;
+    std::vector<int> host_words = make_instructions(blocks, keys);
+    set_instruction_dim(host_words, dim);
+
     DeviceBuffer device_q(host_q.size() * sizeof(float));
     DeviceBuffer device_k(host_k.size() * sizeof(float));
     DeviceBuffer device_v(host_v.size() * sizeof(float));
     DeviceBuffer device_out(host_out.size() * sizeof(float));
+    DeviceBuffer device_words(host_words.size() * sizeof(int));
     check_hip(hipMemcpy(device_q.data<void>(), host_q.data(),
                         host_q.size() * sizeof(float), hipMemcpyHostToDevice),
               "copy q");
@@ -267,38 +331,47 @@ void time_case(const char* name, size_t rows, size_t keys, size_t dim,
     check_hip(hipMemcpy(device_out.data<void>(), host_out.data(),
                         host_out.size() * sizeof(float), hipMemcpyHostToDevice),
               "copy out");
+    check_hip(hipMemcpy(device_words.data<void>(), host_words.data(),
+                        host_words.size() * sizeof(int),
+                        hipMemcpyHostToDevice),
+              "copy instructions");
 
-    const Shape<2> shape{{rows, dim}};
-    const dmk::attention::AttentionParamsT<float> params{
-        Tensor<const float, 2, MemorySpace::HBM>{device_q.data<const float>(),
-                                                 shape,
-                                                 HbmLayout<2>{{dim, 1}}},
+    const Shape<2> matrix_shape{{rows, dim}};
+    const Shape<2> key_shape{{keys, dim}};
+    const Shape<3> word_shape{{blocks, tiles, 32}};
+    AttnGlobalsF32 globals{
+        Tensor<const int, 3, MemorySpace::HBM>{
+            device_words.data<const int>(), word_shape,
+            HbmLayout<3>::contiguous(word_shape)},
         Tensor<const float, 2, MemorySpace::HBM>{
-            device_k.data<const float>(), Shape<2>{{keys, dim}},
+            device_q.data<const float>(), matrix_shape,
             HbmLayout<2>{{dim, 1}}},
         Tensor<const float, 2, MemorySpace::HBM>{
-            device_v.data<const float>(), Shape<2>{{keys, dim}},
+            device_k.data<const float>(), key_shape,
             HbmLayout<2>{{dim, 1}}},
-        Tensor<float, 2, MemorySpace::HBM>{device_out.data<float>(), shape,
+        Tensor<const float, 2, MemorySpace::HBM>{
+            device_v.data<const float>(), key_shape,
+            HbmLayout<2>{{dim, 1}}},
+        Tensor<float, 2, MemorySpace::HBM>{device_out.data<float>(),
+                                           matrix_shape,
                                            HbmLayout<2>{{dim, 1}}},
+        static_cast<int>(tiles),
     };
-    const unsigned blocks = dmk::attention::attention_blocks(rows);
 
-    launch_attention<float>(params, blocks);
+    launch_attention<float>(globals, blocks);
     check_hip(hipDeviceSynchronize(), "warm-up");
 
     Event start;
     Event stop;
     check_hip(hipEventRecord(start.event), "start");
     for (int repeat = 0; repeat < repeats; ++repeat)
-        launch_attention<float>(params, blocks);
+        launch_attention<float>(globals, blocks);
     check_hip(hipEventRecord(stop.event), "stop");
     check_hip(hipEventSynchronize(stop.event), "synchronize");
 
     float total_ms = 0.0f;
     check_hip(hipEventElapsedTime(&total_ms, start.event, stop.event),
               "elapsed");
-    // Both products move rows*keys*dim multiply-adds.
     const double flops =
         4.0 * static_cast<double>(rows) * keys * dim * repeats;
     const double seconds = static_cast<double>(total_ms) * 1e-3;
@@ -310,7 +383,7 @@ void time_case(const char* name, size_t rows, size_t keys, size_t dim,
 }  // namespace
 
 int main() {
-    std::printf("attention operator (standalone)\n");
+    std::printf("attention operator (page-based, standalone op pack)\n");
     run_case<float>("one query tile 16x64x64", 16, 64, 64, false, 3e-4);
     run_case<float>("partial rows 3x37x32", 3, 37, 32, false, 3e-4);
     run_case<float>("single row and key", 1, 1, 128, false, 3e-4);

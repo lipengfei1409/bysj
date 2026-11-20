@@ -1,79 +1,92 @@
 #pragma once
 
-// FlashAttention-style single-head attention operator.
+// Page-based flash-attention operator for the megakernel VM.
 //
-//   out[m, :] = softmax_j( dot(q[m, :], k[j, :]) / sqrt(D) ) * v[j, :]
+// One instruction is one (query tile, key tile) step: it builds a 16x16 score
+// tile and folds it into the 16xD output tile of one query tile, so the
+// loader wave of the next instruction can stage the next K/V tile while the
+// consumer wave is still computing. The Q, O and softmax-state pages persist
+// across the instructions of a query tile; only K/V are refilled every step.
 //
-// The kernel is organized like FlashAttention-2 instead of materializing the
-// score matrix:
-//   - one block owns kQueryTile (16) query rows and keeps them in LDS for the
-//     whole kernel,
-//   - keys are visited in tiles of kKeyTile (16); each K/V tile is staged in
-//     LDS once and reused by all 16 query rows,
-//   - the tile scores are folded into a running max/sum (online softmax), the
-//     output tile is rescaled once per key tile by exp(m_old - m_new), and
-//     P * V is accumulated into the LDS output tile,
-//   - only out[M, D] is written back; the M x N score matrix never exists.
+// Pages (one 8 KiB page each, so D <= kMaxHeadDim = 128):
+//   lid 0  Q tile     16 x D, element type T
+//   lid 1  K tile     16 x D, element type T
+//   lid 2  V tile     16 x D, element type T
+//   lid 3  O tile     16 x D, float accumulator
+//   lid 4  state      m[16], l[16], alpha[16] (float)
+//   lid 5  scratch    S 16x16 (float) followed by P 16x16 (T)
 //
-// Memory behaviour:
-//   - HBM accesses are 16 B chunks: lane i takes the i-th chunk of the row, so
-//     a wave covers 1 KiB of consecutive addresses per instruction. The scalar
-//     fallback still orders lanes along the smallest HBM stride, so a
-//     column-major K/V view stays coalesced too.
-//   - The LDS tiles are padded (kElementStride = kMaxHeadDim + one 16 B chunk,
-//     i.e. 132 floats / 136 halves). Every row then starts on a 16 B boundary
-//     for the vector copies, and consecutive rows land on different banks, so
-//     the S-tile column reads and the per-row reductions do not serialize.
+// Instruction words:
+//   [0] opcode (5)
+//   [1] query tile index   (rows 16*q .. 16*q+15)
+//   [2] key tile index
+//   [3] number of keys N   (the last tile is masked past the end)
+//   [4] head dim D
+//   [5] 1 on the last key tile of the query tile, which writes O / l
 //
-// Both score tiles are 16 wide, so each S tile is exactly one DUMMA m16n16
-// tile when the scalar QK^T loop is replaced by fragments later.
+// Dynamic semaphores:
+//   [0] data_ready   load lane 0 arrives once; run waits
+//   [1] data_done    each consumer wave arrives once; store waits
 //
-// The element type is a template parameter (float, __half, __hip_bfloat16 for
-// Q/K/V and the output); all arithmetic is float, and the LDS tiles keep the
-// input dtype to stay inside the 64 KiB budget.
-//
-// Limitations of this version:
-//   - QK^T and P*V are still scalar MAC loops; wiring DUMMA in needs the
-//     accumulator-fragment rescaling question answered on hardware,
-//   - one wave (64 threads) per block: the D=128 float tiles already use
-//     ~36 KiB of LDS, so a second wave would not fit,
-//   - no causal mask and no multi-head/batch dimension yet.
+// Memory behaviour: the tile copies keep the 16 B chunk layout used by the
+// standalone operators (lane i takes the i-th chunk of a row) and the scalar
+// fallback orders lanes along the smallest HBM stride, so column-major K/V
+// views stay coalesced. The pages themselves are unpadded (a padded 132-float
+// row would not fit a 16 x 128 float tile in one page), so the S-tile column
+// reads still pay the bank conflicts the standalone kernel had.
 
 #include "config.h"
-#include "copy.h"
 #include "dtype.h"
+#include "op.h"
+#include "state.h"
 #include "tensor.h"
 
 #include <cmath>
-#include <type_traits>
 
 namespace dmk::attention {
 
 using tensor::MemorySpace;
 using tensor::Tensor;
 
+inline constexpr int kQueryTile = 16;
+inline constexpr int kKeyTile = 16;
 inline constexpr int kMaxHeadDim = 128;
-inline constexpr int kWaveSize = config::kWaveSize;
-inline constexpr int kQueryTile = 16;  // rows per block
-inline constexpr int kKeyTile = 16;    // keys per tile
-inline constexpr int kThreadsPerBlock = kWaveSize;
-inline constexpr int kLanesPerRow = kWaveSize / kQueryTile;      // 4
-inline constexpr int kColumnsPerLane = kKeyTile / kLanesPerRow;  // 4
+inline constexpr int kRowStride = kMaxHeadDim;  // elements per page row
+inline constexpr int kLanesPerRow = config::kWaveSize / kQueryTile;
+inline constexpr int kColumnsPerLane = kKeyTile / kLanesPerRow;
 
-static_assert(kWaveSize % kQueryTile == 0,
-              "query tile must split the wave into whole lane groups");
+inline constexpr int kQueryPage = 0;
+inline constexpr int kKeyPage = 1;
+inline constexpr int kValuePage = 2;
+inline constexpr int kOutputPage = 3;
+inline constexpr int kStatePage = 4;
+inline constexpr int kScratchPage = 5;
+
+static_assert(kLanesPerRow * kQueryTile == config::kWaveSize,
+              "a query tile must map onto whole waves");
 static_assert(kKeyTile % kLanesPerRow == 0,
               "key tile must split evenly across a row's lane group");
 
 // O[M, D] = softmax(Q[M, D] * K[N, D]^T / sqrt(D)) * V[N, D].
 template <typename T>
-struct AttentionParamsT {
+struct AttentionGlobalsT {
+    using element = T;
+
+    // [blocks][instructions][kInstructionWidth]
+    Tensor<const int, 3, MemorySpace::HBM> instructions;
     Tensor<const T, 2, MemorySpace::HBM> q;
     Tensor<const T, 2, MemorySpace::HBM> k;
     Tensor<const T, 2, MemorySpace::HBM> v;
     Tensor<T, 2, MemorySpace::HBM> out;
+    int num_instructions = 0;
 
-    DMK_HOST_DEVICE bool valid() const {
+    DMK_HOST_DEVICE bool valid(uint32_t blocks) const {
+        if (num_instructions <= 0) return false;
+        if (instructions.data == nullptr) return false;
+        if (instructions.shape.dims[0] < blocks ||
+            instructions.shape.dims[1] < static_cast<size_t>(num_instructions) ||
+            instructions.shape.dims[2] != config::kInstructionWidth)
+            return false;
         const size_t rows = out.shape.dims[0];
         const size_t dim = out.shape.dims[1];
         const size_t keys = k.shape.dims[0];
@@ -87,268 +100,281 @@ struct AttentionParamsT {
     }
 };
 
-using AttentionParams = AttentionParamsT<float>;
+}  // namespace dmk::attention
 
-// LDS budget at D = kMaxHeadDim: ~36 KiB for float, ~23 KiB for half/bf16.
-// Rows are padded by one 16 B chunk so each row stays 16 B aligned for the
-// vector copies while consecutive rows move by four banks (132 words % 32 ==
-// 4, 136 halves == 68 words % 32 == 4).
-template <typename T>
-struct alignas(16) AttentionSharedT {
-    static constexpr int kVector = static_cast<int>(16 / sizeof(T));
-    static constexpr int kElementStride = kMaxHeadDim + kVector;
-    static constexpr int kFloatStride = kMaxHeadDim + 4;
-    static constexpr int kScoreStride = kKeyTile + 1;
+namespace dmk::mk {
 
-    static_assert(kElementStride % kVector == 0,
-                  "padded row must keep whole 16 B chunks");
-    static_assert((kElementStride * static_cast<int>(sizeof(T))) % 16 == 0,
-                  "padded row must keep 16 B alignment");
+template <typename Globals>
+class AttentionOp final : public BaseOp<Globals> {
+public:
+    using T = typename Globals::element;
 
-    T q_tile[kQueryTile][kElementStride];
-    T k_tile[kKeyTile][kElementStride];
-    T v_tile[kKeyTile][kElementStride];
-    float s_tile[kQueryTile][kScoreStride];
-    T p_tile[kQueryTile][kScoreStride];
-    float o_tile[kQueryTile][kFloatStride];
-    float m_row[kQueryTile];      // running max per query row
-    float l_row[kQueryTile];      // running softmax denominator
-    float alpha_row[kQueryTile];  // exp(m_old - m_new) of the current tile
-};
+    static constexpr int opcode = 5;
+    static constexpr int kInstructionWidth = config::kInstructionWidth;
 
-// Grid size for a launch with kThreadsPerBlock threads.
-inline unsigned attention_blocks(size_t rows) {
-    return static_cast<unsigned>((rows + kQueryTile - 1) / kQueryTile);
-}
+    struct Instruction {
+        int query_tile;
+        int key_tile;
+        int num_keys;
+        int dim;
+        int last;
 
-// Converge the wave and publish its LDS writes.
-__device__ inline void block_sync() {
-    lds::wave_barrier();
-    __threadfence_block();
-}
+        __device__ explicit Instruction(const int* words)
+            : query_tile(words[1]),
+              key_tile(words[2]),
+              num_keys(words[3]),
+              dim(words[4]),
+              last(words[5]) {}
+    };
 
-// Copy `source_rows` rows of `dim` elements from a strided HBM view into a
-// padded LDS tile, zeroing the rest of the tile. The fast path moves 16 B
-// chunks: lane i takes the i-th chunk of the tile, so the wave covers 1 KiB of
-// consecutive addresses. The fallback orders lanes along the smallest HBM
-// stride, which keeps both row- and column-major views coalesced.
-template <typename T, int kStride, int kTileRows>
-__device__ inline void stage_tile(T* tile, const T* source, size_t row_stride,
-                                  size_t col_stride, int source_rows, int dim,
-                                  int lane) {
-    constexpr int kVector = static_cast<int>(16 / sizeof(T));
-    const bool vector_ok = source_rows > 0 && col_stride == 1 &&
-                           dim % kVector == 0 && row_stride % kVector == 0 &&
-                           copy::aligned<float4>(source) &&
-                           copy::aligned<float4>(tile);
-    if (vector_ok) {
-        const int vectors_per_row = dim / kVector;
-        const int total = source_rows * vectors_per_row;
-        for (int vector = lane; vector < total; vector += kWaveSize) {
-            const int row = vector / vectors_per_row;
-            const int col = (vector % vectors_per_row) * kVector;
-            copy::store_vec<float4>(
-                tile + row * kStride + col,
-                copy::load_vec<float4>(source + row * row_stride + col));
-        }
-    } else if (source_rows > 0) {
-        const bool row_major = col_stride <= row_stride;
-        for (int index = lane; index < source_rows * dim;
-             index += kWaveSize) {
-            const int row = row_major ? index / dim : index % source_rows;
-            const int col = row_major ? index % dim : index / source_rows;
-            tile[row * kStride + col] =
-                source[row * row_stride + col * col_stride];
-        }
+    __device__ explicit AttentionOp(const int* instruction)
+        : BaseOp<Globals>(instruction) {}
+
+    // Q/O/state keep their physical page across the instructions of a query
+    // tile, so the page order stays the identity.
+    __device__ int release_lid(int query) const override { return query; }
+
+    __device__ int init_semaphores(State& s,
+                                   const Globals&) const override {
+        s.semaphores()[0].init(1);
+        s.semaphores()[1].init(config::kConsumerWaves);
+        return 2;
     }
-    for (int index = lane; index < (kTileRows - source_rows) * dim;
-         index += kWaveSize) {
-        const int row = source_rows + index / dim;
-        const int col = index % dim;
-        tile[row * kStride + col] = dtype::from_float<T>(0.0f);
-    }
-}
 
-// Write `rows` rows of `dim` float elements from a padded LDS tile back to a
-// strided HBM view. Only the float instantiation vectorizes (a half/bf16
-// output has to convert per element); the scalar path keeps the smallest-stride
-// ordering.
-template <typename T, int kStride>
-__device__ inline void store_tile(T* destination, size_t row_stride,
-                                  size_t col_stride, const float* tile,
-                                  int rows, int dim, int lane) {
-    if constexpr (std::is_same<T, float>::value) {
-        constexpr int kVector = 4;  // float4 == one tile element per lane chunk
-        const bool vector_ok = rows > 0 && col_stride == 1 &&
-                               dim % kVector == 0 &&
-                               row_stride % kVector == 0 &&
-                               copy::aligned<float4>(destination) &&
-                               copy::aligned<float4>(tile);
-        if (vector_ok) {
-            const int vectors_per_row = dim / kVector;
-            const int total = rows * vectors_per_row;
-            for (int vector = lane; vector < total; vector += kWaveSize) {
-                const int row = vector / vectors_per_row;
-                const int col = (vector % vectors_per_row) * kVector;
-                copy::store_vec<float4>(
-                    destination + row * row_stride + col,
-                    copy::load_vec<float4>(tile + row * kStride + col));
+    __device__ void load(State& s, const Globals& g) const override {
+        const Instruction inst(this->instruction());
+        const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
+        const int dim = inst.dim;
+        const int rows = static_cast<int>(g.out.shape.dims[0]);
+        const int first_row = inst.query_tile * attention::kQueryTile;
+        const int first_key = inst.key_tile * attention::kKeyTile;
+
+        const int q_pid = s.pid(attention::kQueryPage);
+        const int k_pid = s.pid(attention::kKeyPage);
+        const int v_pid = s.pid(attention::kValuePage);
+        const int o_pid = s.pid(attention::kOutputPage);
+        const int state_pid = s.pid(attention::kStatePage);
+        s.wait_page_ready(q_pid);
+        s.wait_page_ready(k_pid);
+        s.wait_page_ready(v_pid);
+        s.wait_page_ready(o_pid);
+        s.wait_page_ready(state_pid);
+        s.wait_page_ready(s.pid(attention::kScratchPage));
+
+        // The first key tile of a query tile (re)loads Q and resets the
+        // output tile and the softmax state; later tiles reuse the pages.
+        if (inst.key_tile == 0) {
+            T* q_page = static_cast<T*>(s.pages[q_pid].ptr());
+            float* o_page = static_cast<float*>(s.pages[o_pid].ptr());
+            float* state = static_cast<float*>(s.pages[state_pid].ptr());
+            const auto stride0 = g.q.layout.strides[0];
+            const auto stride1 = g.q.layout.strides[1];
+            for (int index = lane; index < attention::kQueryTile * dim;
+                 index += config::kWaveSize) {
+                const int row = index / dim;
+                const int col = index % dim;
+                const int query = first_row + row;
+                q_page[row * attention::kRowStride + col] =
+                    query < rows
+                        ? g.q.data[static_cast<size_t>(query) * stride0 +
+                                   static_cast<size_t>(col) * stride1]
+                        : dtype::from_float<T>(0.0f);
+                o_page[row * attention::kRowStride + col] = 0.0f;
             }
-            return;
+            if (lane < attention::kQueryTile) {
+                state[lane] = -INFINITY;
+                state[attention::kQueryTile + lane] = 0.0f;
+                state[2 * attention::kQueryTile + lane] = 1.0f;
+            }
+        }
+
+        // K/V tile; rows past the end are zeroed and masked in the scores.
+        T* k_page = static_cast<T*>(s.pages[k_pid].ptr());
+        T* v_page = static_cast<T*>(s.pages[v_pid].ptr());
+        const auto k_stride0 = g.k.layout.strides[0];
+        const auto k_stride1 = g.k.layout.strides[1];
+        const auto v_stride0 = g.v.layout.strides[0];
+        const auto v_stride1 = g.v.layout.strides[1];
+        for (int index = lane; index < attention::kKeyTile * dim;
+             index += config::kWaveSize) {
+            const int row = index / dim;
+            const int col = index % dim;
+            const int key = first_key + row;
+            const bool valid = key < inst.num_keys;
+            k_page[row * attention::kRowStride + col] =
+                valid ? g.k.data[static_cast<size_t>(key) * k_stride0 +
+                                  static_cast<size_t>(col) * k_stride1]
+                      : dtype::from_float<T>(0.0f);
+            v_page[row * attention::kRowStride + col] =
+                valid ? g.v.data[static_cast<size_t>(key) * v_stride0 +
+                                  static_cast<size_t>(col) * v_stride1]
+                      : dtype::from_float<T>(0.0f);
+        }
+
+        lds::wave_barrier();
+        __threadfence_block();
+        if (lane == 0) s.semaphores()[0].arrive();
+    }
+
+    __device__ void run(State& s, const Globals& g) const override {
+        const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
+        const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
+        s.semaphores()[0].wait(0);
+        if (wave == 0) run_tile(s, g, lane);
+        lds::wave_barrier();
+        __threadfence_block();
+        if (lane == 0) s.semaphores()[1].arrive();
+    }
+
+    __device__ void store(State& s, const Globals& g) const override {
+        const Instruction inst(this->instruction());
+        const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
+        const int dim = inst.dim;
+
+        s.semaphores()[1].wait(0);
+
+        if (inst.last != 0) {
+            const float* o_page = static_cast<const float*>(
+                s.pages[s.pid(attention::kOutputPage)].ptr());
+            const float* state = static_cast<const float*>(
+                s.pages[s.pid(attention::kStatePage)].ptr());
+            const float* l_row = state + attention::kQueryTile;
+            const int rows = static_cast<int>(g.out.shape.dims[0]);
+            const int first_row = inst.query_tile * attention::kQueryTile;
+            const auto stride0 = g.out.layout.strides[0];
+            const auto stride1 = g.out.layout.strides[1];
+            for (int index = lane; index < attention::kQueryTile * dim;
+                 index += config::kWaveSize) {
+                const int row = index / dim;
+                const int col = index % dim;
+                const int query = first_row + row;
+                if (query >= rows) continue;
+                const float inverse =
+                    l_row[row] != 0.0f ? 1.0f / l_row[row] : 0.0f;
+                g.out.data[static_cast<size_t>(query) * stride0 +
+                           static_cast<size_t>(col) * stride1] =
+                    dtype::from_float<T>(
+                        o_page[row * attention::kRowStride + col] * inverse);
+            }
+        }
+
+        lds::wave_barrier();
+        __threadfence_block();
+        if (lane == 0) {
+            for (int lid = 0; lid < config::kNumPages; ++lid)
+                s.finish_page(s.pid(lid), config::kConsumerWaves);
         }
     }
-    if (rows == 0) return;
-    const bool row_major = col_stride <= row_stride;
-    for (int index = lane; index < rows * dim; index += kWaveSize) {
-        const int row = row_major ? index / dim : index % rows;
-        const int col = row_major ? index % dim : index / rows;
-        destination[row * row_stride + col * col_stride] =
-            dtype::from_float<T>(tile[row * kStride + col]);
-    }
-}
 
-// One query tile. Every lane of the block calls this together; `shared` is the
-// block's __shared__ AttentionSharedT<T>.
-template <typename T>
-__device__ inline void run_attention(const AttentionParamsT<T>& params,
-                                     AttentionSharedT<T>& shared) {
-    if (!params.valid()) return;
+private:
+    // The whole 16x16 score tile and its contribution to the 16xD output,
+    // executed by wave 0; the other consumer waves only carry the semaphore.
+    __device__ void run_tile(State& s, const Globals&, int lane) const {
+        const Instruction inst(this->instruction());
+        const int dim = inst.dim;
+        const int first_key = inst.key_tile * attention::kKeyTile;
 
-    const int lane = static_cast<int>(threadIdx.x % kWaveSize);
-    const int rows = static_cast<int>(params.out.shape.dims[0]);
-    const int keys = static_cast<int>(params.k.shape.dims[0]);
-    const int dim = static_cast<int>(params.out.shape.dims[1]);
-    const int row_start = static_cast<int>(blockIdx.x) * kQueryTile;
-    if (row_start >= rows) return;
-    const int valid_rows =
-        rows - row_start < kQueryTile ? rows - row_start : kQueryTile;
-    const float scale = rsqrtf(static_cast<float>(dim));
+        const T* q_page = static_cast<const T*>(
+            s.pages[s.pid(attention::kQueryPage)].ptr());
+        const T* k_page = static_cast<const T*>(
+            s.pages[s.pid(attention::kKeyPage)].ptr());
+        const T* v_page = static_cast<const T*>(
+            s.pages[s.pid(attention::kValuePage)].ptr());
+        float* o_page = static_cast<float*>(
+            s.pages[s.pid(attention::kOutputPage)].ptr());
+        float* state = static_cast<float*>(
+            s.pages[s.pid(attention::kStatePage)].ptr());
+        float* s_tile = static_cast<float*>(
+            s.pages[s.pid(attention::kScratchPage)].ptr());
+        T* p_tile = reinterpret_cast<T*>(s_tile +
+                                         attention::kQueryTile *
+                                             attention::kKeyTile);
+        float* m_row = state;
+        float* l_row = state + attention::kQueryTile;
+        float* alpha_row = state + 2 * attention::kQueryTile;
 
-    const auto q_stride0 = params.q.layout.strides[0];
-    const auto q_stride1 = params.q.layout.strides[1];
-    const auto k_stride0 = params.k.layout.strides[0];
-    const auto k_stride1 = params.k.layout.strides[1];
-    const auto v_stride0 = params.v.layout.strides[0];
-    const auto v_stride1 = params.v.layout.strides[1];
-    const auto o_stride0 = params.out.layout.strides[0];
-    const auto o_stride1 = params.out.layout.strides[1];
+        const float scale = rsqrtf(static_cast<float>(dim));
 
-    // Q tile plus the per-row softmax state.
-    stage_tile<T, AttentionSharedT<T>::kElementStride, kQueryTile>(
-        &shared.q_tile[0][0],
-        params.q.data + static_cast<size_t>(row_start) * q_stride0, q_stride0,
-        q_stride1, valid_rows, dim, lane);
-    for (int index = lane; index < kQueryTile * dim; index += kWaveSize) {
-        const int row = index / dim;
-        const int col = index % dim;
-        shared.o_tile[row][col] = 0.0f;
-    }
-    if (lane < kQueryTile) {
-        shared.m_row[lane] = -INFINITY;
-        shared.l_row[lane] = 0.0f;
-        shared.alpha_row[lane] = 1.0f;
-    }
-    block_sync();
-
-    for (int key_start = 0; key_start < keys; key_start += kKeyTile) {
-        // Stage the next K/V tile; rows past the end are zeroed and masked in
-        // the score step.
-        const int key_rows =
-            keys - key_start < kKeyTile ? keys - key_start : kKeyTile;
-        stage_tile<T, AttentionSharedT<T>::kElementStride, kKeyTile>(
-            &shared.k_tile[0][0],
-            params.k.data + static_cast<size_t>(key_start) * k_stride0,
-            k_stride0, k_stride1, key_rows, dim, lane);
-        stage_tile<T, AttentionSharedT<T>::kElementStride, kKeyTile>(
-            &shared.v_tile[0][0],
-            params.v.data + static_cast<size_t>(key_start) * v_stride0,
-            v_stride0, v_stride1, key_rows, dim, lane);
-        block_sync();
-
-        // S = Q * K^T / sqrt(D); keys past the end are masked to -inf so they
-        // contribute nothing to either the max or the denominator.
-        for (int index = lane; index < kQueryTile * kKeyTile;
-             index += kWaveSize) {
-            const int row = index / kKeyTile;
-            const int column = index % kKeyTile;
+        // S = Q * K^T / sqrt(D), with keys past the end masked to -inf.
+        for (int index = lane; index < attention::kQueryTile * attention::kKeyTile;
+             index += config::kWaveSize) {
+            const int row = index / attention::kKeyTile;
+            const int column = index % attention::kKeyTile;
             float score = -INFINITY;
-            if (key_start + column < keys) {
+            if (first_key + column < inst.num_keys) {
                 score = 0.0f;
                 for (int col = 0; col < dim; ++col) {
-                    score += dtype::to_float(shared.q_tile[row][col]) *
-                             dtype::to_float(shared.k_tile[column][col]);
+                    score += dtype::to_float(
+                                 q_page[row * attention::kRowStride + col]) *
+                             dtype::to_float(
+                                 k_page[column * attention::kRowStride + col]);
                 }
                 score *= scale;
             }
-            shared.s_tile[row][column] = score;
+            s_tile[row * attention::kKeyTile + column] = score;
         }
-        block_sync();
+        lds::wave_barrier();
+        __threadfence_block();
 
-        // Row statistics: kLanesPerRow lanes share a query row and reduce with
-        // two shuffles inside their four-lane group.
-        const int stats_row = lane / kLanesPerRow;
-        const int stats_part = lane % kLanesPerRow;
+        // Row statistics: kLanesPerRow lanes share a row and reduce inside
+        // their four-lane group.
+        const int stats_row = lane / attention::kLanesPerRow;
+        const int stats_part = lane % attention::kLanesPerRow;
         float tile_max = -INFINITY;
-        for (int c = 0; c < kColumnsPerLane; ++c) {
+        for (int c = 0; c < attention::kColumnsPerLane; ++c) {
             const float score =
-                shared.s_tile[stats_row][stats_part * kColumnsPerLane + c];
+                s_tile[stats_row * attention::kKeyTile +
+                       stats_part * attention::kColumnsPerLane + c];
             tile_max = score > tile_max ? score : tile_max;
         }
         tile_max = fmaxf(tile_max, __shfl_xor(tile_max, 1));
         tile_max = fmaxf(tile_max, __shfl_xor(tile_max, 2));
 
-        const float previous_max = shared.m_row[stats_row];
+        const float previous_max = m_row[stats_row];
         const float next_max = previous_max > tile_max ? previous_max : tile_max;
         const float alpha = expf(previous_max - next_max);
 
         float tile_sum = 0.0f;
-        for (int c = 0; c < kColumnsPerLane; ++c) {
-            const int column = stats_part * kColumnsPerLane + c;
-            const float weight =
-                expf(shared.s_tile[stats_row][column] - next_max);
-            shared.p_tile[stats_row][column] = dtype::from_float<T>(weight);
+        for (int c = 0; c < attention::kColumnsPerLane; ++c) {
+            const int column =
+                stats_part * attention::kColumnsPerLane + c;
+            const float weight = expf(
+                s_tile[stats_row * attention::kKeyTile + column] - next_max);
+            p_tile[stats_row * attention::kKeyTile + column] =
+                dtype::from_float<T>(weight);
             tile_sum += weight;
         }
         tile_sum += __shfl_xor(tile_sum, 1);
         tile_sum += __shfl_xor(tile_sum, 2);
 
         if (stats_part == 0) {
-            shared.m_row[stats_row] = next_max;
-            shared.l_row[stats_row] =
-                shared.l_row[stats_row] * alpha + tile_sum;
-            shared.alpha_row[stats_row] = alpha;
+            m_row[stats_row] = next_max;
+            l_row[stats_row] = l_row[stats_row] * alpha + tile_sum;
+            alpha_row[stats_row] = alpha;
         }
-        block_sync();
+        lds::wave_barrier();
+        __threadfence_block();
 
-        // O = O * alpha + P * V for the whole output tile.
-        for (int index = lane; index < kQueryTile * dim; index += kWaveSize) {
-            const int out_row = index / dim;
-            const int out_col = index % dim;
+        // O = O * alpha + P * V.
+        for (int index = lane; index < attention::kQueryTile * dim;
+             index += config::kWaveSize) {
+            const int row = index / dim;
+            const int col = index % dim;
             float sum = 0.0f;
-            for (int key = 0; key < kKeyTile; ++key) {
-                sum += dtype::to_float(shared.p_tile[out_row][key]) *
-                       dtype::to_float(shared.v_tile[key][out_col]);
+            for (int key = 0; key < attention::kKeyTile; ++key) {
+                sum += dtype::to_float(
+                           p_tile[row * attention::kKeyTile + key]) *
+                       dtype::to_float(
+                           v_page[key * attention::kRowStride + col]);
             }
-            shared.o_tile[out_row][out_col] =
-                shared.o_tile[out_row][out_col] *
-                    shared.alpha_row[out_row] +
+            o_page[row * attention::kRowStride + col] =
+                o_page[row * attention::kRowStride + col] *
+                    alpha_row[row] +
                 sum;
         }
-        block_sync();
+        lds::wave_barrier();
+        __threadfence_block();
     }
+};
 
-    // Out = O / l, written straight from LDS.
-    for (int index = lane; index < valid_rows * dim; index += kWaveSize) {
-        const int out_row = index / dim;
-        const int out_col = index % dim;
-        shared.o_tile[out_row][out_col] *= shared.l_row[out_row] != 0.0f
-                                               ? 1.0f / shared.l_row[out_row]
-                                               : 0.0f;
-    }
-    block_sync();
-    store_tile<T, AttentionSharedT<T>::kFloatStride>(
-        params.out.data + static_cast<size_t>(row_start) * o_stride0, o_stride0,
-        o_stride1, &shared.o_tile[0][0], valid_rows, dim, lane);
-}
-
-}  // namespace dmk::attention
+}  // namespace dmk::mk
