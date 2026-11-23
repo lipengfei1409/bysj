@@ -51,10 +51,12 @@ std::tuple<Tensor, Tensor> force_assembly_hip(Tensor grad_edge,
 //
 // out[e, r, c] = sum_t coef_t * term_t[e, ...] in one pass; each term
 // broadcasts over the channel axis, the row axis, both, or is a scalar.
-Tensor edge_combine_hip(std::vector<Tensor> terms,
+Tensor edge_combine_hip(std::vector<Tensor> factors,
+                        std::vector<int64_t> modes,
                         std::vector<double> coefficients,
-                        std::vector<int64_t> modes, int64_t edges, int64_t rows,
-                        int64_t channels);
+                        std::vector<int64_t> term_starts,
+                        std::vector<int64_t> term_counts, int64_t edges,
+                        int64_t rows, int64_t channels);
 
 // --- Slot-axis operators (see docs/optimization-status.md, C1/C2) ----------
 

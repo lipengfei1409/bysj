@@ -16,7 +16,12 @@ from reference.combine import edge_combine_reference
 
 class _FakeExtension:
     @staticmethod
-    def edge_combine(terms, coefficients, modes, edges, rows, channels):
+    def edge_combine(factors, modes, coefficients, term_starts, term_counts,
+                     edges, rows, channels):
+        terms = [
+            tuple(factors[start:start + count])
+            for start, count in zip(term_starts, term_counts)
+        ]
         return edge_combine_reference(terms, coefficients)
 
 
@@ -85,6 +90,57 @@ class EdgeCombineHostTests(unittest.TestCase):
         combine.edge_combine(full, per_row, scalar).sum().backward()
         torch.testing.assert_close(per_row.grad, torch.full((4, 3, 1), 8.0))
         torch.testing.assert_close(scalar.grad, torch.tensor(96.0))
+
+    def test_product_term_forward_and_gradients(self):
+        generator = torch.Generator().manual_seed(7)
+        gate = torch.randn(5, 3, 1, generator=generator)
+        bias = torch.randn(5, 1, 8, generator=generator)
+        value = torch.randn(5, 3, 8, generator=generator)
+        terms = (value, (value, gate), bias)
+        coefficients = (1.0, 2.0, 0.5)
+        actual = combine.edge_combine(*terms, coefficients=coefficients)
+        expected = edge_combine_reference(terms, coefficients)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+        # Clone each factor, keeping the term structure (the product is a tuple).
+        actual = [t.detach().clone().requires_grad_() for t in (value, gate, bias)]
+        expected = [t.detach().clone().requires_grad_() for t in (value, gate, bias)]
+        combine.edge_combine(
+            actual[0], (actual[0], actual[1]), actual[2], coefficients=coefficients
+        ).sum().backward()
+        edge_combine_reference(
+            (expected[0], (expected[0], expected[1]), expected[2]), coefficients
+        ).sum().backward()
+        for produced, reference in zip(actual, expected):
+            torch.testing.assert_close(produced.grad, reference.grad, rtol=1e-6, atol=1e-6)
+        # d/dgate is the coefficient times the other factor, summed over C
+        torch.testing.assert_close(
+            actual[1].grad, (2.0 * value).sum(dim=2, keepdim=True)
+        )
+
+    def test_row_and_channel_constant_broadcast(self):
+        full = torch.randn(4, 3, 8)
+        row_const = torch.randn(1, 3, 1)
+        channel_const = torch.randn(1, 1, 8)
+        self.assertEqual(combine._mode_of(row_const, 4, 3, 8), combine.ROW_CONST)
+        self.assertEqual(combine._mode_of(channel_const, 4, 3, 8), combine.CHANNEL_CONST)
+        actual = combine.edge_combine(full, row_const, channel_const)
+        expected = edge_combine_reference((full, row_const, channel_const))
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+    def test_five_dimensional_singletons_are_squeezed(self):
+        factor = torch.randn(5, 4, 1, 1, 8)
+        squeezed = combine._normalize(factor)
+        self.assertEqual(tuple(squeezed.shape), (5, 4, 8))
+        edge_only = torch.randn(5, 1, 1, 1, 1)
+        self.assertEqual(tuple(combine._normalize(edge_only).shape), (5, 1, 1))
+        two_d = torch.randn(5, 4)
+        self.assertEqual(tuple(combine._normalize(two_d).shape), (5, 4, 1))
+
+    def test_rejects_too_many_factors(self):
+        full = torch.randn(4, 3, 8)
+        with self.assertRaises(ValueError):
+            combine.edge_combine(*(full for _ in range(9)))
 
     def test_rejects_terms_that_do_not_broadcast(self):
         full = torch.randn(4, 3, 8)

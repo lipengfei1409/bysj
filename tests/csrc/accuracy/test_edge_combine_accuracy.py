@@ -42,6 +42,17 @@ class EdgeCombineAccuracyTests(unittest.TestCase):
                         )
                         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
+    def test_product_term_matches_the_reference(self):
+        terms = self._terms(6, 4, 16, seed=5)
+        actual = edge_combine(
+            (terms["full"], terms["per_row"]), terms["per_channel"],
+            coefficients=(2.0, -1.0),
+        )
+        expected = edge_combine_reference(
+            ((terms["full"], terms["per_row"]), terms["per_channel"]), (2.0, -1.0)
+        )
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
     def test_gradients_match_the_reference(self):
         edges, rows, channels = 6, 4, 16
         terms = self._terms(edges, rows, channels, seed=9)

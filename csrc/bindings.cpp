@@ -30,7 +30,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("slot"), py::arg("scale") = py::none());
   m.def("slot_reduce", &slot_reduce_hip, py::arg("src"),
         py::arg("weight") = py::none());
-  m.def("edge_combine", &edge_combine_hip, py::arg("terms"),
-        py::arg("coefficients"), py::arg("modes"), py::arg("edges"),
-        py::arg("rows"), py::arg("channels"));
+  m.def("edge_combine", &edge_combine_hip, py::arg("factors"),
+        py::arg("modes"), py::arg("coefficients"), py::arg("term_starts"),
+        py::arg("term_counts"), py::arg("edges"), py::arg("rows"),
+        py::arg("channels"));
 }
