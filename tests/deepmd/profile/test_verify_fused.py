@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import tempfile
 import sys
 import unittest
@@ -110,6 +111,43 @@ class PlanTests(unittest.TestCase):
         self.assertIn("DP_RUN_FUSED_DEEPMD_PARITY=1", buffer.getvalue())
         self.assertEqual(code, 0)
         self.assertEqual(calls, [])
+
+
+class SummaryRenderingTests(unittest.TestCase):
+    def _run_with_verdict(self, ok: bool) -> tuple[int, str]:
+        buffer = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            for side in ("off", "on"):
+                target = out / side / "run" / "dpa4_inference_profile_summary.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(_summary(device_us=964_400.0, launches=2614)))
+            original_call = verify_fused.subprocess.call
+            original_judge = verify_fused.judge
+            verify_fused.subprocess.call = lambda command, **kwargs: 0
+            verify_fused.judge = lambda baseline, patched: (ok, ["ok   dispatched"])
+            try:
+                with contextlib.redirect_stdout(buffer):
+                    code = verify_fused.main([
+                        "--stage", "e2e", "--model-file", "m.pt",
+                        "--input-npz", "i.npz", "--out-dir", str(out),
+                    ])
+            finally:
+                verify_fused.subprocess.call = original_call
+                verify_fused.judge = original_judge
+        return code, buffer.getvalue()
+
+    def test_the_verdict_row_renders_a_bool_status(self) -> None:
+        # Regression: the verdict row used to append the bool from judge(), and
+        # the summary then died on f"{status:4s}" before returning anything.
+        code, text = self._run_with_verdict(True)
+        self.assertEqual(code, 0)
+        self.assertIn("PASS  e2e verdict", text)
+
+    def test_a_failed_verdict_fails_the_ladder(self) -> None:
+        code, text = self._run_with_verdict(False)
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  e2e verdict", text)
 
 
 class JudgeTests(unittest.TestCase):

@@ -196,6 +196,13 @@ def _latest_summary(root: Path) -> Path | None:
     return Path(found[-1]) if found else None
 
 
+def _status_text(status: str | bool) -> str:
+    """Render a stage status; the e2e verdict row carries a bool."""
+    if isinstance(status, str):
+        return status
+    return "PASS" if status else "FAIL"
+
+
 def _run(command: list[str], env: dict, cwd: Path) -> int:
     print("$ " + " ".join(command), flush=True)
     return subprocess.call(command, cwd=str(cwd), env=env)
@@ -288,14 +295,15 @@ def main(argv: list[str] | None = None) -> int:
                 print("  " + message)
             print()
             print(json.dumps(compare(baseline_summary, fused_summary), indent=2))
-            results.append(("e2e verdict", ok, "see criteria above"))
+            results.append(("e2e verdict", "PASS" if ok else "FAIL",
+                            "see criteria above"))
         else:
             results.append(("e2e verdict", "FAIL", "summaries not found"))
 
     print("\n-- summary --")
     for label, status, detail in results:
-        print(f"  {status:4s}  {label:20s} {detail}")
-    return 1 if any(status == "FAIL" for _, status, _ in results) else 0
+        print(f"  {_status_text(status):4s}  {label:20s} {detail}")
+    return 1 if any(_status_text(status) == "FAIL" for _, status, _ in results) else 0
 
 
 if __name__ == "__main__":
