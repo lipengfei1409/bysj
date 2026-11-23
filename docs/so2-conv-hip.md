@@ -82,6 +82,21 @@ hipify 会把 `ATen/cuda/CUDAContext.h` 变成 `ATen/hip/HIPContext.h`，而这�
 所以生成器注入一个 20 行的 `dpa4::DeviceGuard` RAII 包装，行为等价（torch dispatch 通常
 已经选好设备，这层只是保险）。
 
+### 3.6 分派必须只引用"已编译的 shard"
+
+第一次链接成功后 `load_library` 报：
+
+```
+undefined symbol: dpa4::conv_forward_launch<1, 32>(...)
+```
+
+原因是上游的 `DPA4_CONV_FOR_EACH_SHAPE` 展开全部 **12 个 `(CF, L)`** 组合，
+而 v1 只编译 `(3, 64)`，于是分派函数引用了 11 个不存在的符号——链接不报错（它们是
+`extern template` 声明），运行时 dlopen 才炸。生成器因此注入
+`DPA4_CONV_SHIPPED_SHAPES(macro)`（由 `SHARDS` 列表生成），分派与
+`conv_shape_instantiated()` 都改用它。主机测试会核对：分派里出现的每个 `(L, CF)`
+都必须在 `build.SOURCES` 里同时有 fwd 与 bwd 的 shard。
+
 ### 3.4 `dpa4_fp32_ridge()` 必须重算
 
 它决定 `_profitable` 的设备缩放，原实现读 CUDA 的 compute capability 和“128 FMA lane”：

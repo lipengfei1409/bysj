@@ -53,6 +53,16 @@ class DeviceGuard {
 }  // namespace dpa4
 
 
+
+// Only the shapes this build instantiates.  Upstream's
+// ``DPA4_CONV_FOR_EACH_SHAPE`` lists all twelve (focus width, degree) pairs and
+// the dispatch below is expanded over it, which references eleven
+// ``conv_*_launch`` symbols nothing here defines -- the link succeeds but
+// ``load_library`` fails on the first undefined symbol.  Generated from the
+// shard list in tools/hipify_so2_conv.py.
+#define DPA4_CONV_SHIPPED_SHAPES(macro) macro(3, 64)
+
+
 #include <cmath>
 #include <tuple>
 
@@ -305,7 +315,7 @@ bool dispatch_forward(const ConvConfig& c,
     dpa4::conv_forward_launch<LV, CFV>(args, c.n_node, out, pre_gate, stream); \
     return true;                                                               \
   }
-  DPA4_CONV_FOR_EACH_SHAPE(DPA4_CASE)
+  DPA4_CONV_SHIPPED_SHAPES(DPA4_CASE)
 #undef DPA4_CASE
   return false;
 }
@@ -328,7 +338,7 @@ bool dispatch_backward(const ConvConfig& c,
                                         g_x, g_wigner, g_kc, g_alpha, stream); \
     return true;                                                               \
   }
-  DPA4_CONV_FOR_EACH_SHAPE(DPA4_CASE)
+  DPA4_CONV_SHIPPED_SHAPES(DPA4_CASE)
 #undef DPA4_CASE
   return false;
 }
@@ -338,8 +348,13 @@ bool dispatch_backward(const ConvConfig& c,
 namespace dpa4 {
 
 bool conv_shape_instantiated(int lmax, int focus_dim) {
-  return 1 <= lmax && lmax <= kMaxL &&
-         (focus_dim == kFocusDim32 || focus_dim == kFocusDim64);
+  // Generated from the compiled shards; upstream's version answers for all
+  // twelve, which would let a shape through validation and then fail the link.
+  bool instantiated = false;
+#define DPA4_INSTANTIATED_CASE(LV, CFV)   if (lmax == LV && focus_dim == CFV) {     instantiated = true;                  }
+  DPA4_CONV_SHIPPED_SHAPES(DPA4_INSTANTIATED_CASE)
+#undef DPA4_INSTANTIATED_CASE
+  return instantiated;
 }
 
 }  // namespace dpa4

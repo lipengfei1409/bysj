@@ -155,6 +155,28 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(glue.count("dpa4::DeviceGuard device_guard"), 4)
         self.assertIn("hipGetDevice(&previous_)", glue)
 
+    def test_dispatch_references_only_compiled_shards(self) -> None:
+        # Regression: upstream's DPA4_CONV_FOR_EACH_SHAPE lists all twelve
+        # (L, CF) pairs, so the dispatch referenced eleven ``conv_*_launch``
+        # symbols nothing defines.  The link succeeded and ``load_library``
+        # failed on the first undefined symbol.
+        glue = (PORT / "so2_conv.hip").read_text()
+        code = "\n".join(line.split("//", 1)[0] for line in glue.splitlines())
+        self.assertNotIn("DPA4_CONV_FOR_EACH_SHAPE(DPA4_CASE)", code)
+        self.assertIn("DPA4_CONV_SHIPPED_SHAPES(DPA4_CASE)", code)
+        shapes = re.findall(r"macro\((\d+), (\d+)\)", code)
+        self.assertTrue(shapes, "no shipped shape list found")
+        import importlib.util as ilu
+
+        spec = ilu.spec_from_file_location("so2_conv_hip_build3", PORT / "build.py")
+        assert spec is not None and spec.loader is not None
+        build_module = ilu.module_from_spec(spec)
+        spec.loader.exec_module(build_module)
+        for lmax, cf in shapes:
+            for kind in ("fwd", "bwd"):
+                shard = f"so2_conv_{kind}_c{cf}_l{lmax}.hip"
+                self.assertIn(shard, build_module.SOURCES, f"{lmax},{cf} needs {shard}")
+
     def test_ridge_is_recomputed_from_hip_properties(self) -> None:
         glue = (PORT / "so2_conv.hip").read_text()
         start = glue.index("double dpa4_fp32_ridge()")
