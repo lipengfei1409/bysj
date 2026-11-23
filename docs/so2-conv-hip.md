@@ -101,7 +101,12 @@ undefined symbol: dpa4::conv_forward_launch<1, 32>(...)
 
 它决定 `_profitable` 的设备缩放，原实现读 CUDA 的 compute capability 和“128 FMA lane”：
 在 AMD 上是错的。HIP 版用 `hipDeviceProp_t`：`2 × warpSize × CU × 时钟`（CDNA 的 fp32 FMA
-宽度就是波前宽度）。本卡实测 ridge ≈ **28.7**（`dpa4_fp32_ridge()` 会打印），标定件是 73.2。
+宽度就是波前宽度）。
+
+**实测：`dpa4_fp32_ridge() = 24.0`**（标定件 73.2），与 FFMA 探针折算的 28.7 同量级——
+两者口径不同（这里用理论峰值和理论带宽，探针用实测持续吞吐），差 20% 属正常。
+意义：`_profitable` 的预算 = 65536 × 24.0/73.2 = **21 490 FMA**，而本 checkpoint 需要
+**225 280**，差 10.5 倍 → 上游会拒绝，接线时必须显式旁路。
 
 ## 4.1 为什么不用 `torch.utils.cpp_extension.load`
 
@@ -202,6 +207,6 @@ DEEPMD_SRC=~/private_data/lipengfei/deepmd-kit \
 | 发散 barrier 用 wave 内建 | 同上 | ✅ |
 | schema 与上游逐字一致 | 同上（C 字面量拼接后比对） | ✅ |
 | ridge 用 HIP 属性重算 | 同上 | ✅ |
-| **能编译** | DCU：`python3 csrc/so2_conv_hip/build.py` | ⬜ 待跑 |
-| **数值与稠密一致** | DCU：一次 conv 的 A/B | ⬜ 待跑 |
+| **能编译、能注册** | DCU：`python3 csrc/so2_conv_hip/build.py --check` | ✅ 2026-11-23，5 个算子全部 ok，ridge=24.0 |
+| **数值与稠密一致** | DCU：`tests/dcu/run_upstream_conv_test.py` | ⬜ 待跑 |
 | **端到端收益** | DCU：`verify_fused.py --stage all` | ⬜ 待跑 |
