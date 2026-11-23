@@ -14,8 +14,8 @@
 // Python integer to size the row pointer, which bakes the trace-time count into
 // the compiled graph.
 
-#include <ATen/hip/HIPContext.h>
-#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
+#include <c10/hip/HIPStream.h>
+#include <c10/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <hip/hip_runtime.h>
 
 #include "hip_compat.cuh"
@@ -338,7 +338,7 @@ dpa4_so2_conv(torch::Tensor x,
               int64_t lmax,
               int64_t focus_dim,
               int64_t rank) {
-  const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(x.device());
+  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(x.device());
   x = x.contiguous();
   kc = kc.contiguous().flatten(1);
   const ConvConfig c =
@@ -393,7 +393,7 @@ dpa4_so2_conv(torch::Tensor x,
     return {out, alpha, pre_gate, z_all};
   }
 
-  auto stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
+  auto stream = c10::hip::getCurrentHIPStream();
   auto args = make_args(c, x, order, row_ptr, src, runs, kc, cb, w0, w1, gw,
                         head_gate, rescale, z_all);
   args.q = q.data_ptr<float>();
@@ -434,7 +434,7 @@ dpa4_so2_conv_backward(torch::Tensor grad_out,
                        int64_t lmax,
                        int64_t focus_dim,
                        int64_t rank) {
-  const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(x.device());
+  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(x.device());
   x = x.contiguous();
   kc = kc.contiguous().flatten(1);
   const ConvConfig c =
@@ -480,7 +480,7 @@ dpa4_so2_conv_backward(torch::Tensor grad_out,
   auto order = src_order.contiguous();
   auto row_ptr = src_rowptr.contiguous();
   check_csr(order, row_ptr, c, "dpa4_so2_conv_backward");
-  auto stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
+  auto stream = c10::hip::getCurrentHIPStream();
   auto args = make_args(c, x, order, row_ptr, dst, runs, kc, cb, w0, w1, gw,
                         head_gate, rescale, z_all);
   args.alpha = alpha.data_ptr<float>();
@@ -503,7 +503,7 @@ torch::Tensor dpa4_wigner_runs(torch::Tensor quat,
                                torch::Tensor mono_coeff,
                                torch::Tensor mono_exp,
                                int64_t lmax) {
-  const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(quat.device());
+  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(quat.device());
   TORCH_CHECK(quat.dim() == 2 && quat.size(1) == 4 &&
                   quat.scalar_type() == torch::kFloat,
               "dpa4_wigner_runs: the quaternions must be (E, 4) fp32");
@@ -514,7 +514,7 @@ torch::Tensor dpa4_wigner_runs(torch::Tensor quat,
                   mono_exp.numel() == mono_coeff.size(1) * 4,
               "dpa4_wigner_runs: the monomial exponents must be (M, 4) int8");
   return build_runs(quat.contiguous(), mono_coeff.contiguous(),
-                    mono_exp.contiguous(), at::hip::getCurrentHIPStreamMasqueradingAsCUDA());
+                    mono_exp.contiguous(), c10::hip::getCurrentHIPStream());
 }
 
 /// Ridge point of the current device: peak fp32 FMA throughput over DRAM
@@ -549,7 +549,7 @@ torch::Tensor dpa4_wigner_runs_backward(torch::Tensor grad_runs,
                                         torch::Tensor quat,
                                         torch::Tensor dmono_coeff,
                                         torch::Tensor dmono_exp) {
-  const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(quat.device());
+  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(quat.device());
   TORCH_CHECK(dmono_coeff.dim() == 3 && dmono_coeff.size(1) == 4 &&
                   dmono_coeff.size(0) == grad_runs.size(1),
               "dpa4_wigner_runs_backward: the derivative coefficients must be "
@@ -560,7 +560,7 @@ torch::Tensor dpa4_wigner_runs_backward(torch::Tensor grad_runs,
               "(M', 4) int8");
   return contract_quat_grad(quat.contiguous(), grad_runs.contiguous(),
                             dmono_coeff.contiguous(), dmono_exp.contiguous(),
-                            at::hip::getCurrentHIPStreamMasqueradingAsCUDA());
+                            c10::hip::getCurrentHIPStream());
 }
 
 TORCH_LIBRARY_FRAGMENT(deepmd, m) {

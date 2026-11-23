@@ -63,6 +63,21 @@ v1 直接换成 `__builtin_memcpy`，两个 wait 变成注释——因为前后�
 已经为共享缓冲排序，正确性不受影响，只丢了重叠。代码里留了 `v1: synchronous stage`
 标记，v2 换 `hip::memcpy_async` 时按它改。
 
+### 3.5 ATen 的 masquerading 头必须换成 c10（编译才会过）
+
+hipify 会把 `ATen/cuda/CUDAContext.h` 变成 `ATen/hip/HIPContext.h`，而这个头会拉进
+`ATen/hip/Exceptions.h`：
+
+```
+/usr/local/.../torch/include/ATen/hip/Exceptions.h:10:10: fatal error:
+      'cusolver_common.h' file not found
+```
+
+`cusolver_common.h` 是 CUDA 的，ROCm/DTK 里没有。设备守卫和当前流在 c10 层都有对应物，
+而且不拉求解器头：`c10/hip/HIPStream.h` 的 `c10::hip::getCurrentHIPStream()`、
+`c10/hip/impl/HIPGuardImplMasqueradingAsCUDA.h` 的
+`c10::hip::OptionalHIPGuardMasqueradingAsCUDA`。生成器把两者替换掉。
+
 ### 3.4 `dpa4_fp32_ridge()` 必须重算
 
 它决定 `_profitable` 的设备缩放，原实现读 CUDA 的 compute capability 和“128 FMA lane”：

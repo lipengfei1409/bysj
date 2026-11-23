@@ -25,6 +25,13 @@ patches carry everything hipify cannot know:
 4. **``dpa4_fp32_ridge`` is rewritten**: it read CUDA compute capability and a
    128-lane FMA width.  On ROCm the FMA width is the wavefront size and the
    clocks come from ``hipDeviceProp_t``.
+5. **The ATen masquerading headers are replaced with c10 ones.** hipify turns
+   ``ATen/cuda/CUDAContext.h`` into ``ATen/hip/HIPContext.h``, whose
+   ``ATen/hip/Exceptions.h`` does ``#include <cusolver_common.h>`` -- a header
+   no ROCm install ships, so the translation cannot compile as generated.  The
+   device guard and the current stream both exist at the c10 layer
+   (``c10/hip/HIPStream.h``, ``c10/hip/impl/HIPGuardImplMasqueradingAsCUDA.h``),
+   which pulls no solver headers at all.
 
 Exit code is non-zero when a CUDA-only token survives, so this doubles as the
 lint the host test runs.
@@ -70,6 +77,19 @@ FORBIDDEN = (
 
 #: hipify's ``<<<>>>`` rewrite nests ``dim3(dim3(x))``; harmless but noisy.
 _DIM3 = re.compile(r"dim3\(dim3\(([^()]*(?:\([^()]*\))?[^()]*)\)\)")
+
+#: hipify's ATen masquerading headers pull ``cusolver_common.h``; the c10 ones
+#: do not.  Both spellings below exist in every torch 2.x ROCm build.
+_INCLUDE_MAP = {
+    "#include <ATen/hip/HIPContext.h>": "#include <c10/hip/HIPStream.h>",
+    "#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>": (
+        "#include <c10/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>"
+    ),
+}
+_API_MAP = {
+    "at::hip::getCurrentHIPStreamMasqueradingAsCUDA()": "c10::hip::getCurrentHIPStream()",
+    "at::hip::OptionalHIPGuardMasqueradingAsCUDA": "c10::hip::OptionalHIPGuardMasqueradingAsCUDA",
+}
 
 _RIDGE = '''double dpa4_fp32_ridge() {
   int dev = 0;
@@ -129,6 +149,10 @@ def _patch(text: str, *, stamp: str) -> str:
     text = text.replace("__syncwarp();", "dpa4_wave_barrier();")
     text = _DIM3.sub(r"dim3(\1)", text)
     text = re.sub(r"#include <cuda_pipeline\.h>\n", "", text)
+    for old, new in _INCLUDE_MAP.items():
+        text = text.replace(old, new)
+    for old, new in _API_MAP.items():
+        text = text.replace(old, new)
     # Every translation unit needs the shims before its first device function.
     if stamp not in text:
         text = text.replace(

@@ -134,6 +134,16 @@ class TranslationTests(unittest.TestCase):
             _schema(glue, "dpa4_so2_conv_backward"), " ".join(backward.split())
         )
 
+    def test_no_atens_masquerading_headers(self) -> None:
+        # Regression: `ATen/hip/HIPContext.h` pulls `ATen/hip/Exceptions.h`,
+        # which includes <cusolver_common.h> -- absent from every ROCm install,
+        # so the generated translation could not compile.
+        glue = (PORT / "so2_conv.hip").read_text()
+        self.assertNotIn("ATen/hip", glue)
+        self.assertIn("#include <c10/hip/HIPStream.h>", glue)
+        self.assertIn("c10::hip::getCurrentHIPStream()", glue)
+        self.assertIn("c10::hip::OptionalHIPGuardMasqueradingAsCUDA", glue)
+
     def test_ridge_is_recomputed_from_hip_properties(self) -> None:
         glue = (PORT / "so2_conv.hip").read_text()
         start = glue.index("double dpa4_fp32_ridge()")
