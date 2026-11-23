@@ -408,6 +408,31 @@ class GatedActivationSeamTests(unittest.TestCase):
         self.assertEqual(stats.pack_fallbacks, 0)
         self.assertEqual(len(slot_ops.calls), 1)
 
+    def test_modules_that_merely_hold_an_expand_index_are_left_alone(self):
+        """SO3Linear and the norm layers register expand_index too.
+
+        Rebinding their one-argument forward crashed inference: the shim fell
+        back with original(x, None), which a forward(self, x) cannot take.
+        """
+
+        class SO3Like:
+            def __init__(self):
+                self.expand_index = torch.tensor([0, 1], dtype=torch.int64)
+                self.lmax = 1
+
+            def forward(self, x):
+                return x * 2.0
+
+        module = SO3Like()
+        stats = fused_deepmd.deepmd_patch(
+            self._model(module), ops=FakeOps(), softmax=False, envelope=False,
+            force=False, aggregate=False, pack=True, slot_ops=FakeSlotOps(), verbose=False,
+        )
+        self.assertFalse(stats.bound_pack)
+        self.assertNotIn("forward", module.__dict__)
+        x = torch.randn(3, 4, 5)
+        torch.testing.assert_close(module.forward(x), x * 2.0)
+
     def test_seam_falls_back_when_the_layout_is_not_fndc(self):
         activation = FakeGatedActivation()
         activation.layout = "ndfc"

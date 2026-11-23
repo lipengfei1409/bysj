@@ -297,7 +297,7 @@ class _Session:
             or (gate is not None and not _usable_tensor(gate))
         ):
             stats.pack_fallbacks += 1
-            return original(x, gate)
+            return _call_forward(original, x, gate)
         n_focus, n_edge, rows, channels = x.shape
         try:
             degree_axis = 2
@@ -328,7 +328,7 @@ class _Session:
         except Exception as error:  # noqa: BLE001 - fall back, never break inference
             self._record(error)
             stats.pack_fallbacks += 1
-            return original(x, gate)
+            return _call_forward(original, x, gate)
         stats.pack_hits += 1
         return out
 
@@ -556,6 +556,31 @@ def _blocks(model: Any) -> list[Any]:
     ]
 
 
+def _activations(root: Any) -> list[Any]:
+    """``GatedActivation`` modules, and only those.
+
+    ``expand_index`` alone is not a sufficient marker: ``SO3Linear`` and the
+    norm layers register one too, and rebinding their one-argument ``forward``
+    with the gated-activation shim crashes inference as soon as the shim falls
+    back, because the shim would call ``original(x, None)``.
+    """
+    if root is None:
+        return []
+    return [
+        module
+        for module in root.modules()
+        if isinstance(getattr(module, "expand_index", None), torch.Tensor)
+        and getattr(module, "layout", None) in {"nfdc", "ndfc", "fndc"}
+        and callable(getattr(module, "gate_linear", None))
+        and callable(getattr(module, "scalar_act", None))
+    ]
+
+
+def _call_forward(original: Any, x: Any, gate: Any) -> Any:
+    """Call the stock forward with the arity it declares."""
+    return original(x) if gate is None else original(x, gate)
+
+
 def _module_root(model: Any) -> tuple[Any | None, str]:
     """Resolve the ``nn.Module`` tree behind a ``DeepPot``/``DeepEval`` wrapper.
 
@@ -774,12 +799,7 @@ def deepmd_patch(module: Any, *, ops: Any = None, softmax: bool = True,
                     )
 
     if pack and _SESSION.slot_ops is not None:
-        activations = [
-            module
-            for module in (root.modules() if root is not None else [])
-            if callable(getattr(module, "expand_index", None)) or
-            isinstance(getattr(module, "expand_index", None), torch.Tensor)
-        ]
+        activations = _activations(root)
         patched = 0
         for activation in activations:
             original_forward = getattr(activation, "forward", None)
