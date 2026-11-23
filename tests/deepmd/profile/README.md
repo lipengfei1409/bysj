@@ -104,7 +104,7 @@ python3 tests/deepmd/profile/compare_fused_runs.py \
 能量/力的数值一致性不在 summary 里，需跑 DCU 上的
 `tests/csrc/accuracy/test_fused_deepmd_parity.py`。
 
-### 辅助脚本：trace 归因与相邻算子链
+### 辅助脚本：trace 归因、相邻算子链与作用域内占比
 
 ```bash
 # 1) 把一次 trace 归因到 kernel 家族、roofline 等价量与 cast 分组
@@ -115,10 +115,16 @@ python3 tests/deepmd/profile/analyze_trace.py /tmp/profile/dpa4_*/dpa4_inference
 python3 tests/deepmd/profile/scan_fusion_patterns.py \
   --trace /path/to/dpa4_inference_trace.json --top 25 --max-len 5 \
   --json docs/fusion-patterns.json
+
+# 3) 只看模型自己的时间：按 nn.Module 作用域统计前向 + 反向的算子占比
+python3 tests/deepmd/profile/op_time_share.py \
+  /path/to/dpa4_inference_trace.json --module 'nn.Module: ModelWrapper_0' \
+  --top 30 --json /tmp/share.json
 ```
 
 - `analyze_trace.py` 按 `triton` / `aten` / `gemm` / `other` 分类统计设备时间，并给每个 kernel 一个 roofline 等价量（访存型按等效字节、GEMM 按等效 GFLOP）。**如果 trace 里没有 triton kernel，脚本会明确提示：该次测的是稠密参考路径，不能据此下调优结论。** `cast_report` 按"输入 dtype + 维度"分组 cast/copy；注意 CPU op 的耗时包含等待设备，单次远高于同组的调用是同步点而非拷贝成本。
 - `scan_fusion_patterns.py` 用 `cuda_runtime` 的 `correlation` 把每次 launch 对回 `cpu_op`，得到"算子名 + 形状"的 launch 序列；它先打印与 summary 的自动比对（总数、前向/反向分区），再给出按时间排序的签名、2–5 元相邻链与形状分类。链上的 `saving_ms` 是"每项 3 路流 × 最大 numel"的粗估，只用于排序。
+- `op_time_share.py` 回答"模型内部的时间分给哪些算子"：家族汇总、算子汇总、算子+形状站点，各带前向/反向拆分。作用域用 `nn.Module` 事件选，且必须用 **launch 时间**判定（整张图在模块调用里入队，设备要晚得多才排空；按设备时间戳过滤会把反向整段丢掉）。逐站点的融合归属见 [docs/op-time-share.md](../../../docs/op-time-share.md)。
 
 ### 确认 `.pt` 实际使用的推理后端
 
