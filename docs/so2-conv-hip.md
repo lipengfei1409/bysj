@@ -94,6 +94,22 @@ dpa4_fp32_ridge(): 28.7
 `registered: True` 之后，DeepMD 自己的 `op_available()`（`pt_expt/kernels/cuda/dpa4/so2_conv.py`）
 会返回 True，`make_cuda_so2_conv` 就会去构造入口——但**还需要过 `_is_supported` 和 `_profitable`**。
 
+## 4.5 单算子测试：直接跑上游自己的测试
+
+上游为这个算子带了一整套参考测试（`source/tests/pt/model/test_descriptor_sezm_cuda.py`
+的 `TestSeZMConvCuda` 与 `TestSeZMConvCudaGate`）：**每个 zoo 形状的前向 vs 稠密转录**、
+**反向 vs autograd**、归约可复现、`make_fx` 追踪、零边/零 envelope、多头拒绝。
+它们以 `op_available()` 为门，所以在收集测试之前把本移植注册进去即可全部生效——
+这正是 `tests/dcu/so2_conv_hip_plugin.py` 做的事（pytest 插件，收集前 `build()`）。
+
+```bash
+DEEPMD_SRC=~/private_data/lipengfei/deepmd-kit \
+  python3 tests/dcu/run_upstream_conv_test.py
+```
+
+它先 `build.py`（预热扩展缓存、顺带打印 schema），再用 `-k ConvCuda` 只跑卷积那几组。
+第一次在 DCU 上跑，这一条命令同时回答"编得过吗"和"数值对吗"。
+
 ## 5. 已知取舍（v1）
 
 | 取舍 | 影响 | 何时修 |

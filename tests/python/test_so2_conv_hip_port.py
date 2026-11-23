@@ -14,6 +14,7 @@ what can go wrong silently.  The two traps worth pinning are
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import sys
 import tempfile
@@ -163,6 +164,67 @@ class BuildGuardTests(unittest.TestCase):
             self.assertTrue((PORT / name).is_file(), name)
         self.assertIn("so2_conv_fwd_c64_l3.hip", module.SOURCES)
         self.assertIn("so2_conv_bwd_c64_l3.hip", module.SOURCES)
+
+
+class UpstreamRunnerTests(unittest.TestCase):
+    """The runner that points DeepMD's own conv tests at this port."""
+
+    def _module(self):
+        path = ROOT / "tests" / "dcu" / "run_upstream_conv_test.py"
+        spec = importlib.util.spec_from_file_location("run_upstream_conv_test", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_resolves_a_checkout_layout(self) -> None:
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            test = (
+                Path(tmp)
+                / "source"
+                / "tests"
+                / "pt"
+                / "model"
+                / "test_descriptor_sezm_cuda.py"
+            )
+            test.parent.mkdir(parents=True)
+            test.write_text("import unittest\n")
+            found = module.find_test_file(tmp, search_defaults=False)
+        self.assertEqual(found, test)
+
+    def test_missing_checkout_reports_none(self) -> None:
+        module = self._module()
+        self.assertIsNone(
+            module.find_test_file("/nonexistent/deepmd-kit", search_defaults=False)
+        )
+
+    def test_command_filters_to_the_convolution_cases(self) -> None:
+        module = self._module()
+        command = module.build_argv(module.UPSTREAM_TEST, extra=["-v"])
+        self.assertEqual(command[1:3], ["-m", "pytest"])
+        self.assertIn("-k", command)
+        self.assertEqual(command[command.index("-k") + 1], "ConvCuda")
+        self.assertIn("-v", command)
+
+    def test_child_env_makes_the_plugin_importable(self) -> None:
+        module = self._module()
+        env = module.child_env()
+        parts = env["PYTHONPATH"].split(os.pathsep)
+        self.assertIn(str(ROOT / "tests" / "dcu"), parts)
+        self.assertIn(str(ROOT / "csrc" / "so2_conv_hip"), parts)
+
+    def test_plugin_loads_the_port(self) -> None:
+        import sys as _sys
+
+        plugin = ROOT / "tests" / "dcu" / "so2_conv_hip_plugin.py"
+        self.assertTrue(plugin.is_file())
+        text = plugin.read_text()
+        # The plugin must build (or reuse) the extension before collection, or
+        # the upstream gate reads False and every case silently skips.
+        self.assertIn("build.build()", text)
+        self.assertIn("build.registered()", text)
+        self.assertNotIn("pytest.skip", text)
 
 
 if __name__ == "__main__":
