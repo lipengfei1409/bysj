@@ -143,13 +143,24 @@ _SHAPE_MACRO = """
 // ``conv_*_launch`` symbols nothing here defines -- the link succeeds but
 // ``load_library`` fails on the first undefined symbol.  Generated from the
 // shard list in tools/hipify_so2_conv.py.
+//
+// ``DPA4_CONV_FAST_SHAPES`` narrows it to the one pair a quick ``--check``
+// build compiles; without it the full list must match the compiled shards.
+#ifdef DPA4_CONV_FAST_SHAPES
+#define DPA4_CONV_SHIPPED_SHAPES(macro) {fast_shapes}
+#else
 #define DPA4_CONV_SHIPPED_SHAPES(macro) {shapes}
+#endif
 """
+
+#: The pair a quick check compiles (see ``build.FAST_SOURCES``).
+FAST_SHAPES = ((3, 64),)
 
 
 def _shape_macro() -> str:
     return _SHAPE_MACRO.format(
-        shapes=" ".join(f"macro({lmax}, {cf})" for lmax, cf in SHAPES)
+        shapes=" ".join(f"macro({lmax}, {cf})" for lmax, cf in SHAPES),
+        fast_shapes=" ".join(f"macro({lmax}, {cf})" for lmax, cf in FAST_SHAPES),
     )
 
 

@@ -265,6 +265,21 @@ class BuildGuardTests(unittest.TestCase):
         self.assertIn("-ltorch", link)
         self.assertTrue(link[link.index("-o") + 1].endswith(".so"))
 
+    def test_fast_check_narrows_the_dispatch(self) -> None:
+        # Regression: a glue+one-pair build expanded the full twelve-shape
+        # dispatch and failed `load_library` on
+        # `conv_forward_launch<1, 32>` -- linked, then undefined at dlopen.
+        glue = (PORT / "so2_conv.hip").read_text()
+        self.assertIn("#ifdef DPA4_CONV_FAST_SHAPES", glue)
+        self.assertIn("#define DPA4_CONV_SHIPPED_SHAPES(macro) macro(3, 64)", glue)
+        module = self._build_module()
+        module._torch_flags = lambda: ([], [])
+        module.BUILD_DIR = Path("/tmp/dpa4_so2_conv_hip_test")
+        fast = module.compile_commands(arch="gfx928", sources=module.FAST_SOURCES, fast=True)
+        full = module.compile_commands(arch="gfx928")
+        self.assertIn("-DDPA4_CONV_FAST_SHAPES", fast[0])
+        self.assertNotIn("-DDPA4_CONV_FAST_SHAPES", full[0])
+
     def test_fast_check_compiles_one_pair_only(self) -> None:
         # The first build of any change should surface a header/template error
         # in minutes, not after twenty-four heavy translation units.

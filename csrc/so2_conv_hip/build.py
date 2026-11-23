@@ -166,11 +166,20 @@ def _run(command: list[str], verbose: bool) -> int:
 
 
 def compile_commands(
-    *, arch: str | None = None, sources: tuple[str, ...] = SOURCES
+    *,
+    arch: str | None = None,
+    sources: tuple[str, ...] = SOURCES,
+    fast: bool = False,
 ) -> list[list[str]]:
     """Return one ``hipcc -c`` command per source, plus the final link."""
     includes, link = _torch_flags()
     includes = includes + _defines()
+    if fast:
+        # The dispatch macro expands over the shipped shapes; narrowing it keeps
+        # a glue+one-pair build from referencing the other eleven launches
+        # (which links fine and then fails `load_library` on an undefined
+        # symbol).
+        includes = includes + ["-DDPA4_CONV_FAST_SHAPES"]
     arch = arch or _arch()
     commands: list[list[str]] = []
     objects: list[str] = []
@@ -267,7 +276,7 @@ def build(
             _build_dir(_defines()).name + "_fast"
         )
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    commands = compile_commands(sources=sources)
+    commands = compile_commands(sources=sources, fast=fast)
     if dry_run:
         for command in commands:
             print(shlex.join(command))

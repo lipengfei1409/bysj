@@ -60,7 +60,14 @@ class DeviceGuard {
 // ``conv_*_launch`` symbols nothing here defines -- the link succeeds but
 // ``load_library`` fails on the first undefined symbol.  Generated from the
 // shard list in tools/hipify_so2_conv.py.
+//
+// ``DPA4_CONV_FAST_SHAPES`` narrows it to the one pair a quick ``--check``
+// build compiles; without it the full list must match the compiled shards.
+#ifdef DPA4_CONV_FAST_SHAPES
+#define DPA4_CONV_SHIPPED_SHAPES(macro) macro(3, 64)
+#else
 #define DPA4_CONV_SHIPPED_SHAPES(macro) macro(1, 32) macro(1, 64) macro(2, 32) macro(2, 64) macro(3, 32) macro(3, 64) macro(4, 32) macro(4, 64) macro(5, 32) macro(5, 64) macro(6, 32) macro(6, 64)
+#endif
 
 
 #include <cmath>
