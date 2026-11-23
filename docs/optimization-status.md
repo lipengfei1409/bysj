@@ -9,6 +9,7 @@
 - 每个算子的公式与 DeepMD 原位代码对照： [`fused-operators.md`](fused-operators.md)
 - 接缝、前置条件、回退规则： [`deepmd-fused-dispatch.md`](deepmd-fused-dispatch.md)
 - 前向 + 反向的算子时间占比、每个融合各吃了哪几行： [`op-time-share.md`](op-time-share.md)
+- persistent 调度 vs megakernel 的选择依据与分档计划： [`execution-model.md`](execution-model.md)
 - 数据基线：3000 原子 / 181838 边，2614 launch。**两个数要分开看**：仓库内 trace
   （`dpa4_inference_trace.json`）设备合计 1218.58 ms（前向 436.21 / 反向 780.38），
   真机 A/B 的基线是 964.4 ms（同一个 launch 数，机器状态不同）；占比用 trace，倍数用真机 A/B
@@ -46,7 +47,7 @@
 | C4 | 小轴归约重写 | `sum [E,10,1,64]` 有效带宽 56 GB/s（约 10× 浪费），单行 24.9 ms、该组合计 36.5 ms | 小轴映射到 lane，`__shfl` 归约，或并进 C2 | ⬜ 未做 | −20…−22 ms |
 | C5 | readout 瘦 GEMM | readout 组 5 个 bmm 合计 63.9 ms，其中 `[1,152,48]×[1,48,576000]` 24.2 ms（K=48 算力空转） | `float4` 向量化 + 融合 scale/add epilogue | ⬜ 未做 | −6…−10 ms |
 | C6 | 边流逐元素链融合 | E-major 逐元素/memcpy/init/cat 合计 **488.1 ms（40.1%）**，同一条 3–4 核链重复 9 次 | 项表驱动的多输入 FMAD，k 趟合 1 趟 | ⬜ 仅设计 | −180…−220 ms |
-| C7 | SO(2) 消息链全融合（含 rank-K 收缩） | rotate → radial → `SO2Linear` 的 `bmm(E,10,16)` + `*channel_basis` + `sum(dim=2)`（合计约 66 ms）→ rotate-back 的中间量落 HBM | 旋转保持寄存器；把 `einsum + 逐通道基底 + 归约` 合成一个 rank-K 收缩 kernel，走 `_flash_atten_fn` / 自建接缝 | ⬜ 仅设计 | −60…−80 ms（含 rank-K 收缩的 −35…−45） |
+| C7 | SO(2) 消息链段级融合（含 rank-K 收缩） | **`G2 槽位段` 580.0 ms / 47.6%**：`[E,3/4/9/10/15/16,64]` 的展开、残差、gate，加 6 个 per-edge 小 `bmm`（`[E,10,10]`、`[E,10,16]`、`[E,16,10]`）与 `sum(dim=2)`；中间量全部落 HBM | 段级 megakernel：wave64 = 64 通道、一条边一个 wave、16 槽驻留 VGPR（4 KB/边，无需 LDS），per-edge 10×10 matrix 走 LDS 广播 | ⬜ 仅设计（执行模型论证见 [`execution-model.md`](execution-model.md)） | fwd −100…−125 ms、bwd −270…−320 ms（反向需单独写） |
 
 ## 4. 工程与质量
 
@@ -114,6 +115,7 @@ python3 tests/deepmd/profile/compare_fused_runs.py \
 | 2026-11-19 | C1 落地为 `slot_pack_scale`、C2 修正归因后拆为 C2′（`slot_reduce`，已实现）+ 10 槽小矩阵乘（并入 C7）。原 C2 把 `bmm [E,10,10]` 归给 attention 是错的：它来自 `so2.py:848` 的 `einsum("eoic,eic->eoc")`，属 SO(2) mixing；attention 的 logits 是 `(q_edge*k_edge).sum(-1)`，本来就是 elementwise |
 | 2026-11-19 | C1 接线完成：`deepmd_patch(pack=True)` 替换 `GatedActivation.forward`（只接管 `fndc` 布局），`fused=("pack",)` 可单独开关；主机侧用 `fndc` 假模块与 stock 方法逐位对照（3 个用例），另有 layout 不匹配与非 fp32 的回退用例 |
 | 2026-11-19 | 用 launch→region 归因钉死两个真实站点：C1 的 `index_select`+`mul`+`copy_` 全在 **`GatedActivation.forward`**（`activation.py:213`，映射 `gates = gating_scalars.index_select(2, expand_index)`），不是 `so2_message`；C2′ 的 `sum [E,10,1,64]` 在 **`SO2Linear.forward`**（`so2.py:812`）的 `(mixed * channel_basis).sum(dim=2)`，权重依赖输出槽 → `slot_reduce` 不匹配。C1 估算由 −45…−55 下调到 −20…−25，C2′ 收益归零并并入 C7 |
+| 2026-11-23 | 新增 [`execution-model.md`](execution-model.md)：按张量家族把 1218.6 ms 分成 G1–G9，只有 `G2 槽位段`（580.0 ms / 47.6%）值得做段级 megakernel（4 KB/边驻留、无跨 block 依赖），全模型 megakernel 不做；C7 的池子由 66 ms 修正为 580 ms |
 | 2026-11-23 | 新增 `op_time_share.py` 与 [`op-time-share.md`](op-time-share.md)：按 `nn.Module: ModelWrapper_0` 作用域（用 **launch 时间**过滤）给出前向 + 反向全部算子的时间占比，2614/2614 kernel、1218.58 ms 全部在作用域内。**据此修正两处估算**：B3 的真实池只有 1.7 ms（原 −60…−85 ms 作废，那 95 ms 里是 gate/槽位 gather 的反向），B1 上限 −10 ms。同时新增 C1b（同一 gate 链的反向，35.3 ms 池） |
 
 ## 8. 边界说明
