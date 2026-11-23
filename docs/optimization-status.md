@@ -110,6 +110,7 @@
 | 2026-11-23 | 跑通 `verify_fused.py --stage all` 的 host/build/acc/lat：L2 单算子拿到真机数（见 §2/§3）；`par` 的 envelope 用例暴露陈旧 fixture（`SimpleNamespace` 假 block 缺 `forward_envelope`，`_blocks()` 认不出 → `bound_envelope=False`），补上绑定的 stock 方法并先断言 `stats.blocks` |
 | 2026-11-23 | 新增 [`execution-model.md`](execution-model.md)：按张量家族把 1218.6 ms 分成 G1–G9，只有 `G2 槽位段`（580.0 ms / 47.6%）值得做段级 megakernel（4 KB/边驻留、无跨 block 依赖），全模型 megakernel 不做；C7 的池子由 66 ms 修正为 580 ms |
 | 2026-11-23 | 新增 `op_time_share.py` 与 [`op-time-share.md`](op-time-share.md)：按 `nn.Module: ModelWrapper_0` 作用域（用 **launch 时间**过滤）给出前向 + 反向全部算子的时间占比，2614/2614 kernel、1218.58 ms 全部在作用域内。**据此修正两处估算**：B3 的真实池只有 1.7 ms（原 −60…−85 ms 作废，那 95 ms 里是 gate/槽位 gather 的反向），B1 上限 −10 ms。同时新增 C1b（同一 gate 链的反向，35.3 ms 池） |
+| 2026-11-23 | 推荐集（`softmax+aggregate`）首轮 e2e：seam 全 dispatch（softmax 18、aggregate 18）、0 回退、launch **2614 → 2464（−150）**，但 device **1268.8 → 1277.3 ms（0.993×，+8.5 ms）**，与基线自身的跑间抖动（1268.8 vs 1280.6，12 ms）同量级。kernel 明细：被替换的 aten 行 −19.5 ms（`indexFuncLargeIndex` −11.7、`scatter_gather` −7.9），新增的 `segment_sum` 前向/反向与 `segment_softmax_backward_env` 共 +14.3 ms，top-8 之外还有约 +25 ms 未归类——`compare_fused_runs` 现在会打印「top-N 之和 / 列表外」|
 | 2026-11-23 | C6 落地为 `edge_combine`（`csrc/edge_combine.cpp` + `kernels.combine`）：`out = Σ_t coef_t·term_t`，每项可对 channel / row / 两者广播或为标量，一趟 pass 替代 `add`/`mul`/`copy_`/`fill_` 链；autograd 按广播轴求和；新增主机 5 项、DCU accuracy 与 latency 用例（181838 边 / 9 行 / C=64），并接入验证梯子的 acc/lat 两级；接缝待做 |
 
 ## 8. 边界说明

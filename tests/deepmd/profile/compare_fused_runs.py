@@ -96,7 +96,9 @@ def compare(baseline: dict, patched: dict, *, top: int = 8) -> dict:
     if base_ms and patched_ms:
         speedup = base_ms / patched_ms
     fused = patched.get("fused") or {}
-    dispatched = (fused.get("softmax_hits") or 0) + (fused.get("envelope_hits") or 0)
+    dispatched = sum(
+        value for key, value in fused.items() if key.endswith("_hits")
+    )
     bound = bool(fused.get("bound_softmax") or fused.get("bound_envelope"))
     config_fields = (
         "model_file",
@@ -108,10 +110,16 @@ def compare(baseline: dict, patched: dict, *, top: int = 8) -> dict:
         "warmup_calls",
         "profiled",
     )
+    reported_delta = sum(row["delta_ms"] for row in deltas)
+    unexplained = None
+    if base_ms is not None and patched_ms is not None:
+        unexplained = (patched_ms - base_ms) - reported_delta
     return {
         "baseline_ms": base_ms,
         "patched_ms": patched_ms,
         "speedup": speedup,
+        "reported_delta_ms": reported_delta,
+        "unexplained_ms": unexplained,
         "baseline_launches": (baseline.get("trace_analysis") or {}).get("device_kernel_calls"),
         "patched_launches": (patched.get("trace_analysis") or {}).get("device_kernel_calls"),
         "fused": fused,
@@ -171,6 +179,13 @@ def render(report: dict) -> str:
             lines.append(
                 f"{row['baseline_ms']:10.2f} {row['patched_ms']:10.2f} "
                 f"{row['delta_ms']:+10.2f}  {_short(row['kernel'])}"
+            )
+        reported = report.get("reported_delta_ms")
+        unexplained = report.get("unexplained_ms")
+        if reported is not None and unexplained is not None:
+            lines.append(
+                f"top-{len(report['kernel_deltas'])} sum {reported:+9.2f} ms; "
+                f"outside the list {unexplained:+9.2f} ms"
             )
     return "\n".join(lines)
 
