@@ -103,7 +103,7 @@ head gate，且 "none of the per-edge intermediates reach device memory"
 | --- | --- | --- | --- | --- |
 | 一 | persistent 单算子：`sum [E,10,1,64]` 换 lane 映射（24.9 ms → ~3 ms）、readout 组（63.9 → ~40）、G5 反向 | 1–2 周 | −40…−55 ms | 低，纯换调度 |
 | 二 | **FFMA 探针**（`tests/dcu/fma_probe.py`）：测 DCU 的 ffma 吞吐，把 225.3 kFMA 折成毫秒，与稠密的 163.8 / 416.2 ms 比 | 半天 | 决定 C7 生死 | 无 |
-| 三 | 若探针通过（投影 < 稠密）：hipify `so2_conv_fwd_c64_l3` 单特化，与稠密组合做一次 conv 的 A/B | 2–3 周 | 按实测折算 | 中，`.cu` → HIP + CMake 加 ROCm 分支 |
+| 三 | 若探针通过（投影 < 稠密）：hipify `so2_conv_fwd_c64_l3` 单特化，与稠密组合做一次 conv 的 A/B（已开工，见 [`so2-conv-hip.md`](so2-conv-hip.md)） | 2–3 周 | 按实测折算 | 中，`.cu` → HIP + CMake 加 ROCm 分支 |
 | 四 | 若 A/B 通过：hipify 反向特化（416.2 ms / 218.2 GB） | 3–4 周 | 按实测折算 | 高，`cuda_pipeline` / `__shfl_sync` / 无 `mma` |
 
 第二档的算术（模型实测常数：`lmax=3, Cf=64, n_focus=1, mixing_layers=4`，3 个 block）：

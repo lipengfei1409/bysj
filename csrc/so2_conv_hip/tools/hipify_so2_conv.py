@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Translate DeepMD's CUDA fused SO(2) convolution into a HIP source tree.
+
+This is a build-time tool, run on any machine (it only needs ``torch`` for
+``torch.utils.hipify``); the output is checked in so the port is auditable and
+the translation is reproducible:
+
+    python csrc/so2_conv_hip/tools/hipify_so2_conv.py --deepmd-kit ../deepmd-kit
+
+Pipeline per file: copy -> ``torch.utils.hipify.hipify`` -> local patches.  The
+patches carry everything hipify cannot know:
+
+1. **The 32-lane unit is deliberate.** The CUDA kernel is written for a 32-lane
+   warp: every output column is ``j * 32 + lane`` and ``kWarp = 32`` splits the
+   channel width.  A ROCm wavefront is 64 lanes, so the port keeps the 32-lane
+   unit and runs two of them per wave; ``__shfl*_sync`` therefore becomes
+   ``__shfl*(v, d, kWarp)``, which shuffles inside each 32-lane segment.
+2. **``__syncwarp()`` sits inside divergent code**, so it must become a
+   wave-level barrier, not ``__syncthreads()`` (which would deadlock).
+3. **The async pipeline becomes synchronous.** ``__pipeline_memcpy_async`` on a
+   4-float vector is a plain device copy and the two waits collapse; the
+   ``__syncthreads()`` on both sides already orders the shared buffer.  v1
+   trades the double-buffering away for correctness; the comment marks the
+   place to reintroduce it with ``hip::memcpy_async``.
+4. **``dpa4_fp32_ridge`` is rewritten**: it read CUDA compute capability and a
+   128-lane FMA width.  On ROCm the FMA width is the wavefront size and the
+   clocks come from ``hipDeviceProp_t``.
+
+Exit code is non-zero when a CUDA-only token survives, so this doubles as the
+lint the host test runs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import shutil
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+OUT = HERE.parent
+
+#: Files the extension needs.  The 12 forward/backward shards instantiate one
+#: ``(CF, L)`` pair each; v1 ships ``c64_l3`` only, which is what this
+#: checkpoint needs, and the others can be added by copying the template.
+FILES = (
+    "so2_conv.cu",
+    "so2_conv.cuh",
+    "so2_conv_kernel.cuh",
+    "so2_conv_launch.h",
+    "so2_conv_instantiate.cuh",
+    "so2_conv_fwd_c64_l3.cu",
+    "so2_conv_bwd_c64_l3.cu",
+)
+
+#: Tokens that must not survive into the HIP tree.
+FORBIDDEN = (
+    "cudaStream_t",
+    "cudaGetLastError",
+    "cudaSuccess",
+    "cudaFuncSetAttribute",
+    "cudaDevAttr",
+    "cuda_runtime.h",
+    "cuda_pipeline",
+    "__pipeline_",
+    "__shfl_sync",
+    "__shfl_xor_sync",
+)
+
+#: hipify's ``<<<>>>`` rewrite nests ``dim3(dim3(x))``; harmless but noisy.
+_DIM3 = re.compile(r"dim3\(dim3\(([^()]*(?:\([^()]*\))?[^()]*)\)\)")
+
+_RIDGE = '''double dpa4_fp32_ridge() {
+  int dev = 0;
+  hipGetDevice(&dev);
+  hipDeviceProp_t prop{};
+  if (hipGetDeviceProperties(&prop, dev) != hipSuccess) {
+    return 0.0;
+  }
+  // fp32 FMA lanes per compute unit on CDNA/RDNA is the wavefront size; the
+  // arithmetic below is the same roofline ratio the CUDA build computes.
+  const double lanes = static_cast<double>(prop.warpSize);
+  const double flops =
+      2.0 * lanes * prop.multiProcessorCount * (prop.clockRate * 1e3);
+  const double bytes =
+      (prop.memoryClockRate * 1e3) * (prop.memoryBusWidth / 8.0) * 2.0;
+  return bytes > 0.0 ? flops / bytes : 0.0;
+}'''
+
+
+def _hipify(src: Path, work: Path) -> dict[str, Path]:
+    from torch.utils.hipify import hipify_python
+
+    if work.exists():
+        shutil.rmtree(work)
+    (work / "in").mkdir(parents=True)
+    # hipify copies the input tree itself and only then processes it; a
+    # pre-created (empty) output directory makes it find no files at all.
+    for name in FILES:
+        shutil.copy2(src / name, work / "in" / name)
+    hipify_python.hipify(
+        project_directory=str(work / "in"),
+        output_directory=str(work / "out"),
+        extensions=(".cu", ".cuh", ".h"),
+        is_pytorch_extension=True,
+        show_progress=False,
+    )
+    return {path.name: path for path in (work / "out").iterdir()}
+
+
+def _patch(text: str, *, stamp: str) -> str:
+    # 4-float pipeline copy -> a plain device copy; the barriers around the
+    # staging loop already order the shared buffer.
+    text = text.replace(
+        "__pipeline_memcpy_async(into + at, from + at, VEC * sizeof(float));",
+        "// v1: synchronous stage; reintroduce hip::memcpy_async for double\n"
+        "      // buffering once the port is proven.\n"
+        "      __builtin_memcpy(into + at, from + at, VEC * sizeof(float));",
+    )
+    text = text.replace("__pipeline_commit();", "// commit: synchronous stage")
+    text = text.replace("__pipeline_wait_prior(1);", "// wait: synchronous stage")
+    text = text.replace("__pipeline_wait_prior(0);", "// wait: synchronous stage")
+    # The 32-lane unit is preserved on purpose (see the module docstring).
+    text = text.replace(
+        "__shfl_xor_sync(kFullMask, v, d)", "__shfl_xor(v, d, kWarp)"
+    )
+    text = text.replace("__shfl_sync(kFullMask, ", "__shfl(")
+    text = text.replace("__syncwarp();", "dpa4_wave_barrier();")
+    text = _DIM3.sub(r"dim3(\1)", text)
+    text = re.sub(r"#include <cuda_pipeline\.h>\n", "", text)
+    # Every translation unit needs the shims before its first device function.
+    if stamp not in text:
+        text = text.replace(
+            "#include <hip/hip_runtime.h>",
+            '#include <hip/hip_runtime.h>\n\n#include "hip_compat.cuh"',
+            1,
+        )
+        if '"hip_compat.cuh"' not in text:
+            text = text.replace(
+                "#pragma once", '#pragma once\n\n#include "hip_compat.cuh"', 1
+            )
+    return text
+
+
+def _rewrite_ridge(text: str) -> str:
+    start = text.index("double dpa4_fp32_ridge() {")
+    end = text.index("\n}\n", start) + 3
+    return text[:start] + _RIDGE + "\n" + text[end:]
+
+
+def lint(paths) -> list[str]:
+    """Return ``path:line token`` for every CUDA-only token left in code.
+
+    Comments are stripped first: the upstream headers mention ``__shfl_sync``
+    when explaining the lane layout, and that mention must survive the port.
+    """
+    offenders = []
+    for path in paths:
+        path = Path(path)
+        for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+            code = line.split("//", 1)[0]
+            for token in FORBIDDEN:
+                if token in code:
+                    offenders.append(f"{path.name}:{line_number} {token}")
+    return offenders
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--deepmd-kit",
+        type=Path,
+        default=Path(__file__).resolve().parents[4] / "deepmd-kit",
+        help="checkout containing source/op/pt/dpa4",
+    )
+    parser.add_argument("--work", type=Path, default=Path("/tmp/so2_conv_hipify"))
+    args = parser.parse_args(argv)
+
+    source = args.deepmd_kit / "source" / "op" / "pt" / "dpa4"
+    if not source.is_dir():
+        print(f"missing deepmd-kit sources: {source}", file=sys.stderr)
+        return 2
+
+    produced = _hipify(source, args.work)
+    written = []
+    for name, path in sorted(produced.items()):
+        # hipify leaves the pre-translation copies next to its output; only the
+        # translated files belong in the port tree.
+        if not (name.endswith(".hip") or "_hip." in name):
+            continue
+        text = path.read_text()
+        target_name = name
+        if target_name == "so2_conv.cu":
+            target_name = "so2_conv.hip"
+        text = _patch(text, stamp='#include "hip_compat.cuh"')
+        if target_name == "so2_conv.hip":
+            text = _rewrite_ridge(text)
+            text = text.replace(
+                '// !!! This is a file automatically generated by hipify!!!',
+                '// Translated from deepmd-kit source/op/pt/dpa4/so2_conv.cu by\n'
+                '// tools/hipify_so2_conv.py -- regenerate rather than edit.',
+            )
+        target = OUT / target_name
+        target.write_text(text)
+        written.append(target.name)
+
+    offenders = lint([OUT / name for name in written])
+    for offender in offenders:
+        print(f"leftover CUDA token: {offender}", file=sys.stderr)
+    print("wrote " + ", ".join(written))
+    return 1 if offenders else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
