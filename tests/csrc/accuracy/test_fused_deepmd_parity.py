@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import unittest
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import torch
 
@@ -95,11 +95,17 @@ class FusedDeepMDDispatchParityTests(unittest.TestCase):
             compute_precision="float32",
             edge_message=lambda x, edge_cache, radial: (message, None),
         )
+        # The adapter binds the seam on a module that already owns
+        # ``forward_envelope`` (on SO2Convolution it is a class method), so the
+        # stand-in needs the same bound method. Without it _blocks() does not
+        # recognise the module and nothing is patched.
+        block.forward_envelope = MethodType(SO2Convolution.forward_envelope, block)
         x = torch.zeros(atoms, rows, channels, device="cuda")
 
         stats = fused_deepmd.deepmd_patch(
             SimpleNamespace(modules=lambda: [block]), softmax=False, verbose=False
         )
+        self.assertEqual(stats.blocks, 1)
         self.assertTrue(stats.bound_envelope)
         actual = block.forward_envelope(x, cache, None)
         fused_deepmd.uninstall()
