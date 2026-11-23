@@ -42,6 +42,82 @@ def _validate_common(tensors, name):
         raise ValueError(f"{name} inputs must be contiguous")
 
 
+def _needs_grad(*tensors) -> bool:
+    return torch.is_grad_enabled() and any(
+        isinstance(tensor, torch.Tensor) and tensor.requires_grad
+        for tensor in tensors
+    )
+
+
+class _SlotPackScaleFunction(torch.autograd.Function):
+    """Autograd wrapper around the forward-only native kernel.
+
+    ``out[e, r, c] = slot[r] < 0 ? 0 : src[e, slot[r], c] * scale[e, r, c]``
+    so the gradient with respect to ``src`` is a scatter-add over the slot rows
+    and the gradient with respect to ``scale`` is the gathered source row times
+    the incoming gradient (zero for a reserved row).
+    """
+
+    @staticmethod
+    def forward(ctx, src, slot, scale):
+        out = _extension("slot_pack_scale").slot_pack_scale(src, slot, scale)
+        ctx.save_for_backward(src, slot, scale)
+        ctx.has_scale = scale is not None
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        if grad_out is None:
+            return None, None, None
+        src, slot, scale = ctx.saved_tensors
+        grad_out = grad_out.contiguous()
+        valid = slot >= 0
+
+        grad_scale = None
+        if ctx.has_scale and ctx.needs_input_grad[2]:
+            gathered = src.index_select(1, slot.clamp_min(0))
+            product = grad_out * gathered
+            grad_scale = torch.where(valid.reshape(1, -1, 1), product,
+                                     torch.zeros_like(product))
+
+        grad_src = None
+        if ctx.needs_input_grad[0]:
+            grad_src = torch.zeros_like(src)
+            index = slot[valid]
+            if index.numel() != 0:
+                contribution = grad_out[:, valid, :]
+                if ctx.has_scale:
+                    contribution = contribution * scale[:, valid, :]
+                grad_src.index_add_(1, index, contribution)
+        return grad_src, None, grad_scale
+
+
+class _SlotReduceFunction(torch.autograd.Function):
+    """Autograd wrapper for ``sum_r weight[e, r] * src[e, r, c]``."""
+
+    @staticmethod
+    def forward(ctx, src, weight):
+        out = _extension("slot_reduce").slot_reduce(src, weight)
+        ctx.save_for_backward(src, weight)
+        ctx.has_weight = weight is not None
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        if grad_out is None:
+            return None, None
+        src, weight = ctx.saved_tensors
+        expanded = grad_out.contiguous().unsqueeze(1)
+        grad_src = None
+        if ctx.needs_input_grad[0]:
+            grad_src = (expanded * weight.unsqueeze(-1)
+                        if ctx.has_weight else expanded.expand_as(src))
+        grad_weight = None
+        if ctx.has_weight and ctx.needs_input_grad[1]:
+            grad_weight = (expanded * src).sum(dim=-1)
+        return grad_src, grad_weight
+
+
 def slot_pack_scale(src, slot, scale=None):
     """Gather ``src`` rows through ``slot`` and apply an optional per-slot scale.
 
@@ -72,6 +148,8 @@ def slot_pack_scale(src, slot, scale=None):
         tensors.append(scale)
     _validate_common(tensors, "slot pack")
     require_dcu(*tensors)
+    if _needs_grad(src, scale):
+        return _SlotPackScaleFunction.apply(src, slot, scale)
     return _extension("slot_pack_scale").slot_pack_scale(src, slot, scale)
 
 
@@ -93,6 +171,8 @@ def slot_reduce(src, weight=None):
         tensors.append(weight)
     _validate_common(tensors, "slot reduce")
     require_dcu(*tensors)
+    if _needs_grad(src, weight):
+        return _SlotReduceFunction.apply(src, weight)
     return _extension("slot_reduce").slot_reduce(src, weight)
 
 
