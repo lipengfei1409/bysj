@@ -64,9 +64,15 @@ class TranslationTests(unittest.TestCase):
     def test_every_translated_file_is_present(self) -> None:
         for name in TRANSLATED:
             self.assertTrue((PORT / name).is_file(), name)
+        # All twelve zoo pairs, both directions; upstream's suite walks them.
+        for cf in (32, 64):
+            for lmax in range(1, 7):
+                for kind in ("fwd", "bwd"):
+                    name = f"so2_conv_{kind}_c{cf}_l{lmax}.hip"
+                    self.assertTrue((PORT / name).is_file(), name)
 
     def test_no_cuda_only_token_survives(self) -> None:
-        offenders = hipify_tool.lint([PORT / name for name in TRANSLATED])
+        offenders = hipify_tool.lint(sorted(PORT.glob("*.hip")) + sorted(PORT.glob("*.cuh")))
         self.assertEqual(offenders, [], "\n".join(offenders))
 
     def test_lint_catches_a_planted_token(self) -> None:

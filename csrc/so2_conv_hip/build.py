@@ -36,11 +36,20 @@ import os
 import shlex
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 NAME = "dpa4_so2_conv_hip"
-SOURCES = ("so2_conv.hip", "so2_conv_fwd_c64_l3.hip", "so2_conv_bwd_c64_l3.hip")
+#: The glue plus one translation unit per (direction, degree, focus width).
+#: All twenty-four are needed to run DeepMD's own test suite, which walks the
+#: whole zoo; a single checkpoint only needs its own pair.
+SOURCES = ("so2_conv.hip",) + tuple(
+    f"so2_conv_{kind}_c{cf}_l{lmax}.hip"
+    for cf in (32, 64)
+    for lmax in range(1, 7)
+    for kind in ("fwd", "bwd")
+)
 BUILD_DIR = Path(
     os.environ.get("DPA4_SO2_CONV_HIP_BUILD") or (Path.home() / ".cache" / "dpa4_so2_conv_hip")
 )
@@ -77,6 +86,12 @@ def _torch_flags() -> tuple[list[str], list[str]]:
     link += ["-ltorch", "-ltorch_hip", "-lc10"]
     link += [f"-Wl,-rpath,{path}" for path in lib_dirs]
     return includes, link
+
+
+def _run(command: list[str], verbose: bool) -> int:
+    if verbose:
+        print("$ " + shlex.join(command), flush=True)
+    return subprocess.call(command)
 
 
 def compile_commands(*, arch: str | None = None) -> list[list[str]]:
@@ -157,13 +172,26 @@ def build(*, force: bool = False, verbose: bool = True, dry_run: bool = False) -
         return _library_path()
 
     if force or not _up_to_date():
-        for command in commands:
-            if verbose:
-                print("$ " + shlex.join(command), flush=True)
-            code = subprocess.call(command)
+        # Twenty-four heavy template instantiations; hipcc is single-process per
+        # translation unit, so run a few in parallel.  Default low enough not to
+        # swap on a shared host.
+        jobs = max(1, int(os.environ.get("DPA4_SO2_CONV_HIP_JOBS", "4")))
+        failures: list[tuple[str, int]] = []
+
+        def compile_one(command: list[str]) -> None:
+            code = _run(command, verbose)
             if code != 0:
-                tail = "link" if command[1] == "-shared" else Path(command[2]).name
-                raise RuntimeError(f"hipcc failed on {tail} (exit {code})")
+                failures.append((Path(command[2]).name, code))
+
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            list(pool.map(compile_one, commands[:-1]))
+        if failures:
+            names = ", ".join(f"{name} (exit {code})" for name, code in failures)
+            raise RuntimeError(f"hipcc failed on {names}")
+
+        code = _run(commands[-1], verbose)
+        if code != 0:
+            raise RuntimeError(f"hipcc failed on the link step (exit {code})")
 
     torch.ops.load_library(str(_library_path()))
     return _library_path()

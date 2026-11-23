@@ -52,7 +52,15 @@ OUT = HERE.parent
 #: Files the extension needs.  The 12 forward/backward shards instantiate one
 #: ``(CF, L)`` pair each; v1 ships ``c64_l3`` only, which is what this
 #: checkpoint needs, and the others can be added by copying the template.
-SHARDS = (("fwd", 3, 64), ("bwd", 3, 64))
+#: Every ``(focus width, degree)`` pair upstream instantiates, both directions.
+#: All twelve are built because DeepMD's own test suite exercises the whole zoo
+#: (nano=L1/C32 .. pro=L5/C64) and any missing pair turns a numerical test into
+#: a "no instantiation" error.  Building one pair is enough to *run* a specific
+#: checkpoint, but not to validate the translation.
+_PAIRS = tuple((lmax, cf) for cf in (32, 64) for lmax in range(1, 7))
+SHARDS = tuple(
+    (kind, lmax, cf) for kind in ("fwd", "bwd") for lmax, cf in _PAIRS
+)
 FILES = (
     "so2_conv.cu",
     "so2_conv.cuh",

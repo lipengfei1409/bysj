@@ -6,7 +6,7 @@
 `_profitable`）原样生效。
 
 - 上游实现：`deepmd-kit/source/op/pt/dpa4/so2_conv{,_kernel}.cuh` + 24 个 `(CF,L)` 特化
-- 本目录：机械翻译 + 4 处人工修补，v1 只实例化 `c64_l3` 的 fwd/bwd
+- 本目录：机械翻译 + 4 处人工修补，实例化全部 12 个 `(CF, L)` 对 × 两个方向（24 个 TU）
 - 为什么值得做：算术投影 **55 ms** vs 稠密前向 **163.8 ms**（见 [`execution-model.md`](execution-model.md) §5）
 
 ## 1. 目录
@@ -20,7 +20,7 @@
 | `so2_conv_kernel_hip.cuh` | 前向/反向 kernel 本体（1112 行） |
 | `so2_conv_launch_hip.h` | 启动策略与 `(L,CF)` 分派 |
 | `so2_conv_instantiate_hip.cuh` | 模板实例化收尾 |
-| `so2_conv_fwd_c64_l3.hip` / `so2_conv_bwd_c64_l3.hip` | 一个特化的两个方向（各 10 行） |
+| `so2_conv_{fwd,bwd}_c{32,64}_l{1..6}.hip` | 24 个特化（各 10 行） |
 | `build.py` | 自己驱动 `hipcc` 编译，再 `torch.ops.load_library` 注册（见 §4.1） |
 
 `hipify` 的产物是自动生成的，**不要手改**；改 `tools/hipify_so2_conv.py` 后重跑：
