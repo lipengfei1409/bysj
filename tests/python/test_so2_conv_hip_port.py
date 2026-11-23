@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+from types import SimpleNamespace
 import io
 import os
 import re
@@ -262,6 +263,36 @@ class BuildGuardTests(unittest.TestCase):
             os.environ.pop("DPA4_SO2_CONV_HIP_DEFINES", None)
         self.assertIn("-DDPA4_TILE_PK=2", command)
         self.assertIn("-DDPA4_TILE_OCC=3", command)
+
+    def test_invalid_tile_defines_are_rejected_before_compiling(self) -> None:
+        # `so2_conv_kernel_hip.cuh` asserts T::PK % 4 == 0; sweeping PK=2 failed
+        # all 24 translation units with the same error.
+        module = self._build_module()
+        with self.assertRaisesRegex(RuntimeError, "PK % 4 == 0"):
+            module._validate_defines(["-DDPA4_TILE_PK=2"])
+        with self.assertRaisesRegex(RuntimeError, "divides the"):
+            module._validate_defines(["-DDPA4_TILE_WARPS=3"])
+        with self.assertRaisesRegex(RuntimeError, "unknown tile knob"):
+            module._validate_defines(["-DDPA4_TILE_BOGUS=4"])
+        module._validate_defines(["-DDPA4_TILE_PK=4", "-DDPA4_TILE_WARPS=2"])
+
+    def test_failure_message_carries_the_compiler_error(self) -> None:
+        # A bare "exit 1" for twenty-four files said nothing about the cause.
+        module = self._build_module()
+        module._require_hip = lambda: None
+        module._torch_flags = lambda: ([], ["-ltorch"])
+        module.BUILD_DIR = Path("/tmp/dpa4_so2_conv_hip_test_err")
+        module.SOURCES = ("nope.hip",)
+        module._arch = lambda: "gfx928"
+        original = module.subprocess.run
+        module.subprocess.run = lambda *a, **k: SimpleNamespace(
+            returncode=1, stderr="x.hip:12:3: error: PK must be a multiple of 4"
+        )
+        try:
+            with self.assertRaisesRegex(RuntimeError, "PK must be a multiple"):
+                module.build(force=True, verbose=False)
+        finally:
+            module.subprocess.run = original
 
     def test_every_source_is_compiled_not_hipified(self) -> None:
         # Regression: torch's load() hipifies `.hip` sources and ends up with a

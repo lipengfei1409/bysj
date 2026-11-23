@@ -66,6 +66,48 @@ def _defines() -> list[str]:
     return [f"-D{token}" for token in raw.split() if token]
 
 
+#: Tile knobs the header accepts, and the constraints its ``static_assert``s enforce.
+_TILE_NAMES = {"TM", "WARPS", "PK", "OCC"}
+
+
+def _validate_defines(defines: list[str]) -> None:
+    """Reject a tile set the kernel would refuse, before compiling 24 TUs.
+
+    ``so2_conv_kernel_hip.cuh`` asserts ``T::PK % 4 == 0`` (a panel must cover a
+    packed step group) and the staging divides ``kWarp`` by ``T::PK``; a swept
+    value that violates either fails every translation unit with the same error,
+    which is slow to read and slower to compile.
+    """
+    values: dict[str, int] = {}
+    for token in defines:
+        name, _, raw = token[2:].partition("=")
+        if not name.startswith("DPA4_TILE_"):
+            continue
+        knob = name[len("DPA4_TILE_"):]
+        if knob not in _TILE_NAMES:
+            raise RuntimeError(
+                f"unknown tile knob {knob}; the header accepts {sorted(_TILE_NAMES)}"
+            )
+        try:
+            values[knob] = int(raw)
+        except ValueError as error:
+            raise RuntimeError(f"{token}: value must be an integer") from error
+        if values[knob] < 1:
+            raise RuntimeError(f"{token}: value must be positive")
+    pk = values.get("PK")
+    if pk is not None and pk % 4 != 0:
+        raise RuntimeError(
+            f"DPA4_TILE_PK={pk} cannot compile: the kernel asserts PK % 4 == 0 "
+            "(a weight panel must cover the packed step group). Use 4, 8, 16 or 32."
+        )
+    warps = values.get("WARPS")
+    if warps is not None and 32 % warps != 0:
+        raise RuntimeError(
+            f"DPA4_TILE_WARPS={warps} cannot compile: the staging divides the "
+            "32-lane unit by WARPS. Use 1, 2, 4, 8 or 32."
+        )
+
+
 def _build_dir(defines: list[str]) -> Path:
     """Cache directory for one define set; a different tile set is a different binary.
 
@@ -177,13 +219,7 @@ def _up_to_date() -> bool:
     return library.stat().st_mtime >= newest_source
 
 
-def build(*, force: bool = False, verbose: bool = True, dry_run: bool = False) -> Path:
-    """Compile and load the extension; returns the ``.so`` path.
-
-    Loading registers the operators, so after this returns
-    ``torch.ops.deepmd.dpa4_so2_conv`` exists and DeepMD's own
-    ``op_available()`` reports ``True``.
-    """
+def _require_hip() -> None:
     import torch
 
     if torch.version.hip is None:
@@ -193,6 +229,20 @@ def build(*, force: bool = False, verbose: bool = True, dry_run: bool = False) -
     if not torch.cuda.is_available():
         raise RuntimeError("no visible DCU")
 
+
+def build(*, force: bool = False, verbose: bool = True, dry_run: bool = False) -> Path:
+    """Compile and load the extension; returns the ``.so`` path.
+
+    Loading registers the operators, so after this returns
+    ``torch.ops.deepmd.dpa4_so2_conv`` exists and DeepMD's own
+    ``op_available()`` reports ``True``.
+    """
+    import torch
+
+    _require_hip()
+    # Validated here rather than at import so `enable()` can report it as a
+    # status reason instead of an import-time traceback.
+    _validate_defines(_defines())
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     commands = compile_commands()
     if dry_run:
@@ -208,15 +258,23 @@ def build(*, force: bool = False, verbose: bool = True, dry_run: bool = False) -
         failures: list[tuple[str, int]] = []
 
         def compile_one(command: list[str]) -> None:
-            code = _run(command, verbose)
-            if code != 0:
-                failures.append((Path(command[2]).name, code))
+            if verbose:
+                print("$ " + shlex.join(command), flush=True)
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                # Twenty-four TUs fail identically on a bad tile set; keep the
+                # first error tail, which is the one worth reading.
+                tail = [line for line in result.stderr.splitlines() if "error:" in line][:3]
+                failures.append(
+                    (Path(command[2]).name, result.returncode, " | ".join(tail) or "(no error line)")
+                )
 
         with ThreadPoolExecutor(max_workers=jobs) as pool:
             list(pool.map(compile_one, commands[:-1]))
         if failures:
-            names = ", ".join(f"{name} (exit {code})" for name, code in failures)
-            raise RuntimeError(f"hipcc failed on {names}")
+            name, code, tail = failures[0]
+            more = f" (+{len(failures) - 1} more)" if len(failures) > 1 else ""
+            raise RuntimeError(f"hipcc failed on {name} (exit {code}){more}: {tail}")
 
         code = _run(commands[-1], verbose)
         if code != 0:

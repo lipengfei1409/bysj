@@ -255,13 +255,19 @@ barrier 粒度与寄存器归属，不是吞吐。同步化的 staging 是次要
 `PK` 单独降到 2 只剩 34.4 KB，仍然只装 1 个 block —— 这就是 `PK=2` 那次 A/B 没动的原因。
 按 `ConvSmem` 算出的驻留数：
 
-| 变体 | smem | 每 CU 可驻留 |
+| 变体（PK 必须是 4 的倍数） | smem | 每 CU 可驻留 |
 | --- | ---: | ---: |
 | 默认 `WARPS=4 TM=4 PK=8` | 45.0 KB | **1** |
-| `WARPS=4 TM=4 PK=2` | 34.4 KB | 1 |
-| `WARPS=4 TM=2 PK=2` | 23.9 KB | 2 |
-| **`WARPS=2 TM=4 PK=2`** | **17.2 KB** | **3** |
-| `WARPS=2 TM=2 PK=2` | 12.0 KB | 5 |
+| `TM=2 PK=4` | 24.2 KB | 2 |
+| `WARPS=2 PK=4` | 22.5 KB | 2 |
+| `TM=2 WARPS=2 PK=4` | 22.5 KB | 2 |
+| `TM=1 WARPS=2 PK=4`（未验证 TM=1 是否编译） | ~19 KB | 3 |
+
+`PK` 只能是 **4 的倍数**：`so2_conv_kernel_hip.cuh` 里
+`static_assert(T::PK % 4 == 0, "panel depth must cover the packed step group")`，
+而 staging 还要 `kWarp % T::PK == 0`。我第一次建议 `PK=2` 就撞在这条上——
+24 个 TU 全挂、报错还都是同一行。现在 `build.py` 会在编译前拒掉非法组合并给出原因，
+编译失败时也会带上第一条 `error:` 而不是只给一个 exit code。
 
 sweep 的做法（define 必须在**运行**时也生效，所以用环境变量而不是只传给 `build.py`）：
 
