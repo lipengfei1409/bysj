@@ -140,8 +140,11 @@ python3 tests/deepmd/profile/verify_fused.py --stage all \
     --model-file "$MODEL" --input-npz "$NPZ"                  # DCU 上全跑
 ```
 
-它按 `host → build → acc → lat → par → e2e` 顺序执行，e2e 段会读两份 summary 并打印
-"接缝命中 / launch 数 / 设备时间"三条判据，任一不满足即以非零码退出。
+它按 `host → build → acc → lat → par → e2e` 顺序执行（与你敲 `--stage` 的顺序无关），
+任一梯级失败即停、后面的标 `SKIP`；`--stage e2e` 缺 `$MODEL`/`$NPZ` 会在启动前就报错退出。
+e2e 段会读两份 summary 并打印"接缝命中 / launch 数 / 设备时间"三条判据，任一不满足即以非零码退出。
+启动时先打印解析出的 `project:` 与 `out dir:`，路径不对一眼就能看出来。
+
 下面每一步的原始命令与判据：
 
 ### L0 · 主机（30 秒，不需要 DCU）
