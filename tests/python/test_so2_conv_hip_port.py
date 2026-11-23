@@ -13,7 +13,9 @@ what can go wrong silently.  The two traps worth pinning are
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import os
 import re
 import sys
@@ -142,11 +144,16 @@ class TranslationTests(unittest.TestCase):
 
 
 class BuildGuardTests(unittest.TestCase):
-    def test_build_refuses_a_non_hip_host(self) -> None:
-        spec = importlib.util.spec_from_file_location("so2_conv_hip_build", PORT / "build.py")
+    def _build_module(self):
+        path = PORT / "build.py"
+        spec = importlib.util.spec_from_file_location("so2_conv_hip_build", path)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        return module
+
+    def test_build_refuses_a_non_hip_host(self) -> None:
+        module = self._build_module()
         import torch
 
         if torch.version.hip is not None and torch.cuda.is_available():
@@ -155,15 +162,51 @@ class BuildGuardTests(unittest.TestCase):
             module.build()
         self.assertFalse(module.registered())
 
+    def test_dry_run_reports_the_requirement_instead_of_crashing(self) -> None:
+        module = self._build_module()
+        import torch
+
+        if torch.version.hip is not None and torch.cuda.is_available():
+            self.skipTest("this host can actually build it")
+        buffer = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(errors):
+            code = module.main(["--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("HIP operator", errors.getvalue())
+
     def test_declared_sources_exist(self) -> None:
-        spec = importlib.util.spec_from_file_location("so2_conv_hip_build2", PORT / "build.py")
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = self._build_module()
         for name in module.SOURCES:
             self.assertTrue((PORT / name).is_file(), name)
         self.assertIn("so2_conv_fwd_c64_l3.hip", module.SOURCES)
         self.assertIn("so2_conv_bwd_c64_l3.hip", module.SOURCES)
+
+    def test_compile_commands_shape(self) -> None:
+        # torch's own include/library flags need a real torch build, so they are
+        # stubbed here; the point of the test is the shape of the commands, and
+        # that the sources are compiled as HIP rather than handed to ninja.
+        module = self._build_module()
+        module._torch_flags = lambda: (["-D_GLIBCXX_USE_CXX11_ABI=1"], ["-ltorch"])
+        module.BUILD_DIR = Path("/tmp/dpa4_so2_conv_hip_test")
+        commands = module.compile_commands(arch="gfx928")
+        self.assertEqual(len(commands), len(module.SOURCES) + 1)
+        for compile_command in commands[:-1]:
+            self.assertEqual(compile_command[1], "-c")
+            self.assertIn("--offload-arch=gfx928", compile_command)
+            self.assertTrue(compile_command[2].endswith(".hip"))
+        link = commands[-1]
+        self.assertEqual(link[1], "-shared")
+        self.assertIn("-ltorch", link)
+        self.assertTrue(link[link.index("-o") + 1].endswith(".so"))
+
+    def test_every_source_is_compiled_not_hipified(self) -> None:
+        # Regression: torch's load() hipifies `.hip` sources and ends up with a
+        # None object path, so the build must drive hipcc itself.
+        module = self._build_module()
+        text = (PORT / "build.py").read_text()
+        self.assertIn("torch.ops.load_library", text)
+        self.assertNotIn("cpp_extension.load(", text)
 
 
 class UpstreamRunnerTests(unittest.TestCase):

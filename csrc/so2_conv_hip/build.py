@@ -1,39 +1,145 @@
 #!/usr/bin/env python3
 """Build the translated HIP fused SO(2) convolution as a loadable extension.
 
-The translated sources register ``deepmd::dpa4_so2_conv`` (and its backward,
+Why this does not use ``torch.utils.cpp_extension.load``: on ROCm, ``load``
+hipifies every source it is given and takes ``hipify_result[s].hipified_path``,
+which is ``None`` for a source hipify did not translate -- and a ``.hip`` source
+trips exactly that, so the object list ends up holding ``None`` and ninja's setup
+dies with ``basename(None)``.  Since the sources here are already HIP (with four
+hand patches hipify cannot make), ``load``'s hipify pass is pointless *and*
+breaks the build, so this script drives ``hipcc`` itself and then
+``torch.ops.load_library``.
+
+The translated sources register ``deepmd::dpa4_so2_conv`` (and backward,
 ``dpa4_wigner_runs``, ``dpa4_fp32_ridge``) into the *same* ``deepmd`` operator
 namespace DeepMD uses, so upstream's Python wrapper -- ``op_available()``,
 ``_setup_context``, ``_backward``, the fake impls, the profitability guard --
 finds them with no source edit on either side.
 
 v1 ships both directions of one instantiation, ``(lmax=3, focus_dim=64)``, which
-is what the profiled checkpoint needs: the forward is what the descriptor calls
-and the backward is what the force path differentiates through.  The other
-eleven ``(CF, L)`` pairs are the same template -- add their shards to
-``tools/hipify_so2_conv.py`` when a checkpoint needs one; compiling all
-twenty-four is what upstream's per-shape translation units are for, and it is
-the slow part of the build.
+is what the profiled checkpoint needs.  The other eleven ``(CF, L)`` pairs are
+the same template -- add their shards to ``tools/hipify_so2_conv.py`` when a
+checkpoint needs one.
 
 Usage (on a DCU host, from the repo root)::
 
-    python csrc/so2_conv_hip/build.py                 # build and register
-    python csrc/so2_conv_hip/build.py --check         # build, then report schema
-    python csrc/so2_conv_hip/build.py --verbose
+    python csrc/so2_conv_hip/build.py             # build and register
+    python csrc/so2_conv_hip/build.py --check     # build, then report the schema
+    python csrc/so2_conv_hip/build.py --dry-run   # print the compile lines only
+    python csrc/so2_conv_hip/build.py --clean     # rebuild from scratch
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 NAME = "dpa4_so2_conv_hip"
 SOURCES = ("so2_conv.hip", "so2_conv_fwd_c64_l3.hip", "so2_conv_bwd_c64_l3.hip")
+BUILD_DIR = Path(
+    os.environ.get("DPA4_SO2_CONV_HIP_BUILD") or (Path.home() / ".cache" / "dpa4_so2_conv_hip")
+)
 
 
-def _require_hip() -> None:
+def _compiler() -> str:
+    return os.environ.get("HIPCXX") or "hipcc"
+
+
+def _arch() -> str:
+    """Return the offload arch of the visible device, e.g. ``gfx928``."""
+    import torch
+
+    name = torch.cuda.get_device_properties(0).gcnArchName
+    # The name carries feature suffixes (``gfx928:sramecc+:xnack-``); hipcc
+    # wants the bare architecture.
+    return name.split(":", 1)[0]
+
+
+def _torch_flags() -> tuple[list[str], list[str]]:
+    """Return ``(compile_flags, link_flags)`` taken from this torch build."""
+    import torch
+    from torch.utils.cpp_extension import include_paths, library_paths
+
+    abi = "-D_GLIBCXX_USE_CXX11_ABI=" + ("1" if torch._C._GLIBCXX_USE_CXX11_ABI else "0")
+    includes = [abi, "-D__HIP_PLATFORM_AMD__"]
+    includes += [f"-I{path}" for path in include_paths(device_type="cuda")]
+    includes += [f"-I{HERE}"]
+
+    lib_dirs = library_paths(device_type="cuda")
+    # ``load`` computes the same list; torch ships libtorch.so as a linker
+    # script over the device libraries here.
+    link = [f"-L{path}" for path in lib_dirs]
+    link += ["-ltorch", "-ltorch_hip", "-lc10"]
+    link += [f"-Wl,-rpath,{path}" for path in lib_dirs]
+    return includes, link
+
+
+def compile_commands(*, arch: str | None = None) -> list[list[str]]:
+    """Return one ``hipcc -c`` command per source, plus the final link."""
+    includes, link = _torch_flags()
+    arch = arch or _arch()
+    commands: list[list[str]] = []
+    objects: list[str] = []
+    for source in SOURCES:
+        obj = str(BUILD_DIR / (Path(source).stem + ".o"))
+        objects.append(obj)
+        commands.append(
+            [
+                _compiler(),
+                "-c",
+                str(HERE / source),
+                "-o",
+                obj,
+                "-O3",
+                "-std=c++17",
+                "-fPIC",
+                "-fno-gpu-rdc",
+                f"--offload-arch={arch}",
+                *includes,
+            ]
+        )
+    commands.append(
+        [
+            _compiler(),
+            "-shared",
+            "-fPIC",
+            "-o",
+            str(BUILD_DIR / f"{NAME}.so"),
+            *objects,
+            *link,
+        ]
+    )
+    return commands
+
+
+def _library_path() -> Path:
+    return BUILD_DIR / f"{NAME}.so"
+
+
+def _up_to_date() -> bool:
+    library = _library_path()
+    if not library.is_file():
+        return False
+    newest_source = max(
+        (HERE / source).stat().st_mtime for source in SOURCES
+    )
+    for header in HERE.glob("*.cuh"):
+        newest_source = max(newest_source, header.stat().st_mtime)
+    return library.stat().st_mtime >= newest_source
+
+
+def build(*, force: bool = False, verbose: bool = True, dry_run: bool = False) -> Path:
+    """Compile and load the extension; returns the ``.so`` path.
+
+    Loading registers the operators, so after this returns
+    ``torch.ops.deepmd.dpa4_so2_conv`` exists and DeepMD's own
+    ``op_available()`` reports ``True``.
+    """
     import torch
 
     if torch.version.hip is None:
@@ -43,31 +149,24 @@ def _require_hip() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("no visible DCU")
 
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    commands = compile_commands()
+    if dry_run:
+        for command in commands:
+            print(shlex.join(command))
+        return _library_path()
 
-def build(*, verbose: bool = False):
-    """Compile and load the extension; returns the loaded module.
+    if force or not _up_to_date():
+        for command in commands:
+            if verbose:
+                print("$ " + shlex.join(command), flush=True)
+            code = subprocess.call(command)
+            if code != 0:
+                tail = "link" if command[1] == "-shared" else Path(command[2]).name
+                raise RuntimeError(f"hipcc failed on {tail} (exit {code})")
 
-    Loading registers the operators, so after this returns
-    ``torch.ops.deepmd.dpa4_so2_conv`` exists and DeepMD's own
-    ``op_available()`` reports ``True``.
-    """
-    _require_hip()
-    from torch.utils.cpp_extension import load
-
-    sources = [str(HERE / name) for name in SOURCES]
-    missing = [name for name in sources if not Path(name).is_file()]
-    if missing:
-        raise FileNotFoundError(f"missing translated sources: {missing}")
-
-    return load(
-        name=NAME,
-        sources=sources,
-        extra_include_paths=[str(HERE)],
-        extra_cflags=["-O3"],
-        extra_cuda_cflags=["-O3"],
-        with_cuda=True,
-        verbose=verbose,
-    )
+    torch.ops.load_library(str(_library_path()))
+    return _library_path()
 
 
 def registered() -> bool:
@@ -80,11 +179,21 @@ def registered() -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--verbose", action="store_true", default=True)
+    parser.add_argument("--dry-run", action="store_true", help="print the compile lines only")
+    parser.add_argument("--clean", action="store_true", help="rebuild every object")
     parser.add_argument("--check", action="store_true", help="report the schema after loading")
     args = parser.parse_args(argv)
 
-    build(verbose=args.verbose)
+    try:
+        library = build(force=args.clean, dry_run=args.dry_run)
+    except RuntimeError as error:
+        print(error, file=sys.stderr)
+        return 1
+    if args.dry_run:
+        return 0
+
+    print(f"library: {library}")
     print(f"registered: {registered()}")
     if args.check:
         import torch
@@ -93,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             "dpa4_so2_conv",
             "dpa4_so2_conv_backward",
             "dpa4_wigner_runs",
+            "dpa4_wigner_runs_backward",
             "dpa4_fp32_ridge",
         ):
             packet = getattr(torch.ops.deepmd, name, None)

@@ -21,7 +21,7 @@
 | `so2_conv_launch_hip.h` | 启动策略与 `(L,CF)` 分派 |
 | `so2_conv_instantiate_hip.cuh` | 模板实例化收尾 |
 | `so2_conv_fwd_c64_l3.hip` / `so2_conv_bwd_c64_l3.hip` | 一个特化的两个方向（各 10 行） |
-| `build.py` | 用 `torch.utils.cpp_extension.load` 编译并注册 |
+| `build.py` | 自己驱动 `hipcc` 编译，再 `torch.ops.load_library` 注册（见 §4.1） |
 
 `hipify` 的产物是自动生成的，**不要手改**；改 `tools/hipify_so2_conv.py` 后重跑：
 
@@ -68,6 +68,35 @@ v1 直接换成 `__builtin_memcpy`，两个 wait 变成注释——因为前后�
 它决定 `_profitable` 的设备缩放，原实现读 CUDA 的 compute capability 和“128 FMA lane”：
 在 AMD 上是错的。HIP 版用 `hipDeviceProp_t`：`2 × warpSize × CU × 时钟`（CDNA 的 fp32 FMA
 宽度就是波前宽度）。本卡实测 ridge ≈ **28.7**（`dpa4_fp32_ridge()` 会打印），标定件是 73.2。
+
+## 4.1 为什么不用 `torch.utils.cpp_extension.load`
+
+第一次在 DCU 上构建就踩到了：
+
+```
+File ".../cpp_extension.py", line 2799, in object_file_path
+TypeError: expected str, bytes or os.PathLike object, not NoneType
+```
+
+ROCm 上 `load()` 会对每个源文件跑一遍 hipify，然后用
+`hipify_result[s].hipified_path` 组对象列表；**对已经是 `.hip` 的源文件这个值是 `None`**，
+于是 `sources` 里混进 `None`，ninja 初始化时 `basename(None)` 炸掉。
+
+而且这个 hipify 本来就是多余的：这里的源文件已经是我们人工 patch 过的 HIP 代码，
+再跑一遍只会自找麻烦。所以 `build.py` 改为**直接调 hipcc**：
+
+```python
+hipcc -c src.hip -o obj.o -O3 -std=c++17 -fPIC -fno-gpu-rdc --offload-arch=gfx928 \
+      -D_GLIBCXX_USE_CXX11_ABI=<与 torch 一致> -D__HIP_PLATFORM_AMD__ -I<torch include> -I<port>
+hipcc -shared -o dpa4_so2_conv_hip.so *.o -L<torch lib> -ltorch -ltorch_hip -lc10
+torch.ops.load_library(so)
+```
+
+- `--offload-arch` 从 `torch.cuda.get_device_properties(0).gcnArchName` 取，去掉 `:sramecc+` 之类后缀；
+- ABI 标志从 `torch._C._GLIBCXX_USE_CXX11_ABI` 取，不一致会加载失败；
+- 产物落在 `~/.cache/dpa4_so2_conv_hip/`（可用 `DPA4_SO2_CONV_HIP_BUILD` 覆盖），
+  源码或头文件更新后自动重编，`--clean` 强制全编；
+- `--dry-run` 只打印编译命令，**在没卡的机器上也能看**（先过 HIP 检查会提前退出）。
 
 ## 4. 构建与验证（DCU）
 
