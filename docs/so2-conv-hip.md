@@ -245,6 +245,33 @@ profile CLI 的 `--so2-conv hip` 都走它：
 因此：代码保留（数值正确、可作为 v2 的基线），默认 `--so2-conv off`，**不再在 tile 上投入**。
 若将来换到 ridge 更高的卡（fp32 更强或带宽更低），这条路可以直接复测。
 
+## 6.4 收益怎么读
+
+只看一个数：**`device ms`（`dpa4/inference.single_energy_force` 注解的设备时间）**。
+三组 A/B 用一条命令读：
+
+```bash
+python3 tests/deepmd/profile/ab_report.py "$OUT" base kc3 kc8
+```
+
+```
+tag       device ms    delta   conv ms  launches  routed
+base          957.0     +0.0     863.5        217  on
+kc3           880.0    -77.0     620.0        217  on
+
+-- verdict --
+  kc3: -77.0 ms (1.087x) -- net win
+```
+
+判据（按信任度排序）：
+
+1. **`delta < -20 ms` 才算数**：这套 harness 的 run-to-run 抖动约 20 ms（957.0 vs 964.4 是同一配置的两次）。
+2. **`conv ms` 必须低于 ~690 ms**：那是它替换掉的稠密工作量；conv 自己更快但总量不动，说明省下的时间被别处吃掉了。
+3. **`routed` 必须是 `on`**：为 `off` 时脚本会写明原因（扩展没编上 / 没有可见 DCU），
+   不要把"没走这条路"读成"没有收益"。
+
+`ab_report.py` 把这些判断写成了代码，`--json` 会落盘，方便贴进报告。
+
 ## 6.45 继续压：把 `kc` 移出共享内存（`DPA4_KC_GLOBAL`）
 
 smem 账里最大的一块是可移走的：`kc = BE·kc_len = 8·256 fl = 8 KB`。它在 global 里按边连续
