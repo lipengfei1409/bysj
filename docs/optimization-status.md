@@ -85,8 +85,8 @@
 
 ## 6. 待验证清单（填 🟡 → ✅）
 
-命令、判据与失败签名统一写在 [`operators.md`](operators.md) §4（L0 主机 → L1 精度 → L2 单算子 A/B →
-L3 接缝 parity → L4 端到端）。这里只留"看什么数"：
+一键跑：`python3 tests/deepmd/profile/verify_fused.py --stage all --model-file ... --input-npz ...`
+（判据与原始命令见 [`operators.md`](operators.md) §4）。这里只留"看什么数"：
 
 | 步骤 | 命令（详见 operators.md §4） | 期望 |
 | --- | --- | --- |

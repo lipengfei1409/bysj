@@ -130,6 +130,20 @@ L4 已判定"不值得继续投入"，算子保留作 CSR 基建。
 
 ## 4. 快速验证阶梯
 
+一条命令跑完（`verify_fused.py`，最后自动判三条端到端判据）：
+
+```bash
+cd ~/private_data/lipengfei/bysj/myproject
+python3 tests/deepmd/profile/verify_fused.py --dry-run        # 只打印会跑什么，任何机器
+python3 tests/deepmd/profile/verify_fused.py --stage host     # 主机契约，30 秒
+python3 tests/deepmd/profile/verify_fused.py --stage all \
+    --model-file "$MODEL" --input-npz "$NPZ"                  # DCU 上全跑
+```
+
+它按 `host → build → acc → lat → par → e2e` 顺序执行，e2e 段会读两份 summary 并打印
+"接缝命中 / launch 数 / 设备时间"三条判据，任一不满足即以非零码退出。
+下面每一步的原始命令与判据：
+
 ### L0 · 主机（30 秒，不需要 DCU）
 
 ```bash
