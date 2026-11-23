@@ -40,6 +40,15 @@ python3 tests/deepmd/profile/test_dpa4_inference_profile.py generate-data \
 
 下面的 LAMMPS 命令以相邻仓库 `../lammps` 为数据路径；`--lammps-exe` 仍需填写目标机器上编译出的可执行文件。
 
+### 判断值不值得移植上游 fused SO(2) 卷积
+
+```bash
+python3 tests/dcu/fma_probe.py          # DCU：测 ffma 吞吐，折算成融合版的毫秒数
+```
+
+它把 `225.3 kFMA × E × layers × blocks` 折成时间，与稠密路径的 163.8 / 416.2 ms 比：
+投影低于稠密才值得动上游那 24 个 `.cu`。见 [docs/execution-model.md](../../../docs/execution-model.md) §5。
+
 ### 本 checkout 的 DCU 路径
 
 ```bash

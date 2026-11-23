@@ -102,13 +102,16 @@ head gate，且 "none of the per-edge intermediates reach device memory"
 | 档 | 内容 | 工作量 | 收益 | 风险 |
 | --- | --- | --- | --- | --- |
 | 一 | persistent 单算子：`sum [E,10,1,64]` 换 lane 映射（24.9 ms → ~3 ms）、readout 组（63.9 → ~40）、G5 反向 | 1–2 周 | −40…−55 ms | 低，纯换调度 |
-| 二 | **先测 G2 的比值**：hipify `so2_conv_fwd_c64_l3.cu` 单特化，与稠密组合做一次 conv 的 A/B | 1 周 | 决定 C7 生死 | 低 |
-| 二′ | 若比值 < 0.6：移植 fwd 特化（不重写算法） | 2–3 周 | 按实测折算 | 中，`.cu` → HIP + CMake 加 ROCm 分支 |
-| 三 | 若比值 < 0.6：移植 bwd 特化（416.2 ms / 218.2 GB） | 3–4 周 | 按实测折算 | 高，`cuda_pipeline` / `__shfl_sync` / 无 `mma` |
+| 二 | **FFMA 探针**（`tests/dcu/fma_probe.py`）：测 DCU 的 ffma 吞吐，把 225.3 kFMA 折成毫秒，与稠密的 163.8 / 416.2 ms 比 | 半天 | 决定 C7 生死 | 无 |
+| 三 | 若探针通过（投影 < 稠密）：hipify `so2_conv_fwd_c64_l3` 单特化，与稠密组合做一次 conv 的 A/B | 2–3 周 | 按实测折算 | 中，`.cu` → HIP + CMake 加 ROCm 分支 |
+| 四 | 若 A/B 通过：hipify 反向特化（416.2 ms / 218.2 GB） | 3–4 周 | 按实测折算 | 高，`cuda_pipeline` / `__shfl_sync` / 无 `mma` |
 
-第一档不受影响（纯换调度，约 −40…−55 ms）。第二/三档的收益一律改成"按实测折算"：
-在本 checkpoint（`air`）上，上游的实测符号是**负**的，必须先拿到
-`fused/Triton` 与 `Triton/稠密` 两个比值，否则任何数字都是猜的。
+第二档的算术：融合版把 per-edge 中间量全留在寄存器，访存只剩几百 MB（本卡带宽下约 2 ms），
+所以它的时间几乎完全由 `2 × 225 280 FMA × E × layers × blocks` 决定。
+按 15 TFLOP/s 算是 133 ms，按 25 TFLOP/s 是 80 ms，而稠密前向是 163.8 ms ——
+**探针给出的那一个数就能决定值不值得动 24 个翻译单元**。上游的 `_profitable` 在本形状上
+无论什么设备都会拒绝（225.3 k > 65.5 k × ridge/73.2 的上限），但那是拿 Triton 组合做基准；
+我们的基准是稠密路径，所以只能实测。
 
 ## 6. 判据：一个段值不值得 megakernel
 
