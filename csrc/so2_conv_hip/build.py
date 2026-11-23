@@ -16,15 +16,16 @@ namespace DeepMD uses, so upstream's Python wrapper -- ``op_available()``,
 ``_setup_context``, ``_backward``, the fake impls, the profitability guard --
 finds them with no source edit on either side.
 
-v1 ships both directions of one instantiation, ``(lmax=3, focus_dim=64)``, which
-is what the profiled checkpoint needs.  The other eleven ``(CF, L)`` pairs are
-the same template -- add their shards to ``tools/hipify_so2_conv.py`` when a
-checkpoint needs one.
+All twelve ``(focus width, degree)`` pairs are built, in both directions, because
+DeepMD's own test suite walks the whole zoo; a single checkpoint only needs its
+own pair, so a quick check compiles the glue plus ``(lmax=3, focus_dim=64)`` --
+two minutes instead of twenty-four heavy translation units.
 
 Usage (on a DCU host, from the repo root)::
 
     python csrc/so2_conv_hip/build.py             # build and register
-    python csrc/so2_conv_hip/build.py --check     # build, then report the schema
+    python csrc/so2_conv_hip/build.py --check     # fast probe (glue + one pair) + schema
+    python csrc/so2_conv_hip/build.py --check --full   # all 24 shards
     python csrc/so2_conv_hip/build.py --dry-run   # print the compile lines only
     python csrc/so2_conv_hip/build.py --clean     # rebuild from scratch
 """
@@ -164,14 +165,16 @@ def _run(command: list[str], verbose: bool) -> int:
     return subprocess.call(command)
 
 
-def compile_commands(*, arch: str | None = None) -> list[list[str]]:
+def compile_commands(
+    *, arch: str | None = None, sources: tuple[str, ...] = SOURCES
+) -> list[list[str]]:
     """Return one ``hipcc -c`` command per source, plus the final link."""
     includes, link = _torch_flags()
     includes = includes + _defines()
     arch = arch or _arch()
     commands: list[list[str]] = []
     objects: list[str] = []
-    for source in SOURCES:
+    for source in sources:
         obj = str(BUILD_DIR / (Path(source).stem + ".o"))
         objects.append(obj)
         commands.append(
@@ -207,12 +210,18 @@ def _library_path() -> Path:
     return BUILD_DIR / f"{NAME}.so"
 
 
-def _up_to_date() -> bool:
+#: The glue plus one pair -- enough to catch a header, signature or template
+#: error in a couple of minutes instead of compiling twenty-four heavy
+#: translation units for the same message.
+FAST_SOURCES = ("so2_conv.hip", "so2_conv_fwd_c64_l3.hip", "so2_conv_bwd_c64_l3.hip")
+
+
+def _up_to_date(sources: tuple[str, ...] = SOURCES) -> bool:
     library = _library_path()
     if not library.is_file():
         return False
     newest_source = max(
-        (HERE / source).stat().st_mtime for source in SOURCES
+        (HERE / source).stat().st_mtime for source in sources
     )
     for header in HERE.glob("*.cuh"):
         newest_source = max(newest_source, header.stat().st_mtime)
@@ -230,7 +239,13 @@ def _require_hip() -> None:
         raise RuntimeError("no visible DCU")
 
 
-def build(*, force: bool = False, verbose: bool = True, dry_run: bool = False) -> Path:
+def build(
+    *,
+    force: bool = False,
+    verbose: bool = True,
+    dry_run: bool = False,
+    fast: bool = False,
+) -> Path:
     """Compile and load the extension; returns the ``.so`` path.
 
     Loading registers the operators, so after this returns
@@ -239,18 +254,26 @@ def build(*, force: bool = False, verbose: bool = True, dry_run: bool = False) -
     """
     import torch
 
+    global BUILD_DIR
+
     _require_hip()
     # Validated here rather than at import so `enable()` can report it as a
     # status reason instead of an import-time traceback.
     _validate_defines(_defines())
+    sources = FAST_SOURCES if fast else SOURCES
+    if fast:
+        # A separate directory so a quick check never invalidates the full build.
+        BUILD_DIR = _build_dir(_defines()).with_name(
+            _build_dir(_defines()).name + "_fast"
+        )
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
-    commands = compile_commands()
+    commands = compile_commands(sources=sources)
     if dry_run:
         for command in commands:
             print(shlex.join(command))
         return _library_path()
 
-    if force or not _up_to_date():
+    if force or not _up_to_date(sources):
         # Twenty-four heavy template instantiations; hipcc is single-process per
         # translation unit, so run a few in parallel.  Default low enough not to
         # swap on a shared host.
@@ -306,6 +329,12 @@ def main(argv: list[str] | None = None) -> int:
              "(builds into a separate cache dir per define set)",
     )
     parser.add_argument("--check", action="store_true", help="report the schema after loading")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="compile all twenty-four shards even with --check (the default for "
+             "--check is a two-minute glue+one-pair probe)",
+    )
     args = parser.parse_args(argv)
     if args.define:
         os.environ["DPA4_SO2_CONV_HIP_DEFINES"] = " ".join(args.define)
@@ -316,8 +345,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"tile defines: {' '.join(_defines()) or '(defaults)'}")
     print(f"build dir: {BUILD_DIR}")
 
+    fast = args.check and not args.full
     try:
-        library = build(force=args.clean, dry_run=args.dry_run)
+        library = build(force=args.clean, dry_run=args.dry_run, fast=fast)
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1
@@ -325,6 +355,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print(f"library: {library}")
+    if fast:
+        print(
+            "fast check: glue + one (lmax=3, focus_dim=64) pair only; "
+            "run without --check, or with --check --full, to build all 24 shards"
+        )
     print(f"registered: {registered()}")
     if args.check:
         import torch

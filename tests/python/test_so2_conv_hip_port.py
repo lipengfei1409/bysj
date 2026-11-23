@@ -265,6 +265,19 @@ class BuildGuardTests(unittest.TestCase):
         self.assertIn("-ltorch", link)
         self.assertTrue(link[link.index("-o") + 1].endswith(".so"))
 
+    def test_fast_check_compiles_one_pair_only(self) -> None:
+        # The first build of any change should surface a header/template error
+        # in minutes, not after twenty-four heavy translation units.
+        module = self._build_module()
+        module._torch_flags = lambda: ([], [])
+        module.BUILD_DIR = Path("/tmp/dpa4_so2_conv_hip_test")
+        fast = module.compile_commands(arch="gfx928", sources=module.FAST_SOURCES)
+        full = module.compile_commands(arch="gfx928")
+        self.assertEqual(len(fast), len(module.FAST_SOURCES) + 1)
+        self.assertLess(len(fast), len(full) / 4)
+        self.assertIn("so2_conv_fwd_c64_l3.hip", module.FAST_SOURCES)
+        self.assertIn("so2_conv_bwd_c64_l3.hip", module.FAST_SOURCES)
+
     def test_tile_defines_reach_the_compiler(self) -> None:
         # Upstream's tile constants are a measured optimum for another part and
         # its header accepts -DDPA4_TILE_*, so a sweep must not need an edit.
