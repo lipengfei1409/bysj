@@ -9,6 +9,7 @@ The optional HIP extension in this checkout builds standalone RMSNorm, GIE (`zon
 - `csrc/rmsnorm.cpp`, `csrc/gie.cpp`, `csrc/segment_sum.cpp`, `csrc/segment_softmax.cpp`, `csrc/force_assembly.cpp`, `csrc/slot_ops.cpp` and `csrc/edge_combine.cpp`: native HIP operator sources included by the optional extension build.
 - `tests/`: Python contracts, host-side helper contracts, and opt-in DTK/DCU accuracy tests.
 - `docs/operators.md`: 逐算子的作用、调用点、时间占比与有效性（含验证阶梯）。
+- `docs/deepmd-fusions.md`: deepmd-kit 上游已有的算子融合清单（融合了什么、省多少访存、收益来源、调用点与开关）。
 - `docs/optimization-status.md`: 优化项状态表（每个优化项解决什么、方案、完成度、预期收益）。
 
 ## Python API

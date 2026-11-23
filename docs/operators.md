@@ -1,6 +1,7 @@
 # 融合算子：作用、调用点、时间占比、有效性
 
 本文是**逐算子的唯一索引**：它是什么、在 DeepMD 的哪一行被调用、占多少设备时间、验证到哪一级。
+上游 deepmd-kit 自带的融合清单见 [`deepmd-fusions.md`](deepmd-fusions.md)，
 优化项的完成度与收益汇总见 [`optimization-status.md`](optimization-status.md)，
 时间占比的口径与全表见 [`op-time-share.md`](op-time-share.md)。
 

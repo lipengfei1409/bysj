@@ -53,16 +53,8 @@ per-edge 的 10×10 mixing 矩阵只有 400 B，走 LDS 广播即可。
 
 ## 4.5 上游其实已经实现了这个 megakernel（重要）
 
-DeepMD 自带一整套融合算子，按实现层分五套，**全部在 `deepmd/pt_expt/kernels/` 下**：
-
-| 实现层 | 位置 | 融合了什么 | 在这台 DCU 上 |
-| --- | --- | --- | --- |
-| native CUDA | `cuda/dpa4/so2_conv.py` → `source/op/pt/dpa4/so2_conv_*.cu`（fwd/bwd 各 12 个特化） | 一个 `SO2Convolution` 的整条 per-edge 路径（见下） | ❌ 不编译 |
-| native CUDA | `cuda/dpa4/{wigner_dense,edge_radial,grid_pair,zonal_scatter}` | Wigner 矩阵、cutoff+radial 一次算、SO(3) grid 乘积、几何初嵌入 | ❌ |
-| native CUDA | `cuda/edge_force_virial`、`cuda/graph_fitting`、`cuda/dpa1/*`、`dpa4c/*` | 力/维里装配、cuBLAS 拟合网、DPA1 描述符与能量-力算子 | ❌ |
-| CuTe / cuTile | `cute/sezm/{forward,backward,operator}`、`cutile/sezm/*`（7 个） | 整条 SeZM 前向/反向的 tile DSL 版本 | ❌ |
-| Triton | `triton/sezm/*`（12 个：force_assembly / segment_softmax / gated_activation / so2_value_path / so2_block_gemm / so2_rotation / so2_stack_fp16x3 / flash_atten / radial_mix / wigner_monomials / indexing / second_order） | 逐个算子的融合，按 `DP_TRITON_INFER=1..3` 分级 | ⚠️ 理论可移植，本机 gcvm(LLVM 17) 编不了 triton 3.5 的 IR |
-| Python | `aggregate`、`segment_sum`、`edge_csr` | 参考路径里的分段归约与 CSR 视图 | ✅ |
+DeepMD 自带一整套融合算子（5 套实现层、约 20 个融合点），逐项清单见
+[`deepmd-fusions.md`](deepmd-fusions.md)。这里只留与本决策相关的两个事实：
 
 native 那几套只在 `if(USE_CUDA_TOOLKIT AND DEEPMD_TORCH_HAS_CUDA)` 下进入构建
 （`source/op/pt/CMakeLists.txt`），所以 DCU 构建里根本没有
