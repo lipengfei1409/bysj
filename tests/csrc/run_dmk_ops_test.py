@@ -3,12 +3,16 @@
 Every operator is compiled into its own executable and launched on its own:
 one kernel per operator, no megakernel, no fusion.
 
+The tile test exercises TileShape/TileView/make_tile/make_tile_at/load_tile/
+copy_tile on the host and, when a DCU is visible, one rank-2 and one rank-3
+round trip through LDS.
+
 The DUMMA tile K depends on the dtype and the device (DTK 26.04 DUMMA 使用手册,
 表 3.1), so gfx928/936/938 additionally build the float m16n16k8 and the
 half/bfloat16 m16n16k16 cases through DMK_MMA_F32K8 / DMK_MMA_F16.
 
 Usage:
-    python tests/csrc/run_dmk_ops_test.py [--op all|attention|gemm]
+    python tests/csrc/run_dmk_ops_test.py [--op all|attention|gemm|tile]
 
 Requires a DTK 26.04 HIP compiler and a Torch installation providing ATen
 headers (the DMK tensor views reuse them).
@@ -31,6 +35,7 @@ SUPPORTED_DUMMA_ARCHES = {"gfx926", "gfx928", "gfx936", "gfx938"}
 TESTS = {
     "attention": ("test_dmk_attention.cpp", "test_dmk_attention"),
     "gemm": ("test_dmk_gemm_standalone.cpp", "test_dmk_gemm_standalone"),
+    "tile": ("test_dmk_tile.cpp", "test_dmk_tile"),
 }
 
 

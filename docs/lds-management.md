@@ -534,6 +534,7 @@ python tests/csrc/run_dmk_ops_test.py --op attention
 | `tests/csrc/test_dmk_lds_megakernel.cpp` | DCU 设备测试 |
 | `tests/csrc/test_dmk_gemm_standalone.cpp` | 独立 GEMM 算子测试（CPU 参考） |
 | `tests/csrc/test_dmk_attention.cpp` | 独立 attention 算子测试（CPU 参考） |
+| `tests/csrc/test_dmk_tile.cpp` | tile 视图/拷贝测试（host + 可选设备往返） |
 | `tests/csrc/run_dmk_ops_test.py` | 独立算子测试的 hipcc 直编 + 运行 |
 | `tests/csrc/run_dmk_lds_test.py` | hipcc 直编 + 运行 |
 
