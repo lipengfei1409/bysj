@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -34,6 +35,22 @@ def _summary(*, device_us: float, launches: int, hits: dict | None = None,
 
 
 class PlanTests(unittest.TestCase):
+    def test_project_root_is_the_checkout_that_has_setup_py(self) -> None:
+        # Regression: the first version counted parents from this file and ran
+        # every command from <root>/tests, so `discover -s tests/python` failed
+        # with "Start directory is not importable".
+        self.assertTrue((verify_fused._PROJECT / "setup.py").is_file())
+        self.assertTrue((verify_fused._PROJECT / "tests").is_dir())
+        self.assertTrue((verify_fused._PROJECT / "python").is_dir())
+
+    def test_plan_commands_are_relative_to_the_project_root(self) -> None:
+        plan = verify_fused.build_plan()
+        for entries in plan.values():
+            for command, _extra, _label in entries:
+                for token in command:
+                    if "test_" in token or token.startswith("tests/"):
+                        self.assertFalse(token.startswith("/"), token)
+
     def test_host_stage_runs_the_python_contracts(self) -> None:
         plan = verify_fused.build_plan()
         (command, extra, _label), = plan["host"]
@@ -54,6 +71,23 @@ class PlanTests(unittest.TestCase):
         self.assertIn("--fused", fused[0])
         self.assertNotIn("--fused", baseline[0])
         self.assertEqual(baseline[0][baseline[0].index("--output-dir") + 1], "/root/private_data/lipengfei/test_result/verify/off")
+
+    def test_stages_always_run_in_canonical_order(self) -> None:
+        # A user typing `--stage acc --stage build` must still build first.
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            verify_fused.main(["--dry-run", "--stage", "acc", "--stage", "build"])
+        text = buffer.getvalue()
+        self.assertLess(text.index("[build]"), text.index("[acc]"))
+
+    def test_e2e_without_a_model_fails_before_anything_runs(self) -> None:
+        buffer = io.StringIO()
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(errors):
+            code = verify_fused.main(["--stage", "all"])
+        self.assertEqual(code, 2)
+        self.assertIn("--model-file", errors.getvalue())
+        self.assertEqual(buffer.getvalue(), "")   # not even the project banner
 
     def test_dry_run_prints_without_spawning(self) -> None:
         calls: list[list[str]] = []
@@ -79,6 +113,28 @@ class PlanTests(unittest.TestCase):
 
 
 class JudgeTests(unittest.TestCase):
+    def test_ladder_stops_at_the_first_failing_rung(self) -> None:
+        calls: list[list[str]] = []
+
+        def fail(command, **kwargs):
+            calls.append(command)
+            return 3
+
+        original = verify_fused.subprocess.call
+        verify_fused.subprocess.call = fail
+        buffer = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                with contextlib.redirect_stdout(buffer):
+                    code = verify_fused.main(
+                        ["--stage", "acc", "--stage", "build", "--out-dir", tmp]
+                    )
+            finally:
+                verify_fused.subprocess.call = original
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 1)          # build ran, latency never started
+        self.assertIn("SKIP", buffer.getvalue())
+
     def test_every_criterion_met_passes(self) -> None:
         ok, messages = verify_fused.judge(
             _summary(device_us=1_218_600.0, launches=2614),

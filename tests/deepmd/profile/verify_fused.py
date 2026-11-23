@@ -44,7 +44,23 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_PROJECT = _HERE.parents[1]
+
+
+def _find_project(start: Path) -> Path:
+    """Return the checkout root: the nearest ancestor with ``setup.py`` and ``tests/``.
+
+    The checkout is not always named ``myproject`` -- on the DCU host the repo
+    root is the directory the shell is already in -- so the root is discovered
+    instead of counted from this file's depth.  Getting this wrong runs every
+    command from the wrong cwd, which is what the first version did.
+    """
+    for parent in start.parents:
+        if (parent / "setup.py").is_file() and (parent / "tests").is_dir():
+            return parent
+    return start.parents[2]
+
+
+_PROJECT = _find_project(_HERE)
 STAGES = ("host", "build", "acc", "lat", "par", "e2e")
 DEFAULT_END_TO_END_OUT = Path("/root/private_data/lipengfei/test_result/verify")
 
@@ -196,9 +212,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    stages = args.stage or ["host"]
-    if "all" in stages:
-        stages = list(STAGES)
+    requested = args.stage or ["host"]
+    # Always run the ladder in its canonical order: `--stage acc --stage build`
+    # must not measure an extension that has not been built yet.
+    stages = list(STAGES) if "all" in requested else [s for s in STAGES if s in requested]
+    if not str(args.out_dir).strip():
+        args.out_dir = DEFAULT_END_TO_END_OUT
+    if "e2e" in stages and not (args.model_file and args.input_npz):
+        # Fail before the 30-minute ladder, not after it: an unset $MODEL would
+        # otherwise only surface at the last rung.
+        print("--stage e2e needs --model-file and --input-npz", file=sys.stderr)
+        return 2
     plan = build_plan(
         out_dir=args.out_dir,
         model_file=args.model_file,
@@ -216,26 +240,39 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"    env {key}={value}")
         return 0
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    results: list[tuple[str, bool, str]] = []
+    print(f"project: {_PROJECT}")
+    print(f"out dir: {args.out_dir}\n", flush=True)
+    # Only the stages that write artifacts need the directory, so a host-only
+    # run stays possible where /root is not writable.
+    if {"lat", "e2e"} & set(stages):
+        try:
+            args.out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            print(f"cannot create out dir {args.out_dir}: {error}", file=sys.stderr)
+            return 2
+    # A ladder: a failed rung makes every later rung meaningless (no extension,
+    # no numbers, nothing to compare), so stop instead of piling up failures.
+    results: list[tuple[str, str, str]] = []
+    failed_stage: str | None = None
     for stage in stages:
+        if failed_stage is not None:
+            results.append((stage, "SKIP", f"not run: {failed_stage} failed"))
+            continue
         entries = plan.get(stage) or []
         if not entries:
-            results.append((stage, False, "no command configured (pass --model-file/--input-npz)"))
+            results.append((stage, "SKIP", "no command configured (pass --model-file and --input-npz)"))
             continue
         env = _base_env(_PROJECT)
-        ok = True
         for command, extra, label in entries:
-            stage_env = dict(env, **extra)
-            code = _run(command, stage_env, _PROJECT)
+            code = _run(command, dict(env, **extra), _PROJECT)
             if code != 0:
-                ok = False
-                results.append((label, False, f"exit {code}"))
+                results.append((stage, "FAIL", f"{label}: exit {code}"))
+                failed_stage = stage
                 break
-        if ok:
-            results.append((stage, True, "all commands exited 0"))
+        else:
+            results.append((stage, "PASS", "all commands exited 0"))
 
-    if "e2e" in stages:
+    if "e2e" in stages and failed_stage is None:
         base = _latest_summary(args.out_dir / "off")
         fused = _latest_summary(args.out_dir / "on")
         if base and fused:
@@ -253,12 +290,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(compare(baseline_summary, fused_summary), indent=2))
             results.append(("e2e verdict", ok, "see criteria above"))
         else:
-            results.append(("e2e verdict", False, "summaries not found"))
+            results.append(("e2e verdict", "FAIL", "summaries not found"))
 
     print("\n-- summary --")
-    for label, ok, detail in results:
-        print(f"  {'PASS' if ok else 'FAIL'}  {label:20s} {detail}")
-    return 0 if all(ok for _, ok, _ in results) else 1
+    for label, status, detail in results:
+        print(f"  {status:4s}  {label:20s} {detail}")
+    return 1 if any(status == "FAIL" for _, status, _ in results) else 0
 
 
 if __name__ == "__main__":
