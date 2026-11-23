@@ -106,12 +106,15 @@ head gate，且 "none of the per-edge intermediates reach device memory"
 | 三 | 若探针通过（投影 < 稠密）：hipify `so2_conv_fwd_c64_l3` 单特化，与稠密组合做一次 conv 的 A/B | 2–3 周 | 按实测折算 | 中，`.cu` → HIP + CMake 加 ROCm 分支 |
 | 四 | 若 A/B 通过：hipify 反向特化（416.2 ms / 218.2 GB） | 3–4 周 | 按实测折算 | 高，`cuda_pipeline` / `__shfl_sync` / 无 `mma` |
 
-第二档的算术：融合版把 per-edge 中间量全留在寄存器，访存只剩几百 MB（本卡带宽下约 2 ms），
-所以它的时间几乎完全由 `2 × 225 280 FMA × E × layers × blocks` 决定。
-按 15 TFLOP/s 算是 133 ms，按 25 TFLOP/s 是 80 ms，而稠密前向是 163.8 ms ——
-**探针给出的那一个数就能决定值不值得动 24 个翻译单元**。上游的 `_profitable` 在本形状上
-无论什么设备都会拒绝（225.3 k > 65.5 k × ridge/73.2 的上限），但那是拿 Triton 组合做基准；
-我们的基准是稠密路径，所以只能实测。
+第二档的算术（模型实测常数：`lmax=3, Cf=64, n_focus=1, mixing_layers=4`，3 个 block）：
+每条边 `3 个门控层 × 225 280 + 1 个 identity 层 212 992 + 旋转 20 480 + radial 6 400 = 915 712 FMA`
+→ 2 × 915 712 × 181 838 × 3 = **9.99e11 FLOP**。DCU 实测纯 ffma **18.1 TFLOP/s**
+（`tests/dcu/fma_probe.py`）→ **55.2 ms**，对比稠密前向 **163.8 ms**，即 **3.0×**。
+
+这个投影有一处可以自检：trace 里 4 层 × 3 block 的 24 个 `bmm`（384² 与 256² 各 12 次/向）
+FLOP 是 9.30e11，按 18.1 TF 的理想时间是 51.4 ms，而实测 GEMM 是 62 ms —— 即 rocBLAS
+跑到纯算力上限的 83%，与它 15.3 TFLOP/s 的实测一致。所以**融合版省的不是算力，而是那 102 ms
+的非 GEMM 部分**（中间量、gather、scatter），这也解释了为什么在带宽富裕的卡上它反而亏。
 
 ## 6. 判据：一个段值不值得 megakernel
 

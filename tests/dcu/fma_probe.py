@@ -27,12 +27,50 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-#: Shape of the profiled checkpoint (traced, see docs/op-time-share.md).
+#: Shape of the profiled checkpoint, read off the loaded model
+#: (``lmax=3, Cf=64, n_focus=1, mixing_layers=4, mmax=1, n_head=1``, 3 blocks).
 AIR_EDGES = 181838
-AIR_LAYERS = 2
-AIR_BLOCKS = 12
-#: ``M0 = (lmax+1)*Cf``, ``M1 = 2*lmax*Cf``, ``GATE = lmax*Cf`` at CF=64, lmax=3.
+AIR_BLOCKS = 3
+AIR_LAYERS = 4
+AIR_LMAX = 3
+AIR_CF = 64
+AIR_N_FOCUS = 1
+#: One gated mixing layer: ``M0^2 + M1^2 + Cf*GATE`` with ``M0 = (lmax+1)Cf``,
+#: ``M1 = 2 lmax Cf``, ``GATE = lmax Cf``.  This is the constant upstream's
+#: ``_profitable`` compares against, and the one its calibration quotes.
 AIR_PER_LAYER_FMA = (4 * 64) ** 2 + (6 * 64) ** 2 + 64 * 3 * 64  # 225 280
+
+
+def air_per_edge_fma(
+    *,
+    lmax: int = AIR_LMAX,
+    cf: int = AIR_CF,
+    mixing_layers: int = AIR_LAYERS,
+    n_focus: int = AIR_N_FOCUS,
+) -> dict:
+    """Return the per-edge FMA of the whole value path, by component.
+
+    The mixing stack is ``mixing_layers - 1`` gated layers plus an identity
+    final layer (no gate), each contracting the two block-diagonal blocks; the
+    two rotations and the radial degree mixer ride on top.  Summing only the
+    layers and forgetting the rotations is what made the first projection 15%
+    optimistic.
+    """
+    m0 = (lmax + 1) * cf
+    m1 = 2 * lmax * cf
+    gate = lmax * cf
+    dim = (lmax + 1) ** 2
+    red = 3 * lmax + 1
+    gated = max(0, mixing_layers - 1)
+    components = {
+        "gated_layers": gated * (m0 * m0 + m1 * m1 + cf * gate),
+        "identity_layer": m0 * m0 + m1 * m1,
+        "rotations": 2 * red * dim * cf,
+        "radial_mix": red * red * cf,
+    }
+    components["total"] = sum(components.values()) * n_focus
+    components["layer"] = m0 * m0 + m1 * m1 + cf * gate
+    return components
 #: Dense-path reference for the same span, from the trace.
 DENSE_FORWARD_MS = 163.8
 DENSE_BACKWARD_MS = 416.2
@@ -51,9 +89,8 @@ def projection(
     tflops: float,
     *,
     edges: int = AIR_EDGES,
-    layers: int = AIR_LAYERS,
     blocks: int = AIR_BLOCKS,
-    per_layer_fma: int = AIR_PER_LAYER_FMA,
+    per_edge_fma: Optional[int] = None,
     dense_ms: float = DENSE_FORWARD_MS,
 ) -> dict:
     """Project the fused convolution's arithmetic time from a measured FLOP rate.
@@ -65,7 +102,9 @@ def projection(
     """
     if tflops <= 0:
         raise ValueError("tflops must be positive")
-    flop = 2.0 * per_layer_fma * edges * layers * blocks
+    components = air_per_edge_fma()
+    per_edge = int(per_edge_fma if per_edge_fma is not None else components["total"])
+    flop = 2.0 * per_edge * edges * blocks
     projected_ms = flop / (tflops * 1e12) * 1e3
     return {
         "tflops": tflops,
@@ -77,7 +116,9 @@ def projection(
         "profitable_budget_fma": MAX_PROFITABLE_LAYER_FMA
         * (tflops * 1e12 / (BANDWIDTH_GBPS * 1e9))
         / RIDGE_REF,
-        "per_layer_fma": per_layer_fma,
+        "per_edge_fma": per_edge,
+        "per_layer_fma": components["layer"],
+        "flop_per_edge": 2.0 * per_edge,
     }
 
 
@@ -177,6 +218,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"sustained {rate:.1f} TFLOP/s (ffma only, no memory traffic)")
     print(f"ridge {report['ridge_flop_per_byte']:.1f} FLOP/byte "
           f"(at {BANDWIDTH_GBPS:.0f} GB/s)")
+    print(f"per edge: {report['per_edge_fma']} FMA "
+          f"({report['flop'] / 1e12:.2f} TFLOP over {AIR_EDGES} edges x {AIR_BLOCKS} blocks)")
     print(f"projected fused conv fwd: {report['projected_ms']:.1f} ms "
           f"vs dense {report['dense_ms']:.1f} ms "
           f"-> {report['speedup_over_dense']:.2f}x")

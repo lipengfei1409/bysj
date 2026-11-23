@@ -23,12 +23,30 @@ _spec.loader.exec_module(fma_probe)
 
 
 class ProjectionTests(unittest.TestCase):
-    def test_air_shape_constants_match_the_trace(self) -> None:
-        # CF=64, lmax=3: ROW = 640 = (3L+1)*Cf, GATE = 192 = L*Cf.
+    def test_air_shape_constants_match_the_loaded_model(self) -> None:
+        # Read off the checkpoint: lmax=3, Cf=64, n_focus=1, mixing_layers=4,
+        # 3 interaction blocks.  GATE = 192 = lmax*Cf, M0 = 256, M1 = 384.
         self.assertEqual(fma_probe.AIR_PER_LAYER_FMA, 225_280)
         self.assertEqual(fma_probe.AIR_EDGES, 181838)
-        self.assertEqual(fma_probe.AIR_LAYERS, 2)
-        self.assertEqual(fma_probe.AIR_BLOCKS, 12)
+        self.assertEqual(fma_probe.AIR_LAYERS, 4)
+        self.assertEqual(fma_probe.AIR_BLOCKS, 3)
+        self.assertEqual(fma_probe.AIR_N_FOCUS, 1)
+
+    def test_per_edge_components_add_up(self) -> None:
+        components = fma_probe.air_per_edge_fma()
+        self.assertEqual(components["gated_layers"], 3 * 225_280)
+        self.assertEqual(components["identity_layer"], 212_992)
+        self.assertEqual(components["rotations"], 20_480)
+        self.assertEqual(components["radial_mix"], 6_400)
+        self.assertEqual(components["total"], 915_712)
+
+    def test_gemm_only_flop_matches_the_trace(self) -> None:
+        # 24 bmm calls of 384x384 and 24 of 256x256 in the trace, over 3 blocks
+        # and 4 layers: 2*E*(384^2+256^2)*4*3 = 9.30e11 FLOP.  The full per-edge
+        # total (with gate, rotations, radial) must sit within 10% of it.
+        gemm_flop = 2 * 181838 * (384**2 + 256**2) * 4 * 3
+        total_flop = fma_probe.projection(18.1)["flop"]
+        self.assertAlmostEqual(total_flop / gemm_flop, 1.0, delta=0.10)
         self.assertAlmostEqual(fma_probe.DENSE_FORWARD_MS, 163.8)
         self.assertAlmostEqual(fma_probe.DENSE_BACKWARD_MS, 416.2)
 
@@ -42,7 +60,7 @@ class ProjectionTests(unittest.TestCase):
 
     def test_flop_count(self) -> None:
         report = fma_probe.projection(15.0)
-        expected = 2.0 * 225_280 * 181838 * 2 * 12
+        expected = 2.0 * 915_712 * 181838 * 3
         self.assertAlmostEqual(report["flop"], expected, places=0)
         self.assertAlmostEqual(
             report["projected_ms"], expected / (15.0e12) * 1e3, places=6
