@@ -51,16 +51,72 @@ per-edge 的 10×10 mixing 矩阵只有 400 B，走 LDS 广播即可。
 2. 需要全局 barrier：`cat` 是跨 block 的依赖，纯 persistent + 全局同步的复杂度远高于收益。
 3. GEMM 已经不是瓶颈项：两个大 `bmm` 每次 3.5 ms、按 2MNK 折算约 15 TFLOP/s，属于分块/epilogue 问题，不是调度问题。
 
+## 4.5 上游其实已经实现了这个 megakernel（重要）
+
+DeepMD 自带一整套融合算子，按实现层分五套，**全部在 `deepmd/pt_expt/kernels/` 下**：
+
+| 实现层 | 位置 | 融合了什么 | 在这台 DCU 上 |
+| --- | --- | --- | --- |
+| native CUDA | `cuda/dpa4/so2_conv.py` → `source/op/pt/dpa4/so2_conv_*.cu`（fwd/bwd 各 12 个特化） | 一个 `SO2Convolution` 的整条 per-edge 路径（见下） | ❌ 不编译 |
+| native CUDA | `cuda/dpa4/{wigner_dense,edge_radial,grid_pair,zonal_scatter}` | Wigner 矩阵、cutoff+radial 一次算、SO(3) grid 乘积、几何初嵌入 | ❌ |
+| native CUDA | `cuda/edge_force_virial`、`cuda/graph_fitting`、`cuda/dpa1/*`、`dpa4c/*` | 力/维里装配、cuBLAS 拟合网、DPA1 描述符与能量-力算子 | ❌ |
+| CuTe / cuTile | `cute/sezm/{forward,backward,operator}`、`cutile/sezm/*`（7 个） | 整条 SeZM 前向/反向的 tile DSL 版本 | ❌ |
+| Triton | `triton/sezm/*`（12 个：force_assembly / segment_softmax / gated_activation / so2_value_path / so2_block_gemm / so2_rotation / so2_stack_fp16x3 / flash_atten / radial_mix / wigner_monomials / indexing / second_order） | 逐个算子的融合，按 `DP_TRITON_INFER=1..3` 分级 | ⚠️ 理论可移植，本机 gcvm(LLVM 17) 编不了 triton 3.5 的 IR |
+| Python | `aggregate`、`segment_sum`、`edge_csr` | 参考路径里的分段归约与 CSR 视图 | ✅ |
+
+native 那几套只在 `if(USE_CUDA_TOOLKIT AND DEEPMD_TORCH_HAS_CUDA)` 下进入构建
+（`source/op/pt/CMakeLists.txt`），所以 DCU 构建里根本没有
+`torch.ops.deepmd.dpa4_so2_conv`，各 `op_available()` 恒为 `False`，dispatch 静默回退稠密路径 ——
+这就是我们 profile 到的 1218.6 ms。
+
+`deepmd/pt_expt/kernels/cuda/dpa4/so2_conv.py` 绑定的是 `deepmd::dpa4_so2_conv`
+（`source/op/pt/dpa4/so2_conv_fwd_c{32,64}_l{1..6}.cu` 与对应的 `_bwd_`），它一次性完成
+**一个 `SO2Convolution` 的整条 per-edge 路径**：attention logits + 门控分段 softmax +
+Wigner 旋转 + radial 混合 + gated mixing stack + 逆旋转 + attention 加权 + 目标归约 +
+head gate，且 "none of the per-edge intermediates reach device memory"
+（`so2_conv.cu` 文件头注释）。实现方式也正是 §3 推导的形态：activation 驻留寄存器、
+`__shfl_sync` 广播、权重经 LDS staging、在线 softmax、fp32 SIMT。
+
+**所以 G2 段不需要我们再设计。** 但上游自己的标定对我们不利：
+
+| checkpoint | 每层 per-edge FMA | fused vs Triton 组合 |
+| --- | ---: | ---: |
+| `mini` | 27.6 kFMA | **+43%** |
+| `neo` | 112.6 kFMA | −4%（第二条 focus stream） |
+| `air` | **225.3 kFMA** | **−9%** |
+
+判据 `_MAX_PROFITABLE_LAYER_FMA = 65536` 就卡在两种符号之间（`so2_conv.py:855`）。
+
+而**本 checkpoint 的形状正好是 `air`**：由 trace 可反解 `CF = 64`、`lmax = 3`
+（`ROW = CF(3L+1) = 640`、`M0 = 256`、`M1 = 384`、`GATE = 192`，四个数与
+`bmm [1,E,384]`、`bmm [1,E,256]`、`cat([E,256]⊕[E,384])`、`sigmoid [1,E,192]` 逐一对上），
+于是 `m0² + m1² + CF·GATE = 65536 + 147456 + 12288 = 225 280`，**正是 `air` 那个 225.3 kFMA**。
+
+三个直接后果：
+
+1. 上游的 `_profitable()` 会**拒绝**在这个形状上启用 fused conv，`DP_CUDA_INFER=2` 等于白设；
+2. 判据里还有一层设备缩放 `_device_ridge_scale()`（DCU 的 ridge 约 24–43，参考件是 73.2），
+   缩放后预算只有 2–4 万 FMA，比 225 kFMA 小一个量级 —— 更加拒绝；
+3. 所以 §2/§5 里"G2 段 megakernel −270…−320 ms"必须降级：那个数是**相对稠密参考路径**的，
+   而上游只在 `air` 形状上验证过 fused **比 Triton 组合还慢 9%**。真正的比值是
+   `(fused/Triton) × (Triton/稠密)`，第二个因子我们没有数据（Triton 在本机编译不了）。
+
+**结论**：G2 的正确动作不是写 kernel，而是先测一个比值。具体做法：把
+`so2_conv_fwd_c64_l3.cu` 单特化 hipify 出来，拿一次真实 conv 与稠密组合做 A/B；
+若 < 0.6 再谈移植，否则 C7 直接砍掉。
+
 ## 5. 建议的推进顺序
 
 | 档 | 内容 | 工作量 | 收益 | 风险 |
 | --- | --- | --- | --- | --- |
 | 一 | persistent 单算子：`sum [E,10,1,64]` 换 lane 映射（24.9 ms → ~3 ms）、readout 组（63.9 → ~40）、G5 反向 | 1–2 周 | −40…−55 ms | 低，纯换调度 |
-| 二 | **G2 前向段 megakernel**（163.8 ms / 78.3 GB → 目标 40–60 ms） | 3–4 周 | −100…−125 ms | 中，需要 DeepMD 的段级接缝 |
-| 三 | **G2 反向段 megakernel**（416.2 ms / 218.2 GB → 目标 100–150 ms） | 3–4 周 | −270…−320 ms | 高，自定义 backward |
+| 二 | **先测 G2 的比值**：hipify `so2_conv_fwd_c64_l3.cu` 单特化，与稠密组合做一次 conv 的 A/B | 1 周 | 决定 C7 生死 | 低 |
+| 二′ | 若比值 < 0.6：移植 fwd 特化（不重写算法） | 2–3 周 | 按实测折算 | 中，`.cu` → HIP + CMake 加 ROCm 分支 |
+| 三 | 若比值 < 0.6：移植 bwd 特化（416.2 ms / 218.2 GB） | 3–4 周 | 按实测折算 | 高，`cuda_pipeline` / `__shfl_sync` / 无 `mma` |
 
-合计可把 1218.6 ms 压到 800 ms 量级（约 1.5×）。第三档的数字是"若驻留成立"的上界，
-落地前先用第二档实测一条 3–4 op 的半融合来校准。
+第一档不受影响（纯换调度，约 −40…−55 ms）。第二/三档的收益一律改成"按实测折算"：
+在本 checkpoint（`air`）上，上游的实测符号是**负**的，必须先拿到
+`fused/Triton` 与 `Triton/稠密` 两个比值，否则任何数字都是猜的。
 
 ## 6. 判据：一个段值不值得 megakernel
 

@@ -36,6 +36,12 @@
 | B3 | `force_assembly`（力/维里装配） | 2 次原子散射 + `(E,9)` 物化；源端维里外积 | 两次只读 CSR 遍历，double 累加，5 原子/block 填满 wave64 | 🟡 算子完成并接上上游 `edge_force_assembly`；**端到端价值已判负** | 算子级 **5.53×**（1.006 → 0.182 ms）；但 trace 里真实池只有 **1.7 ms**（`index_add [3000,3]`×2 + `[3000,9]` + 外积）→ 端到端 **−1.5 ms**，原估 −60…−85 是把 gate/槽位 gather 的反向误算进来了 |
 | B4 | CSR 置换 `order` 支持 | DeepMD 边表不按位置有序，否则每个算子前要先物化排序结果 | kernel 内 `edge = order[slot]`，输出仍写自然序；`force_assembly` 另加 `dst_order` | 🟡 已实现（三算子 + 主机测试） | 省掉每步 2 趟 gather（约 1.2 ms/步） |
 
+**注**：B1–B4 在上游都有同名实现 —— `aggregate`/`segment_sum`（Python）、
+`triton/sezm/segment_softmax`、`triton/sezm/force_assembly` + `cuda/edge_force_virial`、
+`triton/sezm/gated_activation`、以及 `edge_csr`。它们只在 CUDA-only 构建或 Triton 里可用，
+所以我们的增量是"把它们接到 legacy `pt` 后端、跑在 HIP 上"，不是新算法。
+上游全清单见 [`execution-model.md`](execution-model.md) §4.5。
+
 ## 3. 前向 / 反向热点（未实现）
 
 | # | 优化项 | 解决的问题 | 方案 | 状态 | 收益（估算） |
@@ -47,7 +53,7 @@
 | C4 | 小轴归约重写 | `sum [E,10,1,64]` 有效带宽 56 GB/s（约 10× 浪费），单行 24.9 ms、该组合计 36.5 ms | 小轴映射到 lane，`__shfl` 归约，或并进 C2 | ⬜ 未做 | −20…−22 ms |
 | C5 | readout 瘦 GEMM | readout 组 5 个 bmm 合计 63.9 ms，其中 `[1,152,48]×[1,48,576000]` 24.2 ms（K=48 算力空转） | `float4` 向量化 + 融合 scale/add epilogue | ⬜ 未做 | −6…−10 ms |
 | C6 | 边流逐元素链融合 | E-major 逐元素/memcpy/init/cat 合计 **488.1 ms（40.1%）**，同一条 3–4 核链重复 9 次 | 项表驱动的多输入 FMAD，k 趟合 1 趟 | ⬜ 仅设计 | −180…−220 ms |
-| C7 | SO(2) 消息链段级融合（含 rank-K 收缩） | **`G2 槽位段` 580.0 ms / 47.6%**：`[E,3/4/9/10/15/16,64]` 的展开、残差、gate，加 6 个 per-edge 小 `bmm`（`[E,10,10]`、`[E,10,16]`、`[E,16,10]`）与 `sum(dim=2)`；中间量全部落 HBM | 段级 megakernel：wave64 = 64 通道、一条边一个 wave、16 槽驻留 VGPR（4 KB/边，无需 LDS），per-edge 10×10 matrix 走 LDS 广播 | ⬜ 仅设计（执行模型论证见 [`execution-model.md`](execution-model.md)） | fwd −100…−125 ms、bwd −270…−320 ms（反向需单独写） |
+| C7 | SO(2) 消息链段级融合（含 rank-K 收缩） | **`G2 槽位段` 580.0 ms / 47.6%**：`[E,3/4/9/10/15/16,64]` 的展开、残差、gate，加 6 个 per-edge 小 `bmm` 与 `sum(dim=2)`；中间量全部落 HBM | **上游已有等价实现**：`deepmd::dpa4_so2_conv`（`source/op/pt/dpa4/so2_conv_{fwd,bwd}_c{32,64}_l{1..6}.cu`），寄存器驻留 activation、`__shfl` 广播、权重 LDS staging、在线 softmax；legacy `pt` 的 dispatch 也已就位（`sezm_nn/so2.py` Step 14，`DP_CUDA_INFER=2`） | 🟡 **不写新 kernel**；先做 1 周的单特化 hipify A/B 决定生死（理由见 [`execution-model.md`](execution-model.md) §4.5） | **未定**：本 checkpoint 由 trace 反解为 `CF=64, lmax=3`（`ROW=640`、`M0=256`、`M1=384`、`GATE=192` 四处吻合），per-edge FMA = 225.3 k，正是上游标定里 `air` 那个点，那里 fused 比 Triton 组合**慢 9%** |
 
 ## 4. 工程与质量
 
@@ -115,6 +121,7 @@ python3 tests/deepmd/profile/compare_fused_runs.py \
 | 2026-11-19 | C1 落地为 `slot_pack_scale`、C2 修正归因后拆为 C2′（`slot_reduce`，已实现）+ 10 槽小矩阵乘（并入 C7）。原 C2 把 `bmm [E,10,10]` 归给 attention 是错的：它来自 `so2.py:848` 的 `einsum("eoic,eic->eoc")`，属 SO(2) mixing；attention 的 logits 是 `(q_edge*k_edge).sum(-1)`，本来就是 elementwise |
 | 2026-11-19 | C1 接线完成：`deepmd_patch(pack=True)` 替换 `GatedActivation.forward`（只接管 `fndc` 布局），`fused=("pack",)` 可单独开关；主机侧用 `fndc` 假模块与 stock 方法逐位对照（3 个用例），另有 layout 不匹配与非 fp32 的回退用例 |
 | 2026-11-19 | 用 launch→region 归因钉死两个真实站点：C1 的 `index_select`+`mul`+`copy_` 全在 **`GatedActivation.forward`**（`activation.py:213`，映射 `gates = gating_scalars.index_select(2, expand_index)`），不是 `so2_message`；C2′ 的 `sum [E,10,1,64]` 在 **`SO2Linear.forward`**（`so2.py:812`）的 `(mixed * channel_basis).sum(dim=2)`，权重依赖输出槽 → `slot_reduce` 不匹配。C1 估算由 −45…−55 下调到 −20…−25，C2′ 收益归零并并入 C7 |
+| 2026-11-23 | 查清上游已有实现：`pt_expt/kernels` 下五套融合（native CUDA / CuTe / cuTile / Triton / Python），native 一律只编 `USE_CUDA_TOOLKIT AND DEEPMD_TORCH_HAS_CUDA`，DCU 构建里 `dpa4_so2_conv` 不存在 → 静默回退稠密路径；legacy `pt` 的 dispatch 反而已就位。由 trace 反解本 checkpoint 为 `CF=64/lmax=3`，正好是上游 `air` 标定点（225.3 kFMA），故 C7 的收益改为"待单特化 A/B 实测" |
 | 2026-11-23 | 新增 [`execution-model.md`](execution-model.md)：按张量家族把 1218.6 ms 分成 G1–G9，只有 `G2 槽位段`（580.0 ms / 47.6%）值得做段级 megakernel（4 KB/边驻留、无跨 block 依赖），全模型 megakernel 不做；C7 的池子由 66 ms 修正为 580 ms |
 | 2026-11-23 | 新增 `op_time_share.py` 与 [`op-time-share.md`](op-time-share.md)：按 `nn.Module: ModelWrapper_0` 作用域（用 **launch 时间**过滤）给出前向 + 反向全部算子的时间占比，2614/2614 kernel、1218.58 ms 全部在作用域内。**据此修正两处估算**：B3 的真实池只有 1.7 ms（原 −60…−85 ms 作废，那 95 ms 里是 gate/槽位 gather 的反向），B1 上限 −10 ms。同时新增 C1b（同一 gate 链的反向，35.3 ms 池） |
 
