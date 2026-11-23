@@ -5,9 +5,13 @@
 // Every op derives from BaseOp<Globals> and describes one instruction
 // of work with three data hooks plus the two controller hooks:
 //
-//   load(s, g)           bring this instruction's inputs from HBM into its
-//   run(s, g)            pages, do the arithmetic in LDS,
-//   store(s, g)          write the pages back to HBM
+//   load(s, g)           loader wave: stage the operator's *first* tile, so its
+//                        slow start overlaps with the previous operator
+//   run(s, g)            consumer waves: execute the whole operator -- walk its
+//                        own tiles, load what else it needs, keep its own
+//                        intra-op pipeline, leave the result in its pages
+//   store(s, g)          storer wave: write the final result out and release
+//                        the operator's pages
 //   release_lid(query)   controller: page-allocator permutation for the
 //                        *previous* instruction (logical page -> new slot)
 //   init_semaphores(s, g) controller: construct this instruction's dynamic
@@ -18,12 +22,11 @@
 // calls store), so an op can be tested as a plain sequence load -> run -> store
 // and a new op never has to think about wave numbering.
 //
-// Granularity: one instruction is one tile, and load(), run() and store() each
-// handle that same tile. An op never loops over several tiles and never keeps
-// per-tile state between calls; a stream that needs N tiles contains N
-// instructions. The controller, the page allocator and the retire counter are
-// therefore all tile-grained, and an op only has to describe the single tile
-// its 32 instruction words identify.
+// Granularity: one instruction is one whole operator invocation, not one tile.
+// run() owns the operator's tile loop (K steps, key tiles, rows, ...), so the
+// tiling and any intra-op pipelining are written inside the op; the runtime only
+// drives one prefetch (load) and one epilogue (store) per instruction. A stream
+// that needs N operators contains N instructions.
 //
 // The op object carries only a pointer to the current 32-word instruction; the
 // hooks receive the per-wave State and the kernel Globals, so an op does not

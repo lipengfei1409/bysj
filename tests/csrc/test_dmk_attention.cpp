@@ -137,28 +137,22 @@ std::vector<double> reference_attention(const std::vector<T>& q,
     return out;
 }
 
-// One query tile per block, one instruction per key tile.
+// One instruction per query tile: the op walks every key tile in run().
 std::vector<int> make_instructions(size_t blocks, size_t keys) {
-    const size_t tiles = (keys + dmk::attention::kKeyTile - 1) /
-                         dmk::attention::kKeyTile;
-    std::vector<int> words(blocks * tiles * 32, 0);
+    std::vector<int> words(blocks * 32, 0);
     for (size_t block = 0; block < blocks; ++block) {
-        for (size_t tile = 0; tile < tiles; ++tile) {
-            int* word = &words[(block * tiles + tile) * 32];
-            word[0] = AttnOpF32::opcode;
-            word[1] = static_cast<int>(block);
-            word[2] = static_cast<int>(tile);
-            word[3] = static_cast<int>(keys);
-            word[4] = 0;  // patched by the caller with the head dim
-            word[5] = tile + 1 == tiles ? 1 : 0;
-        }
+        int* word = &words[block * 32];
+        word[0] = AttnOpF32::opcode;
+        word[1] = static_cast<int>(block);
+        word[2] = static_cast<int>(keys);
+        word[3] = 0;  // patched by the caller with the head dim
     }
     return words;
 }
 
 void set_instruction_dim(std::vector<int>& words, size_t dim) {
     for (size_t index = 0; index + 32 <= words.size(); index += 32)
-        words[index + 4] = static_cast<int>(dim);
+        words[index + 3] = static_cast<int>(dim);
 }
 
 __global__ void attention_kernel_f32(AttnGlobalsF32 g) {
@@ -221,8 +215,7 @@ void run_case(const char* name, size_t rows, size_t keys, size_t dim,
     const unsigned blocks =
         static_cast<unsigned>((rows + dmk::attention::kQueryTile - 1) /
                               dmk::attention::kQueryTile);
-    const size_t tiles = (keys + dmk::attention::kKeyTile - 1) /
-                         dmk::attention::kKeyTile;
+    const size_t tiles = 1;  // one instruction = one whole query tile
     std::vector<int> host_words = make_instructions(blocks, keys);
     set_instruction_dim(host_words, dim);
 
@@ -309,8 +302,7 @@ void time_case(const char* name, size_t rows, size_t keys, size_t dim,
     const unsigned blocks =
         static_cast<unsigned>((rows + dmk::attention::kQueryTile - 1) /
                               dmk::attention::kQueryTile);
-    const size_t tiles = (keys + dmk::attention::kKeyTile - 1) /
-                         dmk::attention::kKeyTile;
+    const size_t tiles = 1;  // one instruction = one whole query tile
     std::vector<int> host_words = make_instructions(blocks, keys);
     set_instruction_dim(host_words, dim);
 

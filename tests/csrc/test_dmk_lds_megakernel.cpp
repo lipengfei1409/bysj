@@ -220,9 +220,9 @@ void run_gemm_case() {
     write_noop(words.data());
     write_noop(words.data() + kInstructionWidth);
     words[kInstructionWidth + 0] = GemmOp<MkGlobals>::opcode;
-    words[kInstructionWidth + 1] = 0;
-    words[kInstructionWidth + 2] = 0;
-    words[kInstructionWidth + 3] = 0;
+    words[kInstructionWidth + 1] = 0;  // m0
+    words[kInstructionWidth + 2] = 0;  // n0
+    words[kInstructionWidth + 3] = 1;  // k_tiles (16x16 matrices: one step)
     write_noop(words.data() + 2 * kInstructionWidth);
     check_hip(hipMalloc(reinterpret_cast<void**>(&device_instructions),
                         words.size() * sizeof(int)),

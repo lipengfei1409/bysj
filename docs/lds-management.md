@@ -364,11 +364,12 @@ public:
 搬数据的循环写在 op 自己的 `load()/store()` 里（page 形状、边界、尾部和对齐
 条件都是 op 私有的），`copy.h` 只提供 16 B 的 `load_vec`/`store_vec`。
 
-**粒度：一条指令 = 一个 tile。** `load()`、`run()`、`store()` 处理的是同一个
-tile，op 内部不跨 tile 循环、也不在两次调用之间保留 per-tile 状态；需要 N 个
-tile 的指令流就写 N 条指令。于是 controller、page 置换和退休计数都是 tile 粒度
-的，op 只需要解释自己那 32 个指令字。GEMM 的 A/B/C 三个 page 属于同一个 tile；
-Elementwise 的一个 page 就是那个 tile；Embedding 的一行就是那个 tile。
+**粒度：一条指令 = 一整个算子。** `run()` 在 op 内部走完这个算子的所有 tile
+（GEMM 的 K 步、attention 的 key tile、…），包括后续 tile 的装载和它自己的
+intra-op 流水；`load()` 只装**第一个** tile（由运行时的 loader 波调用，用来和
+上一条指令的 run 重叠），`store()` 只做收尾（写回最终结果、释放 page）。
+需要 N 个算子的指令流就写 N 条指令，controller / page 置换 / 退休计数都是算子
+粒度的，op 只需要解释自己那 32 个指令字。
 
 controller 和 worker 都通过 `make_op<Globals, Ops...>(opcode, storage,
 instruction)` 构造当前 op，并直接调用虚函数；controller 不再出现 opcode
@@ -420,10 +421,10 @@ op 内部用 `s.pid(lid)`、`s.wait_page_ready`、`s.finish_page`、`s.semaphore
 
 ### 5.5 具体 op
 
-- **`GemmOp`**（`csrc/dmk/gemm.h`，opcode 2）：一条指令算一个 16×16×16 tile，
-  page 0/1/2 分别是 A/B/C；`load()` 搬 A/B，consumer wave 0 在 `run()` 里做
-  标量参考 GEMM，`store()` 写 C。`copy_tile` 是 `GemmOp` 自己的 16×16 搬运
-  循环：列连续时每行 4 个 chunk、整 tile 64 个 vector 正好一条 wave。文件里同时保留低层 `GemmWave` / `run_gemm_wave`，
+- **`GemmOp`**（`csrc/dmk/gemm.h`，opcode 2）：一条指令算一个 16×16 输出 tile
+  的**整个 K**；page 0/1/2 分别是 A k-tile、B k-tile、C tile。`load()` 装
+  k=0 的 A/B 并把 C 清零，`run()` 在 wave 0 里循环每个 k、用同一个 A/B page
+  重新装载并累加，`store()` 写 C。指令字 `[1]=m0 [2]=n0 [3]=k_tiles`。文件里同时保留低层 `GemmWave` / `run_gemm_wave`，
   它是原来的 DUMMA microbench，不经过 page VM。
 - **`EmbeddingOp`**（`csrc/dmk/embedding.h`，opcode 3）：一条指令把 table 的
   一行 gather 到 output 的一行；page 0 做中转，`run()` 为空，后续可加
@@ -485,7 +486,7 @@ megakernel 之外还有一条独立路径，先把算子本身跑对，再考虑
 | 算子 | 入口 | 说明 |
 | --- | --- | --- |
 | GEMM `C = A*B` | `dmk::gemm::run_gemm_wave<T, K>` | 一条 wave 算一个 16×16 输出 tile，K 方向 3 个 stage 预取；A/B 装载和 C epilogue 都是 16 B 向量，tile 越界或非连续时退回带边界检查的标量循环 |
-| attention | `dmk::mk::AttentionOp<Globals>`（opcode 5） | 一条指令 = 一个 (query tile, key tile) 步，page 版 flash attention |
+| attention | `dmk::mk::AttentionOp<Globals>`（opcode 5） | 一条指令 = 一个 query tile 的全部 key，page 版 flash attention |
 
 dtype 与 MMA 尺寸按 DUMMA 手册表 3.1 用模板参数表达（累加器固定 float）：
 
@@ -507,16 +508,15 @@ dtype 与 MMA 尺寸按 DUMMA 手册表 3.1 用模板参数表达（累加器固
 按 `--offload-arch` 决定是否定义 `DMK_MMA_F32K8` / `DMK_MMA_F16`。attention 的
 Q/K/V/O 同 dtype（float / `__half` / `__hip_bfloat16`），内部统一转 float 计算。
 
-attention 是 page 版 flash attention，一条指令 = 一个 (query tile, key tile) 步：
-query tile 是 16 行、key tile 是 16 个 key，算一个 16×16 分数 tile 并折进 16×D 的
-输出 tile，所以分数矩阵 M×N 从不落 HBM。Q/O/softmax 状态（m、l、alpha）放在
-lid 0/3/4 的 page 里，跨同一 query tile 的多条指令保留；K/V 每个 key tile 由
-loader 波重新装进 lid 1/2；S 和 P 用 lid 5 的 scratch page。最后一条 key tile
-的 `store()` 把 O/l 写回 out。
+attention 是 page 版 flash attention，一条指令 = 一个 query tile 的**全部 key**：
+query tile 是 16 行，`load()` 装 Q 和 k=0 的 K/V，`run()` 在 wave 0 里循环每个
+key tile（自己把后续 K/V 装进 lid 1/2），每步算一个 16×16 分数 tile 并折进 16×D
+的输出 tile，所以分数矩阵 M×N 从不落 HBM。Q/O/softmax 状态（m、l、alpha）放在
+lid 0/3/4，S 和 P 用 lid 5 的 scratch page；`store()` 把 O/l 写回 out。
 
-因为 Q/O/状态 page 跨指令保留，`release_lid` 用 identity 映射；代价是 K/V 只有
-单缓冲——load(i+1) 要等 store(i) 释放 page 才能写，所以 loader 的预取还不能和
-run(i) 重叠。要重叠就得给 K/V 做双缓冲（现在 6 个 page 全用上了）。
+因为 Q/O/状态 page 在一条指令内一直用着，`release_lid` 用 identity 映射；代价是
+K/V 只有单缓冲——`load(i+1)` 要等 `store(i)` 释放 page 才能写，所以首 tile 的
+预取还不能和 `run(i)` 重叠。要重叠就得给首 tile 做双缓冲（现在 6 个 page 全用上了）。
 
 一条指令只由一个 consumer wave（wave 0）算，其余 wave 只负责 semaphore；每个
 instruction 有 5 个 page 数据 + 1 个 scratch。

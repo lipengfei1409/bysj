@@ -105,34 +105,30 @@ struct AttentionGlobalsT {
 
 namespace dmk::mk {
 
+// Page-based flash-attention operator. One instruction is one whole query
+// tile over all keys: load() stages Q and the first K/V tile, run() walks the
+// remaining key tiles itself (online softmax, one 16x16 score tile per step),
+// and store() writes O / l. Pages: lid 0 Q, 1 K, 2 V, 3 O, 4 state,
+// 5 scratch (S and P).
 template <typename Globals>
 class AttentionOp final : public BaseOp<Globals> {
 public:
     using T = typename Globals::element;
 
     static constexpr int opcode = 5;
-    static constexpr int kInstructionWidth = config::kInstructionWidth;
 
     struct Instruction {
         int query_tile;
-        int key_tile;
         int num_keys;
         int dim;
-        int last;
 
         __device__ explicit Instruction(const int* words)
-            : query_tile(words[1]),
-              key_tile(words[2]),
-              num_keys(words[3]),
-              dim(words[4]),
-              last(words[5]) {}
+            : query_tile(words[1]), num_keys(words[2]), dim(words[3]) {}
     };
 
     __device__ explicit AttentionOp(const int* instruction)
         : BaseOp<Globals>(instruction) {}
 
-    // Q/O/state keep their physical page across the instructions of a query
-    // tile, so the page order stays the identity.
     __device__ int release_lid(int query) const override { return query; }
 
     __device__ int init_semaphores(State& s,
@@ -142,10 +138,55 @@ public:
         return 2;
     }
 
+    // Q tile of this query tile, clamped at the matrix edge.
+    __device__ static void stage_query(State& s, const Globals& g,
+                                       const Instruction& inst, int lane) {
+        const auto shape = tensor::Shape<2>{
+            {attention::kQueryTile, static_cast<size_t>(inst.dim)}};
+        const auto layout =
+            tensor::StridedLayout<2>{{attention::kRowStride, 1}};
+        const size_t q_origin[2] = {
+            static_cast<size_t>(inst.query_tile) * attention::kQueryTile, 0};
+        const auto q_src = tile::make_tile_at(
+            g.q, tile::TileShape<2>{{attention::kQueryTile,
+                                     static_cast<size_t>(inst.dim)}},
+            q_origin);
+        tile::load_tile(
+            tile::make_lds_view(
+                static_cast<T*>(s.pages[s.pid(attention::kQueryPage)].ptr()),
+                shape, layout),
+            q_src, lane, config::kWaveSize);
+    }
+
+    // K/V tile `key_tile`, clamped at the number of keys.
+    __device__ static void stage_keys(State& s, const Globals& g,
+                                      const Instruction& inst, int key_tile,
+                                      int lane) {
+        const auto shape = tensor::Shape<2>{
+            {attention::kKeyTile, static_cast<size_t>(inst.dim)}};
+        const auto layout =
+            tensor::StridedLayout<2>{{attention::kRowStride, 1}};
+        const size_t origin[2] = {
+            static_cast<size_t>(key_tile) * attention::kKeyTile, 0};
+        const auto tile_shape = tile::TileShape<2>{
+            {attention::kKeyTile, static_cast<size_t>(inst.dim)}};
+        const auto k_src = tile::make_tile_at(g.k, tile_shape, origin);
+        const auto v_src = tile::make_tile_at(g.v, tile_shape, origin);
+        tile::load_tile(
+            tile::make_lds_view(
+                static_cast<T*>(s.pages[s.pid(attention::kKeyPage)].ptr()),
+                shape, layout),
+            k_src, lane, config::kWaveSize);
+        tile::load_tile(
+            tile::make_lds_view(
+                static_cast<T*>(s.pages[s.pid(attention::kValuePage)].ptr()),
+                shape, layout),
+            v_src, lane, config::kWaveSize);
+    }
+
     __device__ void load(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
-        const int dim = inst.dim;
 
         const int q_pid = s.pid(attention::kQueryPage);
         const int k_pid = s.pid(attention::kKeyPage);
@@ -159,64 +200,51 @@ public:
         s.wait_page_ready(state_pid);
         s.wait_page_ready(s.pid(attention::kScratchPage));
 
-        // Each page holds one tile: Q/K/V tiles are 16 x D blocks of their
-        // matrices, clamped at the tensor edge by make_tile.
-        const auto tile_shape = tile::TileShape<2>{
-            {attention::kQueryTile, static_cast<size_t>(dim)}};
-        const auto page_layout =
-            tensor::StridedLayout<2>{{attention::kRowStride, 1}};
-        const auto page_shape = [dim](int rows) {
-            return tensor::Shape<2>{{static_cast<size_t>(rows),
-                                     static_cast<size_t>(dim)}};
-        };
+        stage_query(s, g, inst, lane);
+        stage_keys(s, g, inst, 0, lane);
 
-        // The first key tile of a query tile (re)loads Q and resets the
-        // output tile and the softmax state; later tiles reuse the pages.
-        if (inst.key_tile == 0) {
-            const size_t q_coord[2] = {
-                static_cast<size_t>(inst.query_tile), 0};
-            const auto q_src = tile::make_tile(g.q, tile_shape, q_coord);
-            const auto q_dst = tile::make_lds_view(
-                static_cast<T*>(s.pages[q_pid].ptr()),
-                page_shape(attention::kQueryTile), page_layout);
-            tile::load_tile(q_dst, q_src, lane, config::kWaveSize);
+        const auto shape = tensor::Shape<2>{
+            {attention::kQueryTile, static_cast<size_t>(inst.dim)}};
+        tile::fill_tile(
+            tile::make_lds_view(
+                static_cast<float*>(s.pages[o_pid].ptr()), shape,
+                tensor::StridedLayout<2>{{attention::kRowStride, 1}}),
+            0.0f, lane, config::kWaveSize);
 
-            const auto o_dst = tile::make_lds_view(
-                static_cast<float*>(s.pages[o_pid].ptr()),
-                page_shape(attention::kQueryTile), page_layout);
-            tile::fill_tile(o_dst, 0.0f, lane, config::kWaveSize);
-
-            float* state = static_cast<float*>(s.pages[state_pid].ptr());
-            if (lane < attention::kQueryTile) {
-                state[lane] = -INFINITY;
-                state[attention::kQueryTile + lane] = 0.0f;
-                state[2 * attention::kQueryTile + lane] = 1.0f;
-            }
+        float* state = static_cast<float*>(s.pages[state_pid].ptr());
+        if (lane < attention::kQueryTile) {
+            state[lane] = -INFINITY;
+            state[attention::kQueryTile + lane] = 0.0f;
+            state[2 * attention::kQueryTile + lane] = 1.0f;
         }
-
-        const size_t kv_coord[2] = {static_cast<size_t>(inst.key_tile), 0};
-        const auto k_src = tile::make_tile(g.k, tile_shape, kv_coord);
-        const auto k_dst = tile::make_lds_view(
-            static_cast<T*>(s.pages[k_pid].ptr()),
-            page_shape(attention::kKeyTile), page_layout);
-        tile::load_tile(k_dst, k_src, lane, config::kWaveSize);
-
-        const auto v_src = tile::make_tile(g.v, tile_shape, kv_coord);
-        const auto v_dst = tile::make_lds_view(
-            static_cast<T*>(s.pages[v_pid].ptr()),
-            page_shape(attention::kKeyTile), page_layout);
-        tile::load_tile(v_dst, v_src, lane, config::kWaveSize);
 
         lds::wave_barrier();
         __threadfence_block();
         if (lane == 0) s.semaphores()[0].arrive();
     }
 
+    // The whole attention for this query tile: every key tile in turn.
     __device__ void run(State& s, const Globals& g) const override {
+        const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
+
         s.semaphores()[0].wait(0);
-        if (wave == 0) run_tile(s, g, lane);
+        if (wave == 0) {
+            const int key_tiles =
+                (inst.num_keys + attention::kKeyTile - 1) /
+                attention::kKeyTile;
+            for (int key_tile = 0; key_tile < key_tiles; ++key_tile) {
+                if (key_tile > 0) {
+                    stage_keys(s, g, inst, key_tile, lane);
+                    lds::wave_barrier();
+                    __threadfence_block();
+                }
+                score_and_accumulate(s, inst, key_tile, lane);
+                lds::wave_barrier();
+                __threadfence_block();
+            }
+        }
         lds::wave_barrier();
         __threadfence_block();
         if (lane == 0) s.semaphores()[1].arrive();
@@ -229,29 +257,26 @@ public:
 
         s.semaphores()[1].wait(0);
 
-        if (inst.last != 0) {
-            const float* o_page = static_cast<const float*>(
-                s.pages[s.pid(attention::kOutputPage)].ptr());
-            const float* state = static_cast<const float*>(
-                s.pages[s.pid(attention::kStatePage)].ptr());
-            const float* l_row = state + attention::kQueryTile;
-            const int rows = static_cast<int>(g.out.shape.dims[0]);
-            const int first_row = inst.query_tile * attention::kQueryTile;
-            const auto stride0 = g.out.layout.strides[0];
-            const auto stride1 = g.out.layout.strides[1];
-            for (int index = lane; index < attention::kQueryTile * dim;
-                 index += config::kWaveSize) {
-                const int row = index / dim;
-                const int col = index % dim;
-                const int query = first_row + row;
-                if (query >= rows) continue;
-                const float inverse =
-                    l_row[row] != 0.0f ? 1.0f / l_row[row] : 0.0f;
-                g.out.data[static_cast<size_t>(query) * stride0 +
-                           static_cast<size_t>(col) * stride1] =
-                    dtype::from_float<T>(
-                        o_page[row * attention::kRowStride + col] * inverse);
-            }
+        const float* o_page = static_cast<const float*>(
+            s.pages[s.pid(attention::kOutputPage)].ptr());
+        const float* state = static_cast<const float*>(
+            s.pages[s.pid(attention::kStatePage)].ptr());
+        const float* l_row = state + attention::kQueryTile;
+        const int rows = static_cast<int>(g.out.shape.dims[0]);
+        const int first_row = inst.query_tile * attention::kQueryTile;
+        const auto stride0 = g.out.layout.strides[0];
+        const auto stride1 = g.out.layout.strides[1];
+        for (int index = lane; index < attention::kQueryTile * dim;
+             index += config::kWaveSize) {
+            const int row = index / dim;
+            const int col = index % dim;
+            const int query = first_row + row;
+            if (query >= rows) continue;
+            const float inverse = l_row[row] != 0.0f ? 1.0f / l_row[row] : 0.0f;
+            g.out.data[static_cast<size_t>(query) * stride0 +
+                       static_cast<size_t>(col) * stride1] =
+                dtype::from_float<T>(
+                    o_page[row * attention::kRowStride + col] * inverse);
         }
 
         lds::wave_barrier();
@@ -263,12 +288,11 @@ public:
     }
 
 private:
-    // The whole 16x16 score tile and its contribution to the 16xD output,
-    // executed by wave 0; the other consumer waves only carry the semaphore.
-    __device__ void run_tile(State& s, const Globals&, int lane) const {
-        const Instruction inst(this->instruction());
+    // One 16x16 score tile: S = Q K^T, online-softmax update, O += P V.
+    __device__ void score_and_accumulate(State& s, const Instruction& inst,
+                                         int key_tile, int lane) const {
         const int dim = inst.dim;
-        const int first_key = inst.key_tile * attention::kKeyTile;
+        const int first_key = key_tile * attention::kKeyTile;
 
         const T* q_page = static_cast<const T*>(
             s.pages[s.pid(attention::kQueryPage)].ptr());
@@ -282,17 +306,16 @@ private:
             s.pages[s.pid(attention::kStatePage)].ptr());
         float* s_tile = static_cast<float*>(
             s.pages[s.pid(attention::kScratchPage)].ptr());
-        T* p_tile = reinterpret_cast<T*>(s_tile +
-                                         attention::kQueryTile *
-                                             attention::kKeyTile);
+        T* p_tile = reinterpret_cast<T*>(
+            s_tile + attention::kQueryTile * attention::kKeyTile);
         float* m_row = state;
         float* l_row = state + attention::kQueryTile;
         float* alpha_row = state + 2 * attention::kQueryTile;
 
         const float scale = rsqrtf(static_cast<float>(dim));
 
-        // S = Q * K^T / sqrt(D), with keys past the end masked to -inf.
-        for (int index = lane; index < attention::kQueryTile * attention::kKeyTile;
+        for (int index = lane;
+             index < attention::kQueryTile * attention::kKeyTile;
              index += config::kWaveSize) {
             const int row = index / attention::kKeyTile;
             const int column = index % attention::kKeyTile;
@@ -312,8 +335,6 @@ private:
         lds::wave_barrier();
         __threadfence_block();
 
-        // Row statistics: kLanesPerRow lanes share a row and reduce inside
-        // their four-lane group.
         const int stats_row = lane / attention::kLanesPerRow;
         const int stats_part = lane % attention::kLanesPerRow;
         float tile_max = -INFINITY;
@@ -332,10 +353,10 @@ private:
 
         float tile_sum = 0.0f;
         for (int c = 0; c < attention::kColumnsPerLane; ++c) {
-            const int column =
-                stats_part * attention::kColumnsPerLane + c;
-            const float weight = expf(
-                s_tile[stats_row * attention::kKeyTile + column] - next_max);
+            const int column = stats_part * attention::kColumnsPerLane + c;
+            const float weight =
+                expf(s_tile[stats_row * attention::kKeyTile + column] -
+                     next_max);
             p_tile[stats_row * attention::kKeyTile + column] =
                 dtype::from_float<T>(weight);
             tile_sum += weight;
@@ -351,7 +372,6 @@ private:
         lds::wave_barrier();
         __threadfence_block();
 
-        // O = O * alpha + P * V.
         for (int index = lane; index < attention::kQueryTile * dim;
              index += config::kWaveSize) {
             const int row = index / dim;
@@ -368,8 +388,6 @@ private:
                     alpha_row[row] +
                 sum;
         }
-        lds::wave_barrier();
-        __threadfence_block();
     }
 };
 
