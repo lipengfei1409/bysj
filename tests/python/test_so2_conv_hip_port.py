@@ -184,6 +184,21 @@ class TranslationTests(unittest.TestCase):
                 shard = f"so2_conv_{kind}_c{cf}_l{lmax}.hip"
                 self.assertIn(shard, build_module.SOURCES, f"{lmax},{cf} needs {shard}")
 
+    def test_degree_kernel_can_leave_shared_memory(self) -> None:
+        # `DPA4_KC_GLOBAL` drops the 8 KB `kc` staging, which is what makes a
+        # third resident block affordable; off by default, so both paths must be
+        # present in the generated source.
+        kernel = (PORT / "so2_conv_kernel_hip.cuh").read_text()
+        compat = (PORT / "hip_compat.cuh").read_text()
+        self.assertIn("#ifndef DPA4_KC_GLOBAL", compat)
+        self.assertIn("#define DPA4_KC_GLOBAL 0", compat)
+        self.assertIn("#if DPA4_KC_GLOBAL", kernel)
+        self.assertIn("#if !DPA4_KC_GLOBAL", kernel)
+        # The mixer needs the true edge id once kc is read from global memory.
+        self.assertIn("long edge,", kernel)
+        self.assertIn("mix.kc = a.kc + edge * a.kc_len;", kernel)
+        self.assertIn("mixer_of<L, CF, T>(a, sm, edge_s[e], e, focus, cb, lane)", kernel)
+
     def test_ridge_is_recomputed_from_hip_properties(self) -> None:
         glue = (PORT / "so2_conv.hip").read_text()
         start = glue.index("double dpa4_fp32_ridge()")

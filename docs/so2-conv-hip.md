@@ -245,6 +245,34 @@ profile CLI 的 `--so2-conv hip` 都走它：
 因此：代码保留（数值正确、可作为 v2 的基线），默认 `--so2-conv off`，**不再在 tile 上投入**。
 若将来换到 ridge 更高的卡（fp32 更强或带宽更低），这条路可以直接复测。
 
+## 6.45 继续压：把 `kc` 移出共享内存（`DPA4_KC_GLOBAL`）
+
+smem 账里最大的一块是可移走的：`kc = BE·kc_len = 8·256 fl = 8 KB`。它在 global 里按边连续
+（每边 1 KB）、L2 常驻，只是被 `DegreeMixer::kernel(slot)` 反复读，所以**可以不入 smem**：
+
+```cpp
+#if DPA4_KC_GLOBAL
+  kc = nullptr;                        // bind()
+  alpha = wig + T::BE * S::NW;         // alpha 前移
+#else
+  kc = wig + T::BE * S::NW;
+  alpha = kc + T::BE * kc_len;
+#endif
+```
+
+配套三处：`bytes()` 不再计 `kc_len`、`load_chunk` 跳过拷贝、`mixer_of` 多接一个真实边号
+（`mix.kc = a.kc + edge * a.kc_len`）。默认 `0`，已验证的二进制不变。
+
+**注意 `PK` 与它互相拉扯**：`SCRATCH = max(PANEL, OUTER)`，
+
+| 组合 | SCRATCH | 合计 smem | 驻留 | 特点 |
+| --- | ---: | ---: | ---: | --- |
+| `TM=2 PK=4`（当前最好） | 13.7 | 24.2 KB | 2 | 基准 863.5 ms |
+| `TM=2 PK=4 KC_GLOBAL` | 13.7 | **16.2 KB** | **3** | 占用率 1.5× |
+| `TM=2 PK=8 KC_GLOBAL` | 24.0 | 26.5 KB | 2 | 屏障数减半 |
+
+所以 A/B 要跑**两个变体**（不是三个杠杆一起堆）：一个买驻留、一个买屏障数。
+
 ## 6.5 第一次端到端的结果：慢 2.6 倍（2026-11-24）
 
 ```

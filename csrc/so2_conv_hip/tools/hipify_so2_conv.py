@@ -153,6 +153,84 @@ def _shape_macro() -> str:
     )
 
 
+def _kc_global(text: str) -> str:
+    """Guard the ``kc`` staging behind ``DPA4_KC_GLOBAL`` (default 0).
+
+    ``kc`` is ``BE * kc_len`` floats of shared memory (8 KB at BE=8, kc_len=256)
+    and is contiguous per edge in global memory, so it can be read from there.
+    Dropping the staging is what moves the shared-memory footprint from 24.2 KB
+    to 16.2 KB -- the third resident block on a 64 KB CU.
+    """
+    text = text.replace(
+        """    wig = astage + T::WARPS * T::TM * kWarp;
+    kc = wig + T::BE * S::NW;
+    alpha = kc + T::BE * kc_len;""",
+        """    wig = astage + T::WARPS * T::TM * kWarp;
+#if DPA4_KC_GLOBAL
+    (void)kc_len;
+    kc = nullptr;
+    alpha = wig + T::BE * S::NW;
+#else
+    kc = wig + T::BE * S::NW;
+    alpha = kc + T::BE * kc_len;
+#endif""",
+    )
+    text = text.replace(
+        """           (SCRATCH + T::WARPS * T::TM * kWarp +
+            T::BE * (S::NW + kc_len + n_head) + S::DIM + 3 * n_head +
+            (backward ? T::BE * S::NW : 0));""",
+        """#if DPA4_KC_GLOBAL
+           (SCRATCH + T::WARPS * T::TM * kWarp +
+            T::BE * (S::NW + n_head) + S::DIM + 3 * n_head +
+            (backward ? T::BE * S::NW : 0));
+#else
+           (SCRATCH + T::WARPS * T::TM * kWarp +
+            T::BE * (S::NW + kc_len + n_head) + S::DIM + 3 * n_head +
+            (backward ? T::BE * S::NW : 0));
+#endif""",
+    )
+    text = text.replace(
+        """  for (int idx = threadIdx.x; idx < ne * a.kc_len; idx += T::NT) {
+    const int i = idx / a.kc_len;
+    sm.kc[idx] = a.kc[edge_s[i] * a.kc_len + (idx - i * a.kc_len)];
+  }""",
+        """#if !DPA4_KC_GLOBAL
+  for (int idx = threadIdx.x; idx < ne * a.kc_len; idx += T::NT) {
+    const int i = idx / a.kc_len;
+    sm.kc[idx] = a.kc[edge_s[i] * a.kc_len + (idx - i * a.kc_len)];
+  }
+#endif""",
+    )
+    text = text.replace(
+        """DPA4_DEV DegreeMixer<L> mixer_of(const ConvArgs& a,
+                                 const ConvSmem<L, CF, T>& sm,
+                                 int e,""",
+        """DPA4_DEV DegreeMixer<L> mixer_of(const ConvArgs& a,
+                                 const ConvSmem<L, CF, T>& sm,
+                                 long edge,
+                                 int e,""",
+    )
+    text = text.replace(
+        """  mix.kc = sm.kc + e * a.kc_len;""",
+        """#if DPA4_KC_GLOBAL
+  mix.kc = a.kc + edge * a.kc_len;
+#else
+  (void)edge;
+  mix.kc = sm.kc + e * a.kc_len;
+#endif""",
+    )
+    text = text.replace(
+        "mixer_of<L, CF, T>(a, sm, warp * T::TM + i, focus, cb, lane)",
+        "mixer_of<L, CF, T>(a, sm, edge_s[warp * T::TM + i],\n"
+        "                                 warp * T::TM + i, focus, cb, lane)",
+    )
+    text = text.replace(
+        "mixer_of<L, CF, T>(a, sm, e, focus, cb, lane)",
+        "mixer_of<L, CF, T>(a, sm, edge_s[e], e, focus, cb, lane)",
+    )
+    return text
+
+
 def _restrict_shapes(text: str) -> str:
     """Point the dispatch and the validation at the instantiated shapes only."""
     text = text.replace(
@@ -309,6 +387,8 @@ def main(argv: list[str] | None = None) -> int:
         if target_name == "so2_conv.cu":
             target_name = "so2_conv.hip"
         text = _patch(text, stamp='#include "hip_compat.cuh"')
+        if target_name == "so2_conv_kernel_hip.cuh":
+            text = _kc_global(text)
         if target_name == "so2_conv.hip":
             text = _rewrite_ridge(text)
             text = _restrict_shapes(text)

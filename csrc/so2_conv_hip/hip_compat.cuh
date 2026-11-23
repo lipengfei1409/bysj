@@ -20,3 +20,11 @@ __device__ __forceinline__ void dpa4_wave_barrier() {
   __builtin_amdgcn_wave_barrier();
 }
 #endif
+
+// Keep the per-edge degree kernel (`kc`, 1 KB per edge) in global memory instead
+// of staging it in shared memory.  At BE=8 that staging is 8 KB of the 24.2 KB
+// budget, and 21.3 KB is what a third resident block costs.  Off by default so
+// the verified binary is untouched.
+#ifndef DPA4_KC_GLOBAL
+#define DPA4_KC_GLOBAL 0
+#endif

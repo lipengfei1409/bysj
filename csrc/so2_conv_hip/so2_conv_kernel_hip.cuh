@@ -112,8 +112,14 @@ struct ConvSmem {
     scratch = base;
     astage = scratch + SCRATCH;
     wig = astage + T::WARPS * T::TM * kWarp;
+#if DPA4_KC_GLOBAL
+    (void)kc_len;
+    kc = nullptr;
+    alpha = wig + T::BE * S::NW;
+#else
     kc = wig + T::BE * S::NW;
     alpha = kc + T::BE * kc_len;
+#endif
     rescale = alpha + T::BE * n_head;
     softm = rescale + S::DIM;
     softd = softm + n_head;
@@ -123,9 +129,15 @@ struct ConvSmem {
 
   static int bytes(int kc_len, int n_head, bool backward) {
     return static_cast<int>(sizeof(float)) *
+#if DPA4_KC_GLOBAL
+           (SCRATCH + T::WARPS * T::TM * kWarp +
+            T::BE * (S::NW + n_head) + S::DIM + 3 * n_head +
+            (backward ? T::BE * S::NW : 0));
+#else
            (SCRATCH + T::WARPS * T::TM * kWarp +
             T::BE * (S::NW + kc_len + n_head) + S::DIM + 3 * n_head +
             (backward ? T::BE * S::NW : 0));
+#endif
   }
 };
 
@@ -352,10 +364,12 @@ DPA4_DEV void load_chunk(const ConvArgs& a,
     const int t = idx - i * S::NW;
     sm.wig[idx] = a.runs[edge_s[i] * S::NW + t];
   }
+#if !DPA4_KC_GLOBAL
   for (int idx = threadIdx.x; idx < ne * a.kc_len; idx += T::NT) {
     const int i = idx / a.kc_len;
     sm.kc[idx] = a.kc[edge_s[i] * a.kc_len + (idx - i * a.kc_len)];
   }
+#endif
   if (a.alpha != nullptr) {
     for (int idx = threadIdx.x; idx < ne * a.n_head; idx += T::NT) {
       const int i = idx / a.n_head;
@@ -461,12 +475,18 @@ DPA4_DEV void attention_chunk(const ConvArgs& a,
 template <int L, int CF, typename T>
 DPA4_DEV DegreeMixer<L> mixer_of(const ConvArgs& a,
                                  const ConvSmem<L, CF, T>& sm,
+                                 long edge,
                                  int e,
                                  int focus,
                                  int cb,
                                  int lane) {
   DegreeMixer<L> mix;
+#if DPA4_KC_GLOBAL
+  mix.kc = a.kc + edge * a.kc_len;
+#else
+  (void)edge;
   mix.kc = sm.kc + e * a.kc_len;
+#endif
   mix.cb = a.cb;
   mix.c_wide = a.c_wide;
   mix.channel = focus * CF + cb * kWarp + lane;
@@ -672,7 +692,8 @@ __global__ __launch_bounds__(T::NT,
           rotate_to_local<L>(xv, sm.wig + (warp * T::TM + i) * S::NW, xl);
           float y[S::RED];
           degree_mix<L>(
-              xl, mixer_of<L, CF, T>(a, sm, warp * T::TM + i, focus, cb, lane),
+              xl, mixer_of<L, CF, T>(a, sm, edge_s[warp * T::TM + i],
+                                 warp * T::TM + i, focus, cb, lane),
               y);
 #pragma unroll
           for (int r = 0; r < S::RED; ++r) {
@@ -1062,7 +1083,7 @@ __global__ __launch_bounds__(T::NT, T::OCC) void so2_conv_bwd_kernel(
             g_y[r] = ureg[i][r * S::CFB + cb];
           }
           const DegreeMixer<L> mix =
-              mixer_of<L, CF, T>(a, sm, e, focus, cb, lane);
+              mixer_of<L, CF, T>(a, sm, edge_s[e], e, focus, cb, lane);
           float g_xl[S::RED];
           degree_mix_vjp<L>(g_y, mix, g_xl);
           float g_packed[S::DIM];
