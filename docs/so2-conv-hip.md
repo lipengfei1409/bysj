@@ -282,14 +282,28 @@ kernel 名变成 `ConvTile<2, 4, 4, 2>`：
 稠密工作（约 690 ms，由第一次 A/B 的 957 → 1621.6 减去 conv 自身反推），即 **0.80×，还没打平**。
 离打平还差约 1.2×，理论上需要 3 块驻留。
 
-下一组（按 smem 表）：
+**第二次扫描失败（2026-11-24）**：`TM=1 WARPS=2 PK=4` → `ConvTile<1, 2, 4, 2>`，
+前向 **1278 ms**、反向 **1445 ms**（合计 2723 ms，比默认 tile 还差一倍）。
+
+原因不是 smem，而是 **`BE = WARPS·TM` 决定了权重面板的复用率**：每块权重装载要喂 `TM` 个乘积，
+`TM=1` 把复用砍到 1/4，权重流量按 FLOP 翻了四倍。上游注释说的就是这件事——
+*"the activation tile costs TM·RB registers per thread and every weight load feeds TM products,
+so TM trades occupancy against weight traffic"*。
+
+于是约束变成两条，互相耦合：
+
+- **`BE = WARPS·TM ≥ 8`**（权重复用不能塌，`TM=1` / `WARPS=1` 直接出局）；
+- **smem < 21.3 KB**（要 3 块驻留）。
+
+在 BE=8 的前提下压 smem，只能减 `WARPS`（`OUTER ∝ WARPS`），所以唯一还没试的候选是
+**`TM=4 WARPS=2 PK=4`**：BE 仍为 8，`OUTER` 从 13.7 KB 降到 6.9 KB，合计约 **17.4 KB → 3 块**。
 
 ```bash
-export DPA4_SO2_CONV_HIP_DEFINES="DPA4_TILE_TM=1 DPA4_TILE_WARPS=2 DPA4_TILE_PK=4"   # ~19 KB -> 3 块
+export DPA4_SO2_CONV_HIP_DEFINES="DPA4_TILE_TM=4 DPA4_TILE_WARPS=2 DPA4_TILE_PK=4"
 ```
 
-`TM=1` 没有 `static_assert` 拦截，但也没有被上游验证过；编译不过就退回
-`DPA4_TILE_TM=2 DPA4_TILE_WARPS=2 PK=4`（22.5 KB / 2 块，块更小）。
+这是最后一组：若仍不及 `TM=2 WARPS=4 PK=4` 的 863.5 ms，就把 conv 封存在"数值正确、性能不合适"，
+默认 `--so2-conv off`。
 
 sweep 的做法（define 必须在**运行**时也生效，所以用环境变量而不是只传给 `build.py`）：
 
