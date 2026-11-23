@@ -56,7 +56,13 @@ def report(root: Path, tags: list[str]) -> list[dict]:
     for tag in tags:
         path = _summary(root, tag)
         if path is None:
-            rows.append({"tag": tag, "missing": True})
+            rows.append(
+                {
+                    "tag": tag,
+                    "missing": True,
+                    "expected": str(root / tag / "dpa4_*/dpa4_inference_profile_summary.json"),
+                }
+            )
             continue
         summary = json.loads(path.read_text())
         so2 = summary.get("so2_conv") or {}
@@ -105,7 +111,7 @@ def _print(rows: list[dict]) -> None:
     base = next((row["device_ms"] for row in rows if row.get("device_ms")), None)
     for row in rows:
         if row.get("missing"):
-            print(f"{row['tag']:8s} {'MISSING':>10s}")
+            print(f"{row['tag']:8s} {'MISSING':>10s}  (no summary under {row['expected']})")
             continue
         total = row.get("device_ms") or 0.0
         delta = f"{total - base:+.1f}" if base else "-"

@@ -62,9 +62,16 @@ class AbReportTests(unittest.TestCase):
         lines = ab_report.verdict(ab_report.report(self.root, ["base", "kc3"]))
         self.assertTrue(any("routed OFF" in line for line in lines), lines)
 
-    def test_missing_run_is_an_error(self) -> None:
+    def test_missing_run_is_an_error_and_names_the_expected_path(self) -> None:
+        import contextlib
+        import io
+
         _write(self.root, "base", device_ms=957.0, conv_ms=0.0)
-        self.assertEqual(ab_report.main([str(self.root), "base", "nope"]), 1)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = ab_report.main([str(self.root), "base", "nope"])
+        self.assertEqual(code, 1)
+        self.assertIn("nope/dpa4_*/dpa4_inference_profile_summary.json", buffer.getvalue())
 
 
 if __name__ == "__main__":
