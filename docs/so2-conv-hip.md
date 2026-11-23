@@ -269,6 +269,28 @@ barrier 粒度与寄存器归属，不是吞吐。同步化的 staging 是次要
 24 个 TU 全挂、报错还都是同一行。现在 `build.py` 会在编译前拒掉非法组合并给出原因，
 编译失败时也会带上第一条 `error:` 而不是只给一个 exit code。
 
+**第一次有效扫描（2026-11-24）**：`DPA4_TILE_TM=2 DPA4_TILE_PK=4` → 24.2 KB / 2 块驻留，
+kernel 名变成 `ConvTile<2, 4, 4, 2>`：
+
+| kernel | 默认 tile | TM=2 PK=4 | 变化 |
+| --- | ---: | ---: | ---: |
+| `so2_conv_fwd_kernel` | 474.0 ms | **381.8 ms** | −19% |
+| `so2_conv_bwd_kernel` | 878.8 ms | **481.7 ms** | −45% |
+| 合计 | 1352.8 ms | **863.5 ms** | −36% |
+
+**occupancy 假设成立**：驻留从 1 块升到 2 块，整段快了 1.57×。但 863.5 ms 仍高于它替换掉的
+稠密工作（约 690 ms，由第一次 A/B 的 957 → 1621.6 减去 conv 自身反推），即 **0.80×，还没打平**。
+离打平还差约 1.2×，理论上需要 3 块驻留。
+
+下一组（按 smem 表）：
+
+```bash
+export DPA4_SO2_CONV_HIP_DEFINES="DPA4_TILE_TM=1 DPA4_TILE_WARPS=2 DPA4_TILE_PK=4"   # ~19 KB -> 3 块
+```
+
+`TM=1` 没有 `static_assert` 拦截，但也没有被上游验证过；编译不过就退回
+`DPA4_TILE_TM=2 DPA4_TILE_WARPS=2 PK=4`（22.5 KB / 2 块，块更小）。
+
 sweep 的做法（define 必须在**运行**时也生效，所以用环境变量而不是只传给 `build.py`）：
 
 ```bash
