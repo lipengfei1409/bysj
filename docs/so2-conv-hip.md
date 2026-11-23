@@ -229,29 +229,52 @@ device total : 957.0 ms -> 1621.6 ms (0.590x)
   dpa4::so2_conv_bwd_kernel<3,64,ConvTile<4,4,8,2>>   878.8 ms
 ```
 
-数值对、但比稠密慢。按代码可以逐条对上：
+数值对、但比稠密慢。**主因是 occupancy，不是 lane 空转**（这一点我先前的说法是错的，已更正）：
 
-1. **32-lane 单元跑在 64-lane 波前上 → 两个 lane 段里有一半在空转**（2×，结构性，见 §3.1）。
-2. **每 block 的动态 smem ≈ 46 KB**（`PANEL = 2·PK·NMAX = 24 KB`、`kc = BE·kc_len = 16 KB`、
-   `astage + wig + alpha ≈ 3 KB`，`OUTER` 13.7 KB 与 PANEL 取大），而 CDNA 的 LDS 是 **64 KB/CU**，
-   于是**只驻留 1 个 block**，而策略要的是 `OCC = 2`（又是一层 2× 的延迟隐藏损失）。
-3. **同步化的权重 staging** 去掉了面板搬运与计算的重叠（§3.3）。
+按 `ConvSmem` 的布局算 (L=3, CF=64)：
+
+| 项 | 浮点 | KB |
+| --- | ---: | ---: |
+| `SCRATCH = max(PANEL, OUTER·WARPS)`，PANEL = 2·PK·NMAX = 6144 | 6144 | 24.0 |
+| `kc = BE·kc_len` = 16·256 | 4096 | 16.0 |
+| `astage + wig + alpha + rescale` ≈ | 1264 | 4.9 |
+| **合计** | | **45.0** |
+
+CDNA 的 LDS 是 **64 KB/CU**，45 KB 只装得下 **1 个 block**（策略却要 `OCC = 2`）。
+一个 block 是 128 线程 = 2 个波前，而 `fma_probe` 的 18.1 TFLOP/s 是在 960×256 的高占用下测的——
+**占用率只有百分之几时，SIMT 吞吐会掉到峰值的 1/4–1/8**，这正是 474 ms 对 55 ms 理想值的差距。
+
+32-lane 单元本身**不会让 lane 空转**（NT=128 是 64 的倍数，波前被填满）；它的代价只是
+barrier 粒度与寄存器归属，不是吞吐。同步化的 staging 是次要项（§3.3）。
 4. `TM=4 / WARPS=4 / PK=8 / OCC=2` 是在 RTX PRO 6000 与 H20 上测出来的。上游自己写明：
    *"What must be retuned per part … TM thresholds: the 64 K-register file; PK: shared memory per
    block against barrier count; OCC: the register file again"*，并且留了 `-DDPA4_TILE_<name>=<value>`
    的 sweep 入口。
 
-`build.py --define` 就是为此加的：
+**只有 `WARPS` 能真正把 smem 压下来**（它同时缩小 `kc`、`astage`、`wig`、`OUTER`）；
+`PK` 单独降到 2 只剩 34.4 KB，仍然只装 1 个 block —— 这就是 `PK=2` 那次 A/B 没动的原因。
+按 `ConvSmem` 算出的驻留数：
+
+| 变体 | smem | 每 CU 可驻留 |
+| --- | ---: | ---: |
+| 默认 `WARPS=4 TM=4 PK=8` | 45.0 KB | **1** |
+| `WARPS=4 TM=4 PK=2` | 34.4 KB | 1 |
+| `WARPS=4 TM=2 PK=2` | 23.9 KB | 2 |
+| **`WARPS=2 TM=4 PK=2`** | **17.2 KB** | **3** |
+| `WARPS=2 TM=2 PK=2` | 12.0 KB | 5 |
+
+sweep 的做法（define 必须在**运行**时也生效，所以用环境变量而不是只传给 `build.py`）：
 
 ```bash
-# 把面板深度降到 2，smem 从 ~46 KB 降到 ~28 KB → OCC=2 有机会真的驻留两个 block
-python3 csrc/so2_conv_hip/build.py --define DPA4_TILE_PK=2 --check
-# 或者把驻留目标钉死
-python3 csrc/so2_conv_hip/build.py --define DPA4_TILE_PK=4 --define DPA4_TILE_OCC=2 --check
+export DPA4_SO2_CONV_HIP_DEFINES="DPA4_TILE_WARPS=2 DPA4_TILE_PK=2"
+python3 csrc/so2_conv_hip/build.py --check                 # 建到 dpa4_so2_conv_hip_DPA4_TILE_WARPS2-DPA4_TILE_PK2/
+python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 ... \
+  --fused on --so2-conv hip --output-dir "$OUT/e2e_w2pk2"
 ```
 
-每一组 define 落在独立的缓存目录（`dpa4_so2_conv_hip_DPA4_TILE_PK2/`），可与默认构建并存。
-扫完再决定要不要做 v2（64-lane 算法改写）。
+每一组 define 落在独立缓存目录，可与默认构建并存。**验证是否真的换了 tile**：trace 里
+kernel 名会从 `ConvTile<4, 4, 8, 2>` 变成 `ConvTile<4, 2, 2, 2>`（TM, WARPS, PK, OCC）。
+那次 `PK=2` 的 A/B 名字没变，说明二进制没换——这是当时没看出区别的第一个原因。
 
 ## 7. 验证清单
 

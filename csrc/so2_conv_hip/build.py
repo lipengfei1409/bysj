@@ -50,9 +50,37 @@ SOURCES = ("so2_conv.hip",) + tuple(
     for lmax in range(1, 7)
     for kind in ("fwd", "bwd")
 )
-BUILD_DIR = Path(
+BASE_BUILD_DIR = Path(
     os.environ.get("DPA4_SO2_CONV_HIP_BUILD") or (Path.home() / ".cache" / "dpa4_so2_conv_hip")
 )
+
+
+def _defines() -> list[str]:
+    """``-D`` flags for the tile sweep (``DPA4_TILE_<name>=<value>``).
+
+    Upstream's launch policy is a measured optimum for an RTX PRO 6000 / H20 and
+    its own comment says the constants must be retuned per part; the header
+    accepts ``-DDPA4_TILE_<name>=<value>`` so a sweep needs no source edit.
+    """
+    raw = os.environ.get("DPA4_SO2_CONV_HIP_DEFINES", "")
+    return [f"-D{token}" for token in raw.split() if token]
+
+
+def _build_dir(defines: list[str]) -> Path:
+    """Cache directory for one define set; a different tile set is a different binary.
+
+    Driven by the environment rather than only by ``--define``, because the
+    model path builds through ``model.so2_conv_hip.enable()``: a sweep that only
+    tagged the standalone invocation would leave the run loading the default
+    library and measure nothing.
+    """
+    if not defines:
+        return BASE_BUILD_DIR
+    tag = "-".join(token[2:].replace("=", "") for token in defines)
+    return BASE_BUILD_DIR.with_name(f"{BASE_BUILD_DIR.name}_{tag}")
+
+
+BUILD_DIR = _build_dir(_defines())
 
 
 def _compiler() -> str:
@@ -92,17 +120,6 @@ def _run(command: list[str], verbose: bool) -> int:
     if verbose:
         print("$ " + shlex.join(command), flush=True)
     return subprocess.call(command)
-
-
-def _defines() -> list[str]:
-    """``-D`` flags for the tile sweep (``DPA4_TILE_<name>=<value>``).
-
-    Upstream's launch policy is a measured optimum for an RTX PRO 6000 / H20 and
-    its own comment says the constants must be retuned per part; the header
-    accepts ``-DDPA4_TILE_<name>=<value>`` so a sweep needs no source edit.
-    """
-    raw = os.environ.get("DPA4_SO2_CONV_HIP_DEFINES", "")
-    return [f"-D{token}" for token in raw.split() if token]
 
 
 def compile_commands(*, arch: str | None = None) -> list[list[str]]:
@@ -234,11 +251,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.define:
         os.environ["DPA4_SO2_CONV_HIP_DEFINES"] = " ".join(args.define)
-        # A different tile set is a different binary; keep the caches apart so a
-        # sweep does not rebuild over the default build.
-        tag = "-".join(token.replace("=", "") for token in args.define)
-        global BUILD_DIR
-        BUILD_DIR = BUILD_DIR.with_name(f"{BUILD_DIR.name}_{tag}")
+    # Re-derive after the environment update so --define and the environment
+    # variable take the same path (the latter is what the model path uses).
+    global BUILD_DIR
+    BUILD_DIR = _build_dir(_defines())
+    print(f"tile defines: {' '.join(_defines()) or '(defaults)'}")
+    print(f"build dir: {BUILD_DIR}")
 
     try:
         library = build(force=args.clean, dry_run=args.dry_run)
