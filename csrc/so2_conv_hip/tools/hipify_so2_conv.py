@@ -164,6 +164,90 @@ def _shape_macro() -> str:
     )
 
 
+def _stage_overlap(text: str) -> str:
+    """Register double buffer for the weight panel (``DPA4_STAGE_OVERLAP``).
+
+    The port replaced upstream's ``__pipeline_memcpy_async`` with a synchronous
+    copy, so a panel's global loads complete before the barrier that publishes
+    it.  This loads the *next* panel into ``VPT`` vectors of registers while the
+    current one is being consumed, then copies them into the other shared buffer
+    -- the portable form of the same overlap, with the same two barriers.
+    """
+    text = text.replace(
+        """    // commit: synchronous stage
+  };""",
+        """    // commit: synchronous stage
+  };
+#if DPA4_STAGE_OVERLAP
+  // The vector form needs a panel that splits evenly into 16-byte slices; a
+  // narrow focus width falls back to the synchronous stage below.
+  constexpr bool kOverlap = (VEC == 4);
+  float4 prefetch[VPT];
+  const auto load_panel = [&](int panel) {
+    const float* from = w + static_cast<long>(panel) * PANEL_ELEMS;
+#pragma unroll
+    for (int p = 0; p < VPT; ++p) {
+      const int at = (tid + p * T::NT) * VEC;
+      prefetch[p] = *reinterpret_cast<const float4*>(from + at);
+    }
+  };
+  const auto store_panel = [&](int panel) {
+    float* into = w_s + (panel & 1) * PANEL_ELEMS;
+#pragma unroll
+    for (int p = 0; p < VPT; ++p) {
+      const int at = (tid + p * T::NT) * VEC;
+      *reinterpret_cast<float4*>(into + at) = prefetch[p];
+    }
+  };
+#endif""",
+    )
+    text = text.replace(
+        """  __syncthreads();
+  stage(0);""",
+        """  __syncthreads();
+#if DPA4_STAGE_OVERLAP
+  if constexpr (kOverlap) {
+    load_panel(0);
+    store_panel(0);
+    if (PANELS > 1) {
+      load_panel(1);
+    }
+  } else {
+    stage(0);
+  }
+#else
+  stage(0);
+#endif""",
+    )
+    text = text.replace(
+        """      if (panel + 1 < PANELS) {
+        stage(panel + 1);
+        // wait: synchronous stage
+      } else {
+        // wait: synchronous stage
+      }""",
+        """#if DPA4_STAGE_OVERLAP
+      if constexpr (kOverlap) {
+        // The next panel is already in registers; publish it, then start the
+        // loads for the one after while this panel's multiply runs.
+        if (panel + 1 < PANELS) {
+          store_panel(panel + 1);
+        }
+        if (panel + 2 < PANELS) {
+          load_panel(panel + 2);
+        }
+      } else if (panel + 1 < PANELS) {
+        stage(panel + 1);
+      }
+#else
+      if (panel + 1 < PANELS) {
+        stage(panel + 1);
+      }
+#endif""",
+    )
+    return text
+
+
 def _kc_global(text: str) -> str:
     """Guard the ``kc`` staging behind ``DPA4_KC_GLOBAL`` (default 0).
 
@@ -400,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
         text = _patch(text, stamp='#include "hip_compat.cuh"')
         if target_name == "so2_conv_kernel_hip.cuh":
             text = _kc_global(text)
+            text = _stage_overlap(text)
         if target_name == "so2_conv.hip":
             text = _rewrite_ridge(text)
             text = _restrict_shapes(text)

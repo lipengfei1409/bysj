@@ -310,6 +310,33 @@ smem 账里最大的一块是可移走的：`kc = BE·kc_len = 8·256 fl = 8 KB`
 所以下一个、也是**最后一个**有机制依据的杠杆是 ② 寄存器中转的双缓冲 staging；
 它的上限是"打平"（conv 需要从 834 降到 ≤690，即再快 17%），不是"大胜"。
 
+## 6.46 共享内存 + 寄存器双缓冲（`DPA4_STAGE_OVERLAP`）
+
+移植时把上游的 `__pipeline_memcpy_async` 换成了同步 `__builtin_memcpy`，于是每次面板拷贝的
+全局 load 必须在下一次屏障前**完成**，延迟完全暴露。可移植的恢复办法是寄存器中转：
+
+```cpp
+float4 prefetch[VPT];                    // 每线程一个面板的切片
+load_panel(panel + 2);                   // 在 consume 之前发起下下块
+__syncthreads();
+store_panel(panel + 1);                  // 把上一轮预取写进另一块 smem
+__syncthreads();                         // 发布，然后 consume 当前块
+```
+
+**屏障数不变（仍是 2 个）**，只是全局 load 与 `consume` 重叠。`VEC == 1`（窄 focus width）
+自动退回同步路径，所以 12 个 `c32` 特化照旧编译。
+
+默认 `0`，可与 `KC_GLOBAL`、`PK` 自由组合：
+
+```bash
+# 只加重叠（保持 2 块驻留）
+DPA4_SO2_CONV_HIP_DEFINES="DPA4_TILE_TM=2 DPA4_TILE_PK=4 DPA4_STAGE_OVERLAP=1" \
+  python3 csrc/so2_conv_hip/build.py --check --full
+# 重叠 + 深面板（PK=8 此前因暴露延迟而慢 30%，重叠正是它缺的东西）
+DPA4_SO2_CONV_HIP_DEFINES="DPA4_TILE_TM=2 DPA4_TILE_PK=8 DPA4_STAGE_OVERLAP=1" \
+  python3 csrc/so2_conv_hip/build.py --check --full
+```
+
 ## 6.5 第一次端到端的结果：慢 2.6 倍（2026-11-24）
 
 ```

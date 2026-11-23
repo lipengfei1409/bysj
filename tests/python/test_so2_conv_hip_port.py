@@ -199,6 +199,22 @@ class TranslationTests(unittest.TestCase):
         self.assertIn("mix.kc = a.kc + edge * a.kc_len;", kernel)
         self.assertIn("mixer_of<L, CF, T>(a, sm, edge_s[e], e, focus, cb, lane)", kernel)
 
+    def test_panel_staging_can_be_overlapped(self) -> None:
+        # `DPA4_STAGE_OVERLAP` keeps the same two barriers but loads the next
+        # panel into registers while the current one is consumed.  Both paths
+        # must be present, and the vector form must be gated on VEC == 4,
+        # because a narrow focus width does not split into 16-byte slices.
+        kernel = (PORT / "so2_conv_kernel_hip.cuh").read_text()
+        compat = (PORT / "hip_compat.cuh").read_text()
+        self.assertIn("#define DPA4_STAGE_OVERLAP 0", compat)
+        self.assertEqual(kernel.count("#if DPA4_STAGE_OVERLAP"), 3)
+        self.assertIn("constexpr bool kOverlap = (VEC == 4);", kernel)
+        self.assertIn("float4 prefetch[VPT];", kernel)
+        self.assertIn("store_panel(panel + 1);", kernel)
+        self.assertIn("load_panel(panel + 2);", kernel)
+        # The overlapped path must not also stage synchronously.
+        self.assertIn("} else if (panel + 1 < PANELS) {", kernel)
+
     def test_ridge_is_recomputed_from_hip_properties(self) -> None:
         glue = (PORT / "so2_conv.hip").read_text()
         start = glue.index("double dpa4_fp32_ridge()")
