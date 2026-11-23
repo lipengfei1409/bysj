@@ -187,6 +187,25 @@ DEEPMD_SRC=~/private_data/lipengfei/deepmd-kit \
 | 同步 staging | 权重面板搬运不与计算重叠 | 实测确认是瓶颈后 |
 | 未接 `_profitable` 旁路 | 上游仍会拒绝本形状（225 280 vs 25 718） | 下一步：`deepmd_patch` 里加显式开关 |
 
+## 5.5 单算子测试结果（2026-11-23）
+
+```
+$ python3 tests/dcu/run_upstream_conv_test.py
+library: /root/.cache/dpa4_so2_conv_hip/dpa4_so2_conv_hip.so
+registered: True
+10 passed, 16 deselected, 55 subtests passed in 10.00s
+```
+
+这一结果同时验证了三处保守处理都是对的：
+
+1. **32-lane 单元保留**：`__shfl_xor(v, d, kWarp)` 在 64-lane wave 上按段交换，前向与稠密转录逐形状一致；
+2. **发散区的 wave barrier**：`if (active)` 内的四处 `__syncwarp()` 换成 `__builtin_amdgcn_wave_barrier()` 后，
+   归约可复现测试（`test_reduction_is_reproducible`）通过；
+3. **同步化的权重 staging**：双缓冲被去掉后反向仍与 autograd 一致，说明前后两个 `__syncthreads()`
+   确实排好了序。
+
+**未验证**：性能。算子算得对不等于算得快，下一步是端到端 A/B。
+
 ## 6. 与 DeepMD 的接线（下一步）
 
 算子注册只是第一半；要让模型真的走到它，还需要：
@@ -208,5 +227,5 @@ DEEPMD_SRC=~/private_data/lipengfei/deepmd-kit \
 | schema 与上游逐字一致 | 同上（C 字面量拼接后比对） | ✅ |
 | ridge 用 HIP 属性重算 | 同上 | ✅ |
 | **能编译、能注册** | DCU：`python3 csrc/so2_conv_hip/build.py --check` | ✅ 2026-11-23，5 个算子全部 ok，ridge=24.0 |
-| **数值与稠密一致** | DCU：`tests/dcu/run_upstream_conv_test.py` | ⬜ 待跑 |
+| **数值与稠密一致** | DCU：`tests/dcu/run_upstream_conv_test.py` | ✅ 2026-11-23：**10 passed / 55 subtests**（前向 vs 稠密逐 zoo、反向 vs autograd、归约可复现、make_fx、零边、零 envelope、多头拒绝） |
 | **端到端收益** | DCU：`verify_fused.py --stage all` | ⬜ 待跑 |
