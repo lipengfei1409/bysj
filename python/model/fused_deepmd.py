@@ -26,7 +26,7 @@ receives ``dst``, so this module keeps the same view in a small LRU keyed by the
 
 Everything else -- the gradient of the energy, the fused rotate-back
 aggregation and the flash-attention path -- stays on DeepMD's own implementation;
-see ``docs/deepmd-fused-dispatch.md`` for what is left and why.
+see ``docs/operators.md`` for what is left and why.
 
 Usage::
 

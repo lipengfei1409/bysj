@@ -6,8 +6,8 @@
 口径与来源：
 
 - 池子、候选排序、收益预算： [`task2-hip-fusion-plan.md`](task2-hip-fusion-plan.md)
-- 每个算子的公式与 DeepMD 原位代码对照： [`fused-operators.md`](fused-operators.md)
-- 接缝、前置条件、回退规则： [`deepmd-fused-dispatch.md`](deepmd-fused-dispatch.md)
+- 逐算子的作用、调用点、时间占比、有效性： [`operators.md`](operators.md)
+- 接缝、前置条件、回退规则与验证阶梯： [`operators.md`](operators.md) §3/§4
 - 前向 + 反向的算子时间占比、每个融合各吃了哪几行： [`op-time-share.md`](op-time-share.md)
 - persistent 调度 vs megakernel 的选择依据与分档计划： [`execution-model.md`](execution-model.md)
 - 数据基线：3000 原子 / 181838 边，2614 launch。**两个数要分开看**：仓库内 trace
@@ -31,7 +31,7 @@
 
 | # | 优化项 | 解决的问题 | 方案 | 状态 | 收益 |
 | --- | --- | --- | --- | --- | --- |
-| B1 | `segment_sum`（分段归约） | `fill_`+`index_add_`+`mul_` 三次 launch；行原子只有 177 GB/s | 一 block 一段，CSR 遍历，累加器在寄存器；权重/归一作为 `edge_scale`/`node_scale` 进核 | 🟡 算子完成；接 `envelope`（本模型不走）与 `aggregate`（本模型走） | 算子级**未测**；trace 池 = 前向 E→N 散射 11.2 ms（3×3.7），630 GB/s 下 fusion 约 1.2 ms → **−10 ms**（原估 −15…−25 偏乐观） |
+| B1 | `segment_sum`（分段归约） | `fill_`+`index_add_`+`mul_` 三次 launch；行原子只有 177 GB/s | 一 block 一段，CSR 遍历，累加器在寄存器；权重/归一作为 `edge_scale`/`node_scale` 进核 | 🟡 算子完成；接 `envelope`（本模型不走）与 `aggregate`（本模型走） | 算子级**未测**；trace 池 = 前向 E→N 散射 11.2 ms（3×3.7）+ 零初始化/度归一 0.2 = 11.4 ms，630 GB/s 下 fusion 约 1.2 ms → **−10 ms**（原估 −15…−25 偏乐观） |
 | B2 | `segment_softmax`（门控分段 softmax） | max + exp + 2 次散射 + 除，共 6 次 launch | 段内 max 与分母留寄存器；反向只读已存的 `α` | ✅ 完成并接入；端到端已测 | 算子级 **9.09×**（C=64）/ **5.00×**（C=256）；端到端 **≈0**（964.4 → 963.8 ms，−150 launch）。trace 佐证：本 trace 里根本没有 `_softmax` 行 |
 | B3 | `force_assembly`（力/维里装配） | 2 次原子散射 + `(E,9)` 物化；源端维里外积 | 两次只读 CSR 遍历，double 累加，5 原子/block 填满 wave64 | 🟡 算子完成并接上上游 `edge_force_assembly`；**端到端价值已判负** | 算子级 **5.53×**（1.006 → 0.182 ms）；但 trace 里真实池只有 **1.7 ms**（`index_add [3000,3]`×2 + `[3000,9]` + 外积）→ 端到端 **−1.5 ms**，原估 −60…−85 是把 gate/槽位 gather 的反向误算进来了 |
 | B4 | CSR 置换 `order` 支持 | DeepMD 边表不按位置有序，否则每个算子前要先物化排序结果 | kernel 内 `edge = order[slot]`，输出仍写自然序；`force_assembly` 另加 `dst_order` | 🟡 已实现（三算子 + 主机测试） | 省掉每步 2 趟 gather（约 1.2 ms/步） |
@@ -72,12 +72,12 @@
 | --- | --- | ---: | --- | --- |
 | 已实测 | B2 `softmax` 接缝 | ~1 ms（0.1%） | **≈0**（−150 launch，时间不变） | ❌ 已证明在本 checkpoint 无效 |
 | 待实测 | B3 `force` | 1.7 ms（0.1%） | **−1.5 ms**（原估 −60…−85 作废） | 🟡 代码已接，端到端价值已判负 |
-| 待实测 | B1 `aggregate` | 11.2 ms（0.9%） | **−10 ms** | 🟡 代码已接，等真机 |
+| 待实测 | B1 `aggregate` | 11.4 ms（0.9%） | **−10 ms** | 🟡 代码已接，等真机 |
 | 待实测 | C1 `slot_pack_scale`（前向） | 53.4 ms（4.4%） | **−20…−25 ms** | 🟡 接缝已挂上，等真机 |
 | 未实现 | C1b 同一条链的反向 | 35.3 ms（2.9%） | −20…−25 ms | ⬜ 映射已有，可直接写 |
 | 待重新设计 | C2′ `slot_reduce` | 0 | 0（不匹配真实调用点） | 🟡 并入 C7 的 rank-K 收缩 epilogue |
 | 未实现 | C3 + C5 | 407 ms（33.4%） | −36…−45 ms | ⬜ 需 DMK GEMM |
-| 未实现 | C6 + C7（全图池子） | 618.9 ms（50.8%） | −240…−300 ms | ⬜ 设计阶段 |
+| 未实现 | C6 ∪ C7（E-major 主体；两者都含逐元素链，**不能相加**） | 913.2 ms（74.9%） | −240…−300 ms | ⬜ 设计阶段 |
 
 **已接线的四个接缝合计覆盖 66 ms / 5.4%，可实现 −32…−37 ms（约 1.03×）**；
 把 C1b 补上到 −52…−62 ms（约 1.05×）。这正是"为什么端到端只看得到 1.0x"的原因：
@@ -85,33 +85,14 @@
 
 ## 6. 待验证清单（填 🟡 → ✅）
 
-```bash
-cd ~/private_data/lipengfei/bysj/myproject
-source /opt/dtk/env.sh
-export PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}"
-MAX_JOBS=4 python3 setup.py build_ext --inplace
+命令、判据与失败签名统一写在 [`operators.md`](operators.md) §4（L0 主机 → L1 精度 → L2 单算子 A/B →
+L3 接缝 parity → L4 端到端）。这里只留"看什么数"：
 
-# 1. 算子级：三个算子的精度/梯度（含 force_assembly 的 dst_order 路径）
-python3 -m unittest discover -s tests/csrc/accuracy -p 'test_segment_ops*' -v
-
-# 2. 接缝 parity：与 DeepMD 自身实现对照（目前覆盖 softmax / envelope）
-DP_RUN_FUSED_DEEPMD_PARITY=1 \
-  python3 -m unittest discover -s tests/csrc/accuracy -p 'test_fused_deepmd_parity.py' -v
-
-# 3. 端到端 A/B（--fused on = softmax + envelope + force + aggregate）
-OUT=/root/private_data/lipengfei/test_result
-python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
-  --model-file "$MODEL" --input-npz "$NPZ" --fixed-input \
-  --expected-dcu-name K500SM_AI --output-dir "$OUT/base"
-python3 tests/deepmd/profile/test_dpa4_inference_profile.py dpa4 \
-  --model-file "$MODEL" --input-npz "$NPZ" --fixed-input \
-  --expected-dcu-name K500SM_AI --fused on --output-dir "$OUT/fused"
-python3 tests/deepmd/profile/compare_fused_runs.py \
-  --baseline "$OUT"/base/dpa4_*/dpa4_inference_profile_summary.json \
-  --patched  "$OUT"/fused/dpa4_*/dpa4_inference_profile_summary.json
-```
-
-第 3 步的期望计数：`aggregate_hits = 3`、`force_hits = 1`、`softmax_hits = 3`，所有 `*_fallbacks = 0`。
+| 步骤 | 命令（详见 operators.md §4） | 期望 |
+| --- | --- | --- |
+| L0 主机 | `PYTHONPATH=python python3 -m unittest discover -s tests/python` | 109 passed / 1 skipped |
+| L2 单算子 | `DPA4_RUN_SEGMENT_LATENCY=1`、`DPA4_RUN_SLOT_LATENCY=1` 各跑一次 | 拿到 `segment_sum` 与 `slot_pack_scale` 的 speedup（**目前缺这两格**） |
+| L4 端到端 | `--fused off` / `--fused on` + `compare_fused_runs.py` | `fused` 字段：`pack_hits>0`、`aggregate_hits=3`、`force_hits=1`，`*_fallbacks=0`；设备时间下降 |
 
 ## 7. 更新日志
 
@@ -128,7 +109,7 @@ python3 tests/deepmd/profile/compare_fused_runs.py \
 ## 8. 边界说明
 
 1. **B1/B3 的端到端收益已按 trace 重新标定**：`segment_sum` 的算子级延迟至今没有测到（首次 latency 运行被校验器 bug 中断，
-   之后未重跑），它的池子是 11.2 ms，所以上限是 −10 ms；`force_assembly` 的算子级 5.53× 是真的，
+   之后未重跑），它的池子是 11.4 ms，所以上限是 −10 ms；`force_assembly` 的算子级 5.53× 是真的，
    但池子只有 1.7 ms，端到端最多 −1.5 ms —— **继续在它上面投入端到端验证不划算**，算子保留作 CSR 基建。
 2. **B2 的 ≈0 不是 bug**：该 checkpoint `n_atten_head=1`，被替换的是 `[3000,C]` 量级小张量，成本由 launch 主导；
    这条接缝的价值要在 attention 宽度更大的模型上才体现。trace 侧佐证：整张 trace 没有一行 `_softmax`。

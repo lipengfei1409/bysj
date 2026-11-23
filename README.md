@@ -8,7 +8,7 @@ The optional HIP extension in this checkout builds standalone RMSNorm, GIE (`zon
 - `python/reference/`: explicit PyTorch oracles; these are not imported as production fallbacks.
 - `csrc/rmsnorm.cpp`, `csrc/gie.cpp`, `csrc/segment_sum.cpp`, `csrc/segment_softmax.cpp`, `csrc/force_assembly.cpp` and `csrc/slot_ops.cpp`: native HIP operator sources included by the optional extension build.
 - `tests/`: Python contracts, host-side helper contracts, and opt-in DTK/DCU accuracy tests.
-- `docs/kernel-model.html`: architecture overview for the native operators and the DeepMD adapter.
+- `docs/operators.md`: 逐算子的作用、调用点、时间占比与有效性（含验证阶梯）。
 - `docs/optimization-status.md`: 优化项状态表（每个优化项解决什么、方案、完成度、预期收益）。
 
 ## Python API
@@ -35,7 +35,7 @@ and never fall back to the oracle implicitly.
 
 ## Adapter scope
 
-The DPA4/SeZM `DPA4Model` adapter is a pass-through facade unless `fused=` is given, in which case it binds the fused segmented operators (`segment_sum`, `segment_softmax`) into DeepMD's own dispatch seams -- including the destination aggregation of attention-free SO2Convolution, which the removed `so2_envelope_reduce` selector used to cover; see [docs/deepmd-fused-dispatch.md](docs/deepmd-fused-dispatch.md). Edge geometry, rotations, radial mixing, the SO(2) mixing stack and the force assembly inside autograd remain in DeepMD. Training, higher-order force-loss gradients, stress/virial-specific kernels, and multi-rank ghost/halo exchange remain outside this native slice.
+The DPA4/SeZM `DPA4Model` adapter is a pass-through facade unless `fused=` is given, in which case it binds the fused segmented operators (`segment_sum`, `segment_softmax`) into DeepMD's own dispatch seams -- including the destination aggregation of attention-free SO2Convolution, which the removed `so2_envelope_reduce` selector used to cover; see [docs/operators.md](docs/operators.md). Edge geometry, rotations, radial mixing, the SO(2) mixing stack and the force assembly inside autograd remain in DeepMD. Training, higher-order force-loss gradients, stress/virial-specific kernels, and multi-rank ghost/halo exchange remain outside this native slice.
 
 Run the Python contract and reference tests:
 
@@ -78,7 +78,7 @@ the DeepMD baseline (no silent partial state). These wrappers use PyTorch's
 `device="cuda"` tensors on the HIP backend; they are not NVIDIA CUDA kernels.
 Edge geometry, rotations, radial mixing, the SO(2) mixing stack and the force
 assembly inside ``autograd`` still run in DeepMD; see
-[docs/deepmd-fused-dispatch.md](docs/deepmd-fused-dispatch.md) for the exact
+[docs/operators.md](docs/operators.md) for the exact
 seams and the three sites that remain on DeepMD's path.
 
 An optional integration test accepts a `.npz` containing `coords`, `atom_types`,
