@@ -100,6 +100,28 @@ class FusedStats:
         }
 
 
+# ``--fused on`` binds the seams that measured positive on the DCU; the rest
+# stay available one by one (``--fused pack``). force: the model hands the seam a
+# float64 g, which the float32 kernel cannot take. pack: the dense copies and the
+# torch backward outweigh the fused forward on the DPA4 shapes.
+ALL_SEAMS = ("softmax", "envelope", "force", "aggregate", "pack")
+RECOMMENDED_SEAMS = ("softmax", "aggregate")
+
+
+def _tensor_reason(value: Any, name: str, *, dtype: torch.dtype = torch.float32,
+                   contiguous: bool = True) -> str | None:
+    """Name the first property a seam needs that ``value`` does not have."""
+    if not isinstance(value, torch.Tensor):
+        return f"{name} is not a tensor"
+    if not (value.is_cuda or _ACCEPT_ANY_DEVICE):
+        return f"{name} is not on the DCU ({value.device})"
+    if value.dtype != dtype:
+        return f"{name} has dtype {value.dtype}, expected {dtype}"
+    if contiguous and not value.is_contiguous():
+        return f"{name} is not contiguous"
+    return None
+
+
 def _usable_tensor(value: Any, *, dtype: torch.dtype = torch.float32) -> bool:
     return (
         isinstance(value, torch.Tensor)
@@ -499,38 +521,46 @@ class _Session:
 
     @staticmethod
     def _force_reason(g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr):
-        if not isinstance(g, torch.Tensor):
-            return "g is not a tensor"
+        reason = _tensor_reason(g, "g")
+        if reason is not None:
+            return reason
         edges = int(g.shape[0])
-        if not _usable_tensor(g):
-            return "g is not a contiguous fp32 CUDA tensor"
-        if not _usable_tensor(edge_vec):
-            return "edge_vec is not a contiguous fp32 CUDA tensor"
+        reason = _tensor_reason(edge_vec, "edge_vec")
+        if reason is not None:
+            return reason
         if g.shape != edge_vec.shape or g.shape[-1] != 3:
             return (f"g/edge_vec are not both (E, 3): {tuple(g.shape)} vs "
                     f"{tuple(edge_vec.shape)}")
-        if not _usable_tensor(dst_row_ptr, dtype=torch.int64):
-            return "dst_row_ptr is not a contiguous int64 CUDA tensor"
-        if not _usable_tensor(src_row_ptr, dtype=torch.int64):
-            return "src_row_ptr is not a contiguous int64 CUDA tensor"
+        reason = _tensor_reason(dst_row_ptr, "dst_row_ptr", dtype=torch.int64)
+        if reason is not None:
+            return reason
+        reason = _tensor_reason(src_row_ptr, "src_row_ptr", dtype=torch.int64)
+        if reason is not None:
+            return reason
         if dst_row_ptr.numel() != src_row_ptr.numel():
             return (f"the offsets describe different atom counts: "
                     f"{dst_row_ptr.numel()} vs {src_row_ptr.numel()}")
         for name, order in (("dst_order", dst_order), ("src_order", src_order)):
-            if not _usable_tensor(order, dtype=torch.int64):
-                return f"{name} is not a contiguous int64 CUDA tensor"
+            reason = _tensor_reason(order, name, dtype=torch.int64)
+            if reason is not None:
+                return reason
             if order.numel() != edges:
                 return f"{name} has {order.numel()} entries for {edges} edges"
         return None
 
     def _aggregate_reason(self, block, x, dst, x_l0_node):
-        if not _usable_tensor(x):
-            return "x is not a contiguous fp32 CUDA tensor"
+        # The stock method accepts whatever strides the model hands it, and the
+        # seam only forwards x / x_l0_node to the block's own building blocks,
+        # so contiguity is not a requirement here.
+        reason = _tensor_reason(x, "x", contiguous=False)
+        if reason is not None:
+            return reason
         if (not isinstance(dst, torch.Tensor) or dst.dtype != torch.int64
                 or dst.ndim != 1 or dst.numel() == 0):
             return "edge_cache.dst is not a non-empty int64 vector"
-        if not _usable_tensor(x_l0_node):
-            return "x_l0_node is not a contiguous fp32 CUDA tensor"
+        reason = _tensor_reason(x_l0_node, "x_l0_node", contiguous=False)
+        if reason is not None:
+            return reason
         missing = [name for name in self._BLOCK_ATTRIBUTES
                    if not hasattr(block, name)]
         if missing:

@@ -782,19 +782,18 @@ def _run_dpa4(args) -> int:
     fused_patched = False
     try:
         if getattr(args, "fused", "off") != "off":
-            from model.fused_deepmd import deepmd_patch
-
-            seams = (
-                {
-                    "softmax": True,
-                    "envelope": True,
-                    "force": True,
-                    "aggregate": True,
-                    "pack": True,
-                }
-                if args.fused == "on"
-                else {args.fused: True}
+            from model.fused_deepmd import (
+                ALL_SEAMS,
+                RECOMMENDED_SEAMS,
+                deepmd_patch,
             )
+
+            if args.fused == "all":
+                seams = {name: True for name in ALL_SEAMS}
+            elif args.fused == "on":
+                seams = {name: name in RECOMMENDED_SEAMS for name in ALL_SEAMS}
+            else:
+                seams = {args.fused: True}
             # ``fused_stats`` is the live counter object: read it again after
             # the profiled call, never here, or the summary reports the zeros
             # from before any inference ran.
@@ -1433,9 +1432,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dpa4.add_argument(
         "--fused", default="off",
-        choices=("off", "on", "softmax", "envelope", "force", "aggregate", "pack"),
+        choices=("off", "on", "all", "softmax", "envelope", "force", "aggregate", "pack"),
         help="bind this project's fused HIP operators into the loaded DeepMD "
-             "model before profiling (off by default); 'on' installs every seam",
+             "model before profiling (off by default); 'on' installs the seams "
+             "that measured positive, 'all' installs every seam",
     )
     dpa4.add_argument(
         "--triton-infer", type=int, choices=(0, 1, 2, 3), default=None,

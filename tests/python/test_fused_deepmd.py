@@ -503,6 +503,19 @@ class AggregationSeamTests(unittest.TestCase):
         self.assertEqual(stats.aggregate_hits, 1)
         self.assertEqual(stats.aggregate_fallbacks, 0)
 
+    def test_seam_accepts_a_non_contiguous_x(self):
+        block, cache, atoms = self._inputs()
+        stats = self._patch(block)
+        wide = torch.randn(atoms, 2, 16)
+        x = wide[..., ::2]  # float32 CUDA-eligible, strides not contiguous
+        x_l0 = torch.randn(atoms, 2, 4)
+        self.assertFalse(x.is_contiguous())
+        torch.manual_seed(1)
+        result = block.forward_attention_dense(x, cache, None, x_l0)
+        self.assertEqual(tuple(result.shape), (atoms, 2, 8))
+        self.assertEqual(stats.aggregate_hits, 1)
+        self.assertEqual(stats.aggregate_fallbacks, 0)
+
     def test_seam_falls_back_for_a_non_fp32_message(self):
         block, cache, atoms = self._inputs()
         block._message = block._message.double()
