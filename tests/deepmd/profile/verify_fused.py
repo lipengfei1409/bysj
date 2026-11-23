@@ -104,6 +104,8 @@ def build_plan(
           "-p", "test_segment_ops*", "-v"], {}, "segment ops accuracy"),
         ([py, "-m", "unittest", "discover", "-s", "tests/csrc/accuracy",
           "-p", "test_slot_ops*", "-v"], {}, "slot ops accuracy"),
+        ([py, "-m", "unittest", "discover", "-s", "tests/csrc/accuracy",
+          "-p", "test_edge_combine*", "-v"], {}, "edge combine accuracy"),
     ]
     plan["lat"] = [
         ([py, "-m", "unittest", "discover", "-s", "tests/csrc/latency",
@@ -116,6 +118,11 @@ def build_plan(
          {"DPA4_RUN_SLOT_LATENCY": "1",
           "DPA4_SLOT_LATENCY_JSON": str(out_dir / "slot_latency.json")},
          "slot ops A/B latency"),
+        ([py, "-m", "unittest", "discover", "-s", "tests/csrc/latency",
+          "-p", "test_edge_combine*", "-v"],
+         {"DPA4_RUN_EDGE_COMBINE_LATENCY": "1",
+          "DPA4_EDGE_COMBINE_LATENCY_JSON": str(out_dir / "edge_combine_latency.json")},
+         "edge combine A/B latency"),
     ]
     plan["par"] = [
         ([py, "-m", "unittest", "discover", "-s", "tests/csrc/accuracy",

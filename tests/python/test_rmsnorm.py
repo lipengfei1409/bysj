@@ -52,6 +52,7 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
                 "csrc/segment_softmax.cpp",
                 "csrc/force_assembly.cpp",
                 "csrc/slot_ops.cpp",
+                "csrc/edge_combine.cpp",
             ],
         )
         self.assertEqual(extension["define_macros"], [])

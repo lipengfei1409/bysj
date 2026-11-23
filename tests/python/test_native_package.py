@@ -28,6 +28,8 @@ class NativePackageTests(unittest.TestCase):
         self.assertEqual(
             kernels.__all__,
             [
+                "edge_combine",
+                "edge_combine_available",
                 "force_assembly",
                 "gie_available",
                 "gie_zonal_scatter",

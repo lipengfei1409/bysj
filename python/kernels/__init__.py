@@ -1,5 +1,6 @@
 """Standalone native DCU operators."""
 
+from .combine import edge_combine, edge_combine_available
 from .gie import gie_available, gie_zonal_scatter, zonal_scatter
 from .rmsnorm import rmsnorm, rmsnorm_available
 from .slot import slot_available, slot_pack_scale, slot_reduce
@@ -13,6 +14,8 @@ from .segment import (
 )
 
 __all__ = [
+    "edge_combine",
+    "edge_combine_available",
     "force_assembly",
     "gie_available",
     "gie_zonal_scatter",

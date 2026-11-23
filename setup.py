@@ -22,6 +22,7 @@ sources = [
     "csrc/segment_softmax.cpp",
     "csrc/force_assembly.cpp",
     "csrc/slot_ops.cpp",
+    "csrc/edge_combine.cpp",
 ]
 ext_modules = [CUDAExtension(
     "kernels._C",

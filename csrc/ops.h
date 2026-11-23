@@ -1,7 +1,9 @@
 #pragma once
 #include <torch/extension.h>
 #include <c10/util/Optional.h>
+#include <cstdint>
 #include <tuple>
+#include <vector>
 
 using Tensor = torch::Tensor;
 
@@ -44,6 +46,15 @@ std::tuple<Tensor, Tensor> force_assembly_hip(Tensor grad_edge,
                                              Tensor src_offsets,
                                              Tensor src_order,
                                              c10::optional<Tensor> dst_order);
+
+// --- Fused edge-stream linear combination (see docs/optimization-status.md, C6) --
+//
+// out[e, r, c] = sum_t coef_t * term_t[e, ...] in one pass; each term
+// broadcasts over the channel axis, the row axis, both, or is a scalar.
+Tensor edge_combine_hip(std::vector<Tensor> terms,
+                        std::vector<double> coefficients,
+                        std::vector<int64_t> modes, int64_t edges, int64_t rows,
+                        int64_t channels);
 
 // --- Slot-axis operators (see docs/optimization-status.md, C1/C2) ----------
 

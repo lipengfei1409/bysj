@@ -52,7 +52,7 @@
 | C3 | GEMM + 残差 epilogue | 两个 E-major GEMM 仅 8.1 TFLOP/s（roofline 13.7），残差 `add [E,10,64]` 又是一趟 | DMK 分块 GEMM，epilogue 吸收残差 | ⬜ 未做（属 megakernel 线） | −30…−35 ms |
 | C4 | 小轴归约重写 | `sum [E,10,1,64]` 有效带宽 56 GB/s（约 10× 浪费），单行 24.9 ms、该组合计 36.5 ms | 小轴映射到 lane，`__shfl` 归约，或并进 C2 | ⬜ 未做 | −20…−22 ms |
 | C5 | readout 瘦 GEMM | readout 组 5 个 bmm 合计 63.9 ms，其中 `[1,152,48]×[1,48,576000]` 24.2 ms（K=48 算力空转） | `float4` 向量化 + 融合 scale/add epilogue | ⬜ 未做 | −6…−10 ms |
-| C6 | 边流逐元素链融合 | E-major 逐元素/memcpy/init/cat 合计 **488.1 ms（40.1%）**，同一条 3–4 核链重复 9 次 | 项表驱动的多输入 FMAD，k 趟合 1 趟 | ⬜ 仅设计 | −180…−220 ms |
+| C6 | 边流逐元素链融合 | E-major 逐元素/memcpy/init/cat 合计 **488.1 ms（40.1%）**，同一条 3–4 核链重复 9 次 | 项表驱动的多输入 FMAD，k 趟合 1 趟 | 🟡 **算子完成**：`edge_combine(terms, coefficients)`，项 = 指针 + 系数 + 广播模式（full / per-row / per-channel / per-edge / scalar），一趟 pass、一次写；`torch.autograd.Function` 按广播轴归约；主机契约/梯度测试 + DCU accuracy/latency 用例已加，并接进 `verify_fused` 的 acc/lat 两级；**接缝（替换残差+gate 链）下一步** | 池 488.1 ms → 目标 **−180…−220 ms**；待真机 A/B（判据是 pass 数 k→1） |
 | C7 | SO(2) 消息链段级融合（含 rank-K 收缩） | **`G2 槽位段` 580.0 ms / 47.6%**：`[E,3/4/9/10/15/16,64]` 的展开、残差、gate，加 6 个 per-edge 小 `bmm` 与 `sum(dim=2)`；中间量全部落 HBM | **上游已有等价实现**：`deepmd::dpa4_so2_conv`（`source/op/pt/dpa4/so2_conv_{fwd,bwd}_c{32,64}_l{1..6}.cu`），寄存器驻留 activation、`__shfl` 广播、权重 LDS staging、在线 softmax；legacy `pt` 的 dispatch 也已就位（`sezm_nn/so2.py` Step 14，`DP_CUDA_INFER=2`） | 🟡 **不写新 kernel**；先做 1 周的单特化 hipify A/B 决定生死（理由见 [`execution-model.md`](execution-model.md) §4.5） | **未定**：本 checkpoint 由 trace 反解为 `CF=64, lmax=3`（`ROW=640`、`M0=256`、`M1=384`、`GATE=192` 四处吻合），per-edge FMA = 225.3 k，正是上游标定里 `air` 那个点，那里 fused 比 Triton 组合**慢 9%** |
 
 ## 4. 工程与质量
@@ -110,6 +110,7 @@
 | 2026-11-23 | 跑通 `verify_fused.py --stage all` 的 host/build/acc/lat：L2 单算子拿到真机数（见 §2/§3）；`par` 的 envelope 用例暴露陈旧 fixture（`SimpleNamespace` 假 block 缺 `forward_envelope`，`_blocks()` 认不出 → `bound_envelope=False`），补上绑定的 stock 方法并先断言 `stats.blocks` |
 | 2026-11-23 | 新增 [`execution-model.md`](execution-model.md)：按张量家族把 1218.6 ms 分成 G1–G9，只有 `G2 槽位段`（580.0 ms / 47.6%）值得做段级 megakernel（4 KB/边驻留、无跨 block 依赖），全模型 megakernel 不做；C7 的池子由 66 ms 修正为 580 ms |
 | 2026-11-23 | 新增 `op_time_share.py` 与 [`op-time-share.md`](op-time-share.md)：按 `nn.Module: ModelWrapper_0` 作用域（用 **launch 时间**过滤）给出前向 + 反向全部算子的时间占比，2614/2614 kernel、1218.58 ms 全部在作用域内。**据此修正两处估算**：B3 的真实池只有 1.7 ms（原 −60…−85 ms 作废，那 95 ms 里是 gate/槽位 gather 的反向），B1 上限 −10 ms。同时新增 C1b（同一 gate 链的反向，35.3 ms 池） |
+| 2026-11-23 | C6 落地为 `edge_combine`（`csrc/edge_combine.cpp` + `kernels.combine`）：`out = Σ_t coef_t·term_t`，每项可对 channel / row / 两者广播或为标量，一趟 pass 替代 `add`/`mul`/`copy_`/`fill_` 链；autograd 按广播轴求和；新增主机 5 项、DCU accuracy 与 latency 用例（181838 边 / 9 行 / C=64），并接入验证梯子的 acc/lat 两级；接缝待做 |
 
 ## 8. 边界说明
 
