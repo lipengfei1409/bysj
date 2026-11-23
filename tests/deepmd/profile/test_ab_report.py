@@ -14,7 +14,8 @@ import ab_report  # noqa: E402
 
 
 def _write(root: Path, tag: str, *, device_ms: float, conv_ms: float,
-           launches: int = 1860, enabled: bool = True) -> None:
+           launches: int = 1860, enabled: bool = True,
+           defines: str = "DPA4_TILE_TM=2") -> None:
     run = root / tag / "dpa4_1700000000"
     run.mkdir(parents=True)
     summary = {
@@ -29,7 +30,11 @@ def _write(root: Path, tag: str, *, device_ms: float, conv_ms: float,
                 {"name": "vectorized_elementwise_kernel", "duration_us": 14000.0},
             ]
         },
-        "so2_conv": {"enabled": enabled, "reason": "" if enabled else "no visible DCU"},
+        "so2_conv": {
+            "enabled": enabled,
+            "reason": "" if enabled else "no visible DCU",
+            "defines": defines,
+        },
     }
     (run / "dpa4_inference_profile_summary.json").write_text(json.dumps(summary))
 
@@ -61,6 +66,16 @@ class AbReportTests(unittest.TestCase):
         _write(self.root, "kc3", device_ms=957.0, conv_ms=0.0, enabled=False)
         lines = ab_report.verdict(ab_report.report(self.root, ["base", "kc3"]))
         self.assertTrue(any("routed OFF" in line for line in lines), lines)
+
+    def test_the_table_names_the_build_configuration(self) -> None:
+        import contextlib
+        import io
+
+        _write(self.root, "base", device_ms=957.0, conv_ms=860.0, defines="TM=2 PK=4")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            ab_report.main([str(self.root), "base"])
+        self.assertIn("TM=2 PK=4", buffer.getvalue())
 
     def test_bare_and_prefixed_tags_both_resolve(self) -> None:
         # `e2e_kc3` on disk versus `kc3` on the command line is how a correct

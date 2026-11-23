@@ -66,7 +66,14 @@ def enable(*, verbose: bool = False, force: bool = False) -> dict:
     """
     global _original_profitable, _original_cuda_infer, _enabled
 
-    status: dict = {"enabled": False, "registered": False, "guard_overridden": False}
+    status: dict = {
+        "enabled": False,
+        "registered": False,
+        "guard_overridden": False,
+        # Which tile/overlap build this run loaded -- the A/B table needs it to
+        # be self-describing, and the defines are what select the binary.
+        "defines": os.environ.get("DPA4_SO2_CONV_HIP_DEFINES", ""),
+    }
     if _enabled and not force:
         status["enabled"] = True
         status["reason"] = "already enabled"

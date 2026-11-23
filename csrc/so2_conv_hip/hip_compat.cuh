@@ -33,9 +33,11 @@ __device__ __forceinline__ void dpa4_wave_barrier() {
 // loaded into registers while the current one is consumed, then copied into the
 // other shared buffer.  Porting replaced the original async copies with a
 // synchronous copy, and `PK=8` being 30% slower than `PK=4` while halving the
-// barrier count says that exposed latency is real.  Off by default; the 16-byte
-// vector form only applies when the panel splits evenly, so narrow focus widths
-// keep the synchronous path.
+// barrier count says that exposed latency is real.
+//
+// On by default.  The 16-byte vector form only applies when the panel splits
+// evenly, so a narrow focus width keeps the synchronous stage (`VEC == 1`);
+// build with `-DDPA4_STAGE_OVERLAP=0` to get the pre-overlap behaviour back.
 #ifndef DPA4_STAGE_OVERLAP
-#define DPA4_STAGE_OVERLAP 0
+#define DPA4_STAGE_OVERLAP 1
 #endif

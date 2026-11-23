@@ -326,14 +326,20 @@ __syncthreads();                         // 发布，然后 consume 当前块
 **屏障数不变（仍是 2 个）**，只是全局 load 与 `consume` 重叠。`VEC == 1`（窄 focus width）
 自动退回同步路径，所以 12 个 `c32` 特化照旧编译。
 
-默认 `0`，可与 `KC_GLOBAL`、`PK` 自由组合：
+**默认开启**（`hip_compat.cuh` 里 `#define DPA4_STAGE_OVERLAP 1`）。回退到重叠前的行为：
 
 ```bash
-# 只加重叠（保持 2 块驻留）
-DPA4_SO2_CONV_HIP_DEFINES="DPA4_TILE_TM=2 DPA4_TILE_PK=4 DPA4_STAGE_OVERLAP=1" \
+DPA4_SO2_CONV_HIP_DEFINES="DPA4_STAGE_OVERLAP=0" \
   python3 csrc/so2_conv_hip/build.py --check --full
-# 重叠 + 深面板（PK=8 此前因暴露延迟而慢 30%，重叠正是它缺的东西）
-DPA4_SO2_CONV_HIP_DEFINES="DPA4_TILE_TM=2 DPA4_TILE_PK=8 DPA4_STAGE_OVERLAP=1" \
+```
+
+于是现在**默认构建就是"重叠 + 2 块驻留"**，上游那套数值测试（`run_upstream_conv_test.py`）
+从此直接覆盖重叠路径——它第一次跑就是这次改动的验收门。
+
+配合深面板（`PK=8` 此前因暴露延迟慢 30%，重叠正是它缺的东西）：
+
+```bash
+DPA4_SO2_CONV_HIP_DEFINES="DPA4_TILE_TM=2 DPA4_TILE_PK=8" \
   python3 csrc/so2_conv_hip/build.py --check --full
 ```
 

@@ -80,6 +80,7 @@ def report(root: Path, tags: list[str]) -> list[dict]:
             continue
         summary = json.loads(path.read_text())
         so2 = summary.get("so2_conv") or {}
+        defines = str(so2.get("defines", ""))
         rows.append(
             {
                 "tag": tag,
@@ -88,6 +89,7 @@ def report(root: Path, tags: list[str]) -> list[dict]:
                 "launches": summary.get("device_event_count"),
                 "so2_enabled": bool(so2.get("enabled")),
                 "so2_reason": str(so2.get("reason", "")),
+                "defines": defines,
                 "path": str(path),
             }
         )
@@ -121,7 +123,10 @@ def verdict(rows: list[dict]) -> list[str]:
 
 
 def _print(rows: list[dict]) -> None:
-    print(f"{'tag':8s} {'device ms':>10s} {'delta':>8s} {'conv ms':>9s} {'launches':>9s}  routed")
+    print(
+        f"{'tag':8s} {'device ms':>10s} {'delta':>8s} {'conv ms':>9s} "
+        f"{'launches':>9s}  routed  defines"
+    )
     base = next((row["device_ms"] for row in rows if row.get("device_ms")), None)
     for row in rows:
         if row.get("missing"):
@@ -131,7 +136,8 @@ def _print(rows: list[dict]) -> None:
         delta = f"{total - base:+.1f}" if base else "-"
         print(
             f"{row['tag']:8s} {total:10.1f} {delta:>8s} {row['conv_ms']:9.1f} "
-            f"{row.get('launches') or 0:9d}  {'on' if row['so2_enabled'] else 'off'}"
+            f"{row.get('launches') or 0:9d}  "
+            f"{'on' if row['so2_enabled'] else 'off':6s} {row.get('defines', '')}"
         )
 
 
