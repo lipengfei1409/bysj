@@ -78,6 +78,16 @@
 4. **上 tensor core**：A14、B6（fp16x3 两段分裂补偿，误差 ~2⁻²²）。
 5. **去 autograd**：B3（力作为值返回）、A15/A18 的闭式二阶、A2 的融合反向。
 
+   "fwd/bwd 融合"的准确含义是**一个 autograd 边界 + 两个 kernel**，不是一次 launch：
+   `torch.library.register_autograd("deepmd::dpa4_so2_conv", _backward, setup_context=_setup_context)`
+   把 fwd kernel 和 bwd kernel 绑成图上的一个节点（`so2_conv.py:539`），于是
+   (a) 段内中间量既不为前向也不为反向 materialize；
+   (b) `_setup_context` 只 `save_for_backward` 全部小输入 + 三个 aux 输出
+   （`alpha`/`pre_gate`/`z_all`），并用 `set_materialize_grads(False)` 免掉 aux 的零填充；
+   (c) 二阶导不再把整条链展开一遍，而由 `second_order.py` 用多线性公式拼。
+   三种实现存/算的取舍不同：CUDA 存 `z_all`；CuTe 只存两个门控层 pre-activation 并在同一核里重放；
+   Triton 的 `so2_rotate_mix` 反向连旋转都重算（"nothing is saved besides the operator inputs"）。
+
 ## 6. 门与互斥
 
 | 环境变量 | 取值 | 作用 |
