@@ -40,6 +40,15 @@ python3 tests/deepmd/profile/test_dpa4_inference_profile.py generate-data \
 
 下面的 LAMMPS 命令以相邻仓库 `../lammps` 为数据路径；`--lammps-exe` 仍需填写目标机器上编译出的可执行文件。
 
+### 本 checkout 的 DCU 路径
+
+```bash
+source tests/deepmd/profile/dcu_paths.env   # MODEL / NPZ / OUT
+```
+
+`MODEL` 是 DPA4-Air-OMol25-100M，`NPZ` 是 3000 原子 SPC/E 水盒（181838 条边），
+与 `docs/op-time-share.md` 的 trace 同形；`OUT` 是验证产物目录。
+
 ## 1. 单卡 DeepMD 单次推理
 
 ```bash
