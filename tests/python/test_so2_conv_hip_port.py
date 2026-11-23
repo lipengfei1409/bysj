@@ -249,6 +249,20 @@ class BuildGuardTests(unittest.TestCase):
         self.assertIn("-ltorch", link)
         self.assertTrue(link[link.index("-o") + 1].endswith(".so"))
 
+    def test_tile_defines_reach_the_compiler(self) -> None:
+        # Upstream's tile constants are a measured optimum for another part and
+        # its header accepts -DDPA4_TILE_*, so a sweep must not need an edit.
+        module = self._build_module()
+        module._torch_flags = lambda: ([], [])
+        module.BUILD_DIR = Path("/tmp/dpa4_so2_conv_hip_test")
+        os.environ["DPA4_SO2_CONV_HIP_DEFINES"] = "DPA4_TILE_PK=2 DPA4_TILE_OCC=3"
+        try:
+            command = module.compile_commands(arch="gfx928")[0]
+        finally:
+            os.environ.pop("DPA4_SO2_CONV_HIP_DEFINES", None)
+        self.assertIn("-DDPA4_TILE_PK=2", command)
+        self.assertIn("-DDPA4_TILE_OCC=3", command)
+
     def test_every_source_is_compiled_not_hipified(self) -> None:
         # Regression: torch's load() hipifies `.hip` sources and ends up with a
         # None object path, so the build must drive hipcc itself.

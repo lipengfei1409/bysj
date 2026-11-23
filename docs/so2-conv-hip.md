@@ -221,6 +221,38 @@ profile CLI 的 `--so2-conv hip` 都走它：
 前置条件都满足后才允许：`registered` 为假时 `enable()` 返回原因、不碰判据，
 `DPA4Model` 直接抛 `RuntimeError` 而不是静默退回稠密。
 
+## 6.5 第一次端到端的结果：慢 2.6 倍（2026-11-24）
+
+```
+device total : 957.0 ms -> 1621.6 ms (0.590x)
+  dpa4::so2_conv_fwd_kernel<3,64,ConvTile<4,4,8,2>>   474.0 ms
+  dpa4::so2_conv_bwd_kernel<3,64,ConvTile<4,4,8,2>>   878.8 ms
+```
+
+数值对、但比稠密慢。按代码可以逐条对上：
+
+1. **32-lane 单元跑在 64-lane 波前上 → 两个 lane 段里有一半在空转**（2×，结构性，见 §3.1）。
+2. **每 block 的动态 smem ≈ 46 KB**（`PANEL = 2·PK·NMAX = 24 KB`、`kc = BE·kc_len = 16 KB`、
+   `astage + wig + alpha ≈ 3 KB`，`OUTER` 13.7 KB 与 PANEL 取大），而 CDNA 的 LDS 是 **64 KB/CU**，
+   于是**只驻留 1 个 block**，而策略要的是 `OCC = 2`（又是一层 2× 的延迟隐藏损失）。
+3. **同步化的权重 staging** 去掉了面板搬运与计算的重叠（§3.3）。
+4. `TM=4 / WARPS=4 / PK=8 / OCC=2` 是在 RTX PRO 6000 与 H20 上测出来的。上游自己写明：
+   *"What must be retuned per part … TM thresholds: the 64 K-register file; PK: shared memory per
+   block against barrier count; OCC: the register file again"*，并且留了 `-DDPA4_TILE_<name>=<value>`
+   的 sweep 入口。
+
+`build.py --define` 就是为此加的：
+
+```bash
+# 把面板深度降到 2，smem 从 ~46 KB 降到 ~28 KB → OCC=2 有机会真的驻留两个 block
+python3 csrc/so2_conv_hip/build.py --define DPA4_TILE_PK=2 --check
+# 或者把驻留目标钉死
+python3 csrc/so2_conv_hip/build.py --define DPA4_TILE_PK=4 --define DPA4_TILE_OCC=2 --check
+```
+
+每一组 define 落在独立的缓存目录（`dpa4_so2_conv_hip_DPA4_TILE_PK2/`），可与默认构建并存。
+扫完再决定要不要做 v2（64-lane 算法改写）。
+
 ## 7. 验证清单
 
 | 检查 | 在哪 | 状态 |

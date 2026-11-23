@@ -48,7 +48,7 @@ def _kernels(summary: dict) -> dict[str, float]:
 
 # The two runs of an A/B necessarily differ in these arguments, so they must not
 # be reported as "different invocations".
-_IGNORED_COMMAND_ARGUMENTS = ("--fused", "--output-dir")
+_IGNORED_COMMAND_ARGUMENTS = ("--fused", "--so2-conv", "--output-dir")
 
 
 def _normalized_command(command) -> list[str]:

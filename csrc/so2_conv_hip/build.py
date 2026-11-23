@@ -94,9 +94,21 @@ def _run(command: list[str], verbose: bool) -> int:
     return subprocess.call(command)
 
 
+def _defines() -> list[str]:
+    """``-D`` flags for the tile sweep (``DPA4_TILE_<name>=<value>``).
+
+    Upstream's launch policy is a measured optimum for an RTX PRO 6000 / H20 and
+    its own comment says the constants must be retuned per part; the header
+    accepts ``-DDPA4_TILE_<name>=<value>`` so a sweep needs no source edit.
+    """
+    raw = os.environ.get("DPA4_SO2_CONV_HIP_DEFINES", "")
+    return [f"-D{token}" for token in raw.split() if token]
+
+
 def compile_commands(*, arch: str | None = None) -> list[list[str]]:
     """Return one ``hipcc -c`` command per source, plus the final link."""
     includes, link = _torch_flags()
+    includes = includes + _defines()
     arch = arch or _arch()
     commands: list[list[str]] = []
     objects: list[str] = []
@@ -210,8 +222,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verbose", action="store_true", default=True)
     parser.add_argument("--dry-run", action="store_true", help="print the compile lines only")
     parser.add_argument("--clean", action="store_true", help="rebuild every object")
+    parser.add_argument(
+        "--define",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="extra -D for the tile sweep, e.g. --define DPA4_TILE_PK=2 "
+             "(builds into a separate cache dir per define set)",
+    )
     parser.add_argument("--check", action="store_true", help="report the schema after loading")
     args = parser.parse_args(argv)
+    if args.define:
+        os.environ["DPA4_SO2_CONV_HIP_DEFINES"] = " ".join(args.define)
+        # A different tile set is a different binary; keep the caches apart so a
+        # sweep does not rebuild over the default build.
+        tag = "-".join(token.replace("=", "") for token in args.define)
+        global BUILD_DIR
+        BUILD_DIR = BUILD_DIR.with_name(f"{BUILD_DIR.name}_{tag}")
 
     try:
         library = build(force=args.clean, dry_run=args.dry_run)
