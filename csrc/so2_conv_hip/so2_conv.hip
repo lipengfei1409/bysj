@@ -15,11 +15,43 @@
 // the compiled graph.
 
 #include <c10/hip/HIPStream.h>
-#include <c10/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <hip/hip_runtime.h>
 
 #include "hip_compat.cuh"
 #include <torch/torch.h>
+
+namespace dpa4 {
+
+/// RAII device guard over the plain HIP API.
+///
+/// torch ships a guard header, but its path differs between builds
+/// (``c10/hip/impl/``, ``ATen/hip/impl/``, or absent), and pulling ATen's
+/// masquerading headers drags in ``cusolver_common.h``.  ``hipGetDevice`` and
+/// ``hipSetDevice`` are always available and are all the operator needs: torch
+/// dispatch has normally selected the device already, so this is belt and
+/// braces around a kernel launch.
+class DeviceGuard {
+ public:
+  explicit DeviceGuard(const c10::Device& device) : previous_(-1) {
+    hipGetDevice(&previous_);
+    if (device.has_index() && device.index() >= 0) {
+      hipSetDevice(static_cast<int>(device.index()));
+    }
+  }
+  ~DeviceGuard() {
+    if (previous_ >= 0) {
+      hipSetDevice(previous_);
+    }
+  }
+  DeviceGuard(const DeviceGuard&) = delete;
+  DeviceGuard& operator=(const DeviceGuard&) = delete;
+
+ private:
+  int previous_;
+};
+
+}  // namespace dpa4
+
 
 #include <cmath>
 #include <tuple>
@@ -338,7 +370,7 @@ dpa4_so2_conv(torch::Tensor x,
               int64_t lmax,
               int64_t focus_dim,
               int64_t rank) {
-  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(x.device());
+  const dpa4::DeviceGuard device_guard(x.device());
   x = x.contiguous();
   kc = kc.contiguous().flatten(1);
   const ConvConfig c =
@@ -434,7 +466,7 @@ dpa4_so2_conv_backward(torch::Tensor grad_out,
                        int64_t lmax,
                        int64_t focus_dim,
                        int64_t rank) {
-  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(x.device());
+  const dpa4::DeviceGuard device_guard(x.device());
   x = x.contiguous();
   kc = kc.contiguous().flatten(1);
   const ConvConfig c =
@@ -503,7 +535,7 @@ torch::Tensor dpa4_wigner_runs(torch::Tensor quat,
                                torch::Tensor mono_coeff,
                                torch::Tensor mono_exp,
                                int64_t lmax) {
-  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(quat.device());
+  const dpa4::DeviceGuard device_guard(quat.device());
   TORCH_CHECK(quat.dim() == 2 && quat.size(1) == 4 &&
                   quat.scalar_type() == torch::kFloat,
               "dpa4_wigner_runs: the quaternions must be (E, 4) fp32");
@@ -549,7 +581,7 @@ torch::Tensor dpa4_wigner_runs_backward(torch::Tensor grad_runs,
                                         torch::Tensor quat,
                                         torch::Tensor dmono_coeff,
                                         torch::Tensor dmono_exp) {
-  const c10::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(quat.device());
+  const dpa4::DeviceGuard device_guard(quat.device());
   TORCH_CHECK(dmono_coeff.dim() == 3 && dmono_coeff.size(1) == 4 &&
                   dmono_coeff.size(0) == grad_runs.size(1),
               "dpa4_wigner_runs_backward: the derivative coefficients must be "

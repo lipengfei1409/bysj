@@ -25,13 +25,14 @@ patches carry everything hipify cannot know:
 4. **``dpa4_fp32_ridge`` is rewritten**: it read CUDA compute capability and a
    128-lane FMA width.  On ROCm the FMA width is the wavefront size and the
    clocks come from ``hipDeviceProp_t``.
-5. **The ATen masquerading headers are replaced with c10 ones.** hipify turns
+5. **No ATen masquerading headers, and no torch device guard.** hipify turns
    ``ATen/cuda/CUDAContext.h`` into ``ATen/hip/HIPContext.h``, whose
    ``ATen/hip/Exceptions.h`` does ``#include <cusolver_common.h>`` -- a header
-   no ROCm install ships, so the translation cannot compile as generated.  The
-   device guard and the current stream both exist at the c10 layer
-   (``c10/hip/HIPStream.h``, ``c10/hip/impl/HIPGuardImplMasqueradingAsCUDA.h``),
-   which pulls no solver headers at all.
+   no ROCm install ships.  The current stream comes from ``c10/hip/HIPStream.h``
+   instead, and the device guard is a local RAII wrapper over
+   ``hipGetDevice``/``hipSetDevice``: the c10/vendor guard header lives in a
+   different place in every torch build (``c10/hip/impl/`` here, absent there),
+   while the plain HIP calls are always present.
 
 Exit code is non-zero when a CUDA-only token survives, so this doubles as the
 lint the host test runs.
@@ -78,18 +79,52 @@ FORBIDDEN = (
 #: hipify's ``<<<>>>`` rewrite nests ``dim3(dim3(x))``; harmless but noisy.
 _DIM3 = re.compile(r"dim3\(dim3\(([^()]*(?:\([^()]*\))?[^()]*)\)\)")
 
-#: hipify's ATen masquerading headers pull ``cusolver_common.h``; the c10 ones
-#: do not.  Both spellings below exist in every torch 2.x ROCm build.
+#: hipify's ATen masquerading header pulls ``cusolver_common.h``, which no ROCm
+#: install ships.  The stream still comes from torch (c10 has it everywhere);
+#: the device guard does not, because the guard header's location differs across
+#: torch builds.
 _INCLUDE_MAP = {
     "#include <ATen/hip/HIPContext.h>": "#include <c10/hip/HIPStream.h>",
-    "#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>": (
-        "#include <c10/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>"
-    ),
+    "#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>\n": "",
 }
 _API_MAP = {
     "at::hip::getCurrentHIPStreamMasqueradingAsCUDA()": "c10::hip::getCurrentHIPStream()",
-    "at::hip::OptionalHIPGuardMasqueradingAsCUDA": "c10::hip::OptionalHIPGuardMasqueradingAsCUDA",
+    "at::hip::OptionalHIPGuardMasqueradingAsCUDA": "dpa4::DeviceGuard",
 }
+
+_DEVICE_GUARD = """
+namespace dpa4 {
+
+/// RAII device guard over the plain HIP API.
+///
+/// torch ships a guard header, but its path differs between builds
+/// (``c10/hip/impl/``, ``ATen/hip/impl/``, or absent), and pulling ATen's
+/// masquerading headers drags in ``cusolver_common.h``.  ``hipGetDevice`` and
+/// ``hipSetDevice`` are always available and are all the operator needs: torch
+/// dispatch has normally selected the device already, so this is belt and
+/// braces around a kernel launch.
+class DeviceGuard {
+ public:
+  explicit DeviceGuard(const c10::Device& device) : previous_(-1) {
+    hipGetDevice(&previous_);
+    if (device.has_index() && device.index() >= 0) {
+      hipSetDevice(static_cast<int>(device.index()));
+    }
+  }
+  ~DeviceGuard() {
+    if (previous_ >= 0) {
+      hipSetDevice(previous_);
+    }
+  }
+  DeviceGuard(const DeviceGuard&) = delete;
+  DeviceGuard& operator=(const DeviceGuard&) = delete;
+
+ private:
+  int previous_;
+};
+
+}  // namespace dpa4
+"""
 
 _RIDGE = '''double dpa4_fp32_ridge() {
   int dev = 0;
@@ -153,6 +188,10 @@ def _patch(text: str, *, stamp: str) -> str:
         text = text.replace(old, new)
     for old, new in _API_MAP.items():
         text = text.replace(old, new)
+    if "class DeviceGuard" not in text:
+        text = text.replace(
+            "#include <torch/torch.h>", "#include <torch/torch.h>\n" + _DEVICE_GUARD, 1
+        )
     # Every translation unit needs the shims before its first device function.
     if stamp not in text:
         text = text.replace(

@@ -138,11 +138,22 @@ class TranslationTests(unittest.TestCase):
         # Regression: `ATen/hip/HIPContext.h` pulls `ATen/hip/Exceptions.h`,
         # which includes <cusolver_common.h> -- absent from every ROCm install,
         # so the generated translation could not compile.
+        # The header name may still appear in a comment explaining the choice;
+        # only code counts (same convention as the token lint above).
+        code = "\n".join(
+            line.split("//", 1)[0] for line in (PORT / "so2_conv.hip").read_text().splitlines()
+        )
+        self.assertNotIn("ATen/hip", code)
         glue = (PORT / "so2_conv.hip").read_text()
-        self.assertNotIn("ATen/hip", glue)
         self.assertIn("#include <c10/hip/HIPStream.h>", glue)
         self.assertIn("c10::hip::getCurrentHIPStream()", glue)
-        self.assertIn("c10::hip::OptionalHIPGuardMasqueradingAsCUDA", glue)
+        # The guard must not come from torch: its header path differs between
+        # builds (c10/hip/impl on one, ATen/hip/impl on another, absent on a
+        # third), and the ATen one drags in cusolver.
+        self.assertNotIn("HIPGuardImplMasqueradingAsCUDA", glue)
+        self.assertIn("class DeviceGuard", glue)
+        self.assertEqual(glue.count("dpa4::DeviceGuard device_guard"), 4)
+        self.assertIn("hipGetDevice(&previous_)", glue)
 
     def test_ridge_is_recomputed_from_hip_properties(self) -> None:
         glue = (PORT / "so2_conv.hip").read_text()

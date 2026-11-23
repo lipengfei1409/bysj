@@ -73,10 +73,14 @@ hipify 会把 `ATen/cuda/CUDAContext.h` 变成 `ATen/hip/HIPContext.h`，而这�
       'cusolver_common.h' file not found
 ```
 
-`cusolver_common.h` 是 CUDA 的，ROCm/DTK 里没有。设备守卫和当前流在 c10 层都有对应物，
-而且不拉求解器头：`c10/hip/HIPStream.h` 的 `c10::hip::getCurrentHIPStream()`、
-`c10/hip/impl/HIPGuardImplMasqueradingAsCUDA.h` 的
-`c10::hip::OptionalHIPGuardMasqueradingAsCUDA`。生成器把两者替换掉。
+`cusolver_common.h` 是 CUDA 的，ROCm/DTK 里没有。当前流在 c10 层有对应物、也不拉求解器头：
+`c10/hip/HIPStream.h` 的 `c10::hip::getCurrentHIPStream()`。
+
+**设备守卫干脆不用 torch 的**：它的头位置在每个 torch 构建里都不一样——这台机器上没有
+`c10/hip/impl/HIPGuardImplMasqueradingAsCUDA.h`（第一次改就撞上），另一台可能是
+`ATen/hip/impl/...`，第三台可能两处都没有。`hipGetDevice`/`hipSetDevice` 永远在，
+所以生成器注入一个 20 行的 `dpa4::DeviceGuard` RAII 包装，行为等价（torch dispatch 通常
+已经选好设备，这层只是保险）。
 
 ### 3.4 `dpa4_fp32_ridge()` 必须重算
 
