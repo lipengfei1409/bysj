@@ -31,9 +31,9 @@
 
 | # | 优化项 | 解决的问题 | 方案 | 状态 | 收益 |
 | --- | --- | --- | --- | --- | --- |
-| B1 | `segment_sum`（分段归约） | `fill_`+`index_add_`+`mul_` 三次 launch；行原子只有 177 GB/s | 一 block 一段，CSR 遍历，累加器在寄存器；权重/归一作为 `edge_scale`/`node_scale` 进核 | 🟡 算子完成；接 `envelope`（本模型不走）与 `aggregate`（本模型走） | 算子级**未测**；trace 池 = 前向 E→N 散射 11.2 ms（3×3.7）+ 零初始化/度归一 0.2 = 11.4 ms，630 GB/s 下 fusion 约 1.2 ms → **−10 ms**（原估 −15…−25 偏乐观） |
-| B2 | `segment_softmax`（门控分段 softmax） | max + exp + 2 次散射 + 除，共 6 次 launch | 段内 max 与分母留寄存器；反向只读已存的 `α` | ✅ 完成并接入；端到端已测 | 算子级 **9.09×**（C=64）/ **5.00×**（C=256）；端到端 **≈0**（964.4 → 963.8 ms，−150 launch）。trace 佐证：本 trace 里根本没有 `_softmax` 行 |
-| B3 | `force_assembly`（力/维里装配） | 2 次原子散射 + `(E,9)` 物化；源端维里外积 | 两次只读 CSR 遍历，double 累加，5 原子/block 填满 wave64 | 🟡 算子完成并接上上游 `edge_force_assembly`；**端到端价值已判负** | 算子级 **5.53×**（1.006 → 0.182 ms）；但 trace 里真实池只有 **1.7 ms**（`index_add [3000,3]`×2 + `[3000,9]` + 外积）→ 端到端 **−1.5 ms**，原估 −60…−85 是把 gate/槽位 gather 的反向误算进来了 |
+| B1 | `segment_sum`（分段归约） | `fill_`+`index_add_`+`mul_` 三次 launch；行原子只有 177 GB/s | 一 block 一段，CSR 遍历，累加器在寄存器；权重/归一作为 `edge_scale`/`node_scale` 进核 | 🟡 算子完成；接 `envelope`（本模型不走）与 `aggregate`（本模型走） | 算子级实测 **2.42×**（C=64，0.303 → 0.125 ms）/ **2.57×**（C=256）/ **1.99×**（C=640，2026-11-23 真机）；trace 池 = 前向 E→N 散射 11.2 ms（3×3.7）+ 零初始化/度归一 0.2 = 11.4 ms，630 GB/s 下 fusion 约 1.2 ms → **−10 ms**（原估 −15…−25 偏乐观） |
+| B2 | `segment_softmax`（门控分段 softmax） | max + exp + 2 次散射 + 除，共 6 次 launch | 段内 max 与分母留寄存器；反向只读已存的 `α` | ✅ 完成并接入；端到端已测 | 算子级实测 **11.93×**（C=64，7.975 → 0.669 ms）/ **6.79×**（C=256，2026-11-23 真机）；端到端 **≈0**（964.4 → 963.8 ms，−150 launch）。trace 佐证：本 trace 里根本没有 `_softmax` 行 |
+| B3 | `force_assembly`（力/维里装配） | 2 次原子散射 + `(E,9)` 物化；源端维里外积 | 两次只读 CSR 遍历，double 累加，5 原子/block 填满 wave64 | 🟡 算子完成并接上上游 `edge_force_assembly`；**端到端价值已判负** | 算子级实测 **3.35×**（1.394 → 0.416 ms，2026-11-23 真机；此前 5.53× 是另一组尺寸）；但 trace 里真实池只有 **1.7 ms**（`index_add [3000,3]`×2 + `[3000,9]` + 外积）→ 端到端 **−1.5 ms**，原估 −60…−85 是把 gate/槽位 gather 的反向误算进来了 |
 | B4 | CSR 置换 `order` 支持 | DeepMD 边表不按位置有序，否则每个算子前要先物化排序结果 | kernel 内 `edge = order[slot]`，输出仍写自然序；`force_assembly` 另加 `dst_order` | 🟡 已实现（三算子 + 主机测试） | 省掉每步 2 趟 gather（约 1.2 ms/步） |
 
 **注**：B1–B4 在上游都有同名实现 —— `aggregate`/`segment_sum`（Python）、
@@ -46,9 +46,9 @@
 
 | # | 优化项 | 解决的问题 | 方案 | 状态 | 收益（估算） |
 | --- | --- | --- | --- | --- | --- |
-| C1 | 槽打包 + 缩放（`slot_pack_scale`） | `GatedActivation.forward`（`activation.py:213`）里 `index_select`+`mul`+`copy_` 三次 E-major 遍历：`index_select [1,E,3,64] idx[9]` 20.5 ms、`mul [1,E,9,64]` 17.3 ms、`copy_` 15.6 ms（各 9 次） | 映射已确认：`gates = gating_scalars.index_select(2, expand_index)`，随后 `out[:,1:] = x[:,1:] * gates`。`slot_pack_scale(gating_scalars, expand_index, scale=x[:,1:])` 一趟完成"按 gate 组展开 + 逐元素乘" | 🟡 **已接线**（`fused=("pack",)`）：只替换 `fndc` 布局那一条分支（本模型就是它），另两条 layout 与非 fp32 直接回退原方法 | 估算 **−20…−25 ms**（末端 `narrow.copy_` 与 `x0` 拷贝仍在，只有 gather+mul 被合掉）；trace 池 53.4 ms；待真机 |
+| C1 | 槽打包 + 缩放（`slot_pack_scale`） | `GatedActivation.forward`（`activation.py:213`）里 `index_select`+`mul`+`copy_` 三次 E-major 遍历：`index_select [1,E,3,64] idx[9]` 20.5 ms、`mul [1,E,9,64]` 17.3 ms、`copy_` 15.6 ms（各 9 次） | 映射已确认：`gates = gating_scalars.index_select(2, expand_index)`，随后 `out[:,1:] = x[:,1:] * gates`。`slot_pack_scale(gating_scalars, expand_index, scale=x[:,1:])` 一趟完成"按 gate 组展开 + 逐元素乘" | 🟡 **已接线**（`fused=("pack",)`）：只替换 `fndc` 布局那一条分支（本模型就是它），另两条 layout 与非 fp32 直接回退原方法 | 算子级实测 **4.36×**（C=64，7.267 → 1.667 ms，2026-11-23 真机）；端到端估算 **−20…−25 ms**（末端 `narrow.copy_` 与 `x0` 拷贝仍在，只有 gather+mul 被合掉）；trace 池 53.4 ms；待真机 A/B |
 | C1b | 同一条链的**反向** | `index_select` 的反向：`index_add_ [1,E,3,64] ⬅ [1,E,9,64]` 32.7 ms（9 次）+ `fill_ [1,E,3,64]` 2.6 ms，跑成行原子 | 逐边独立、无竞争：一个 kernel 里按 9 个 slot→group 的映射把 `grad_gates` 累加进 `grad_gating_scalars` | 🟡 autograd 已接通（`torch.autograd.Function`，Python 反向走 `index_select`/`index_add_`，CPU 与参考逐位对照）；**native 反向 kernel 待做** | 估算 **−20…−25 ms**（35.3 → 约 1.0 ms/次的读+写） |
-| C2′ | 10 槽加权归约（`slot_reduce`） | `SO2Linear.forward`（`so2.py:812`）`rank>0` 分支的 `sum(dim=2)`：`(mixed * channel_basis).sum(dim=2)`，权重依赖 `(o, r, c)` | 原以为可映射成 `Σ_r w[e,r]·src[e,r,c]`；实际是 `Σ_r kernel[e,o,r]·x[e,r,c]·channel_basis[o,r,c]`，**权重依赖输出槽 o** | 🟡 算子完成，但**与真实调用点不匹配**（需要 rank-K 收缩 + 逐通道基底的 epilogue） | 本行不再计收益；真实可做的是把它归入 C7 的"rank-K 收缩 + epilogue"（见 C7） |
+| C2′ | 10 槽加权归约（`slot_reduce`） | `SO2Linear.forward`（`so2.py:812`）`rank>0` 分支的 `sum(dim=2)`：`(mixed * channel_basis).sum(dim=2)`，权重依赖 `(o, r, c)` | 原以为可映射成 `Σ_r w[e,r]·src[e,r,c]`；实际是 `Σ_r kernel[e,o,r]·x[e,r,c]·channel_basis[o,r,c]`，**权重依赖输出槽 o** | 🟡 算子完成，但**与真实调用点不匹配**（需要 rank-K 收缩 + 逐通道基底的 epilogue） | 本行不再计收益；算子级实测 **3.76×**（C=64，5.809 → 1.544 ms，2026-11-23 真机），真实可做的是把它归入 C7 的"rank-K 收缩 + epilogue"（见 C7） |
 | C3 | GEMM + 残差 epilogue | 两个 E-major GEMM 仅 8.1 TFLOP/s（roofline 13.7），残差 `add [E,10,64]` 又是一趟 | DMK 分块 GEMM，epilogue 吸收残差 | ⬜ 未做（属 megakernel 线） | −30…−35 ms |
 | C4 | 小轴归约重写 | `sum [E,10,1,64]` 有效带宽 56 GB/s（约 10× 浪费），单行 24.9 ms、该组合计 36.5 ms | 小轴映射到 lane，`__shfl` 归约，或并进 C2 | ⬜ 未做 | −20…−22 ms |
 | C5 | readout 瘦 GEMM | readout 组 5 个 bmm 合计 63.9 ms，其中 `[1,152,48]×[1,48,576000]` 24.2 ms（K=48 算力空转） | `float4` 向量化 + 融合 scale/add epilogue | ⬜ 未做 | −6…−10 ms |
@@ -72,8 +72,8 @@
 | --- | --- | ---: | --- | --- |
 | 已实测 | B2 `softmax` 接缝 | ~1 ms（0.1%） | **≈0**（−150 launch，时间不变） | ❌ 已证明在本 checkpoint 无效 |
 | 待实测 | B3 `force` | 1.7 ms（0.1%） | **−1.5 ms**（原估 −60…−85 作废） | 🟡 代码已接，端到端价值已判负 |
-| 待实测 | B1 `aggregate` | 11.4 ms（0.9%） | **−10 ms** | 🟡 代码已接，等真机 |
-| 待实测 | C1 `slot_pack_scale`（前向） | 53.4 ms（4.4%） | **−20…−25 ms** | 🟡 接缝已挂上，等真机 |
+| 待实测 | B1 `aggregate` | 11.4 ms（0.9%） | **−10 ms** | 🟡 算子级已测 2.4×，端到端 A/B 待跑 |
+| 待实测 | C1 `slot_pack_scale`（前向） | 53.4 ms（4.4%） | **−20…−25 ms** | 🟡 算子级已测 4.36×，端到端 A/B 待跑 |
 | 未实现 | C1b 同一条链的反向 | 35.3 ms（2.9%） | −20…−25 ms | ⬜ 映射已有，可直接写 |
 | 待重新设计 | C2′ `slot_reduce` | 0 | 0（不匹配真实调用点） | 🟡 并入 C7 的 rank-K 收缩 epilogue |
 | 未实现 | C3 + C5 | 407 ms（33.4%） | −36…−45 ms | ⬜ 需 DMK GEMM |
@@ -91,7 +91,7 @@
 | 步骤 | 命令（详见 operators.md §4） | 期望 |
 | --- | --- | --- |
 | L0 主机 | `PYTHONPATH=python python3 -m unittest discover -s tests/python` | 109 passed / 1 skipped |
-| L2 单算子 | `DPA4_RUN_SEGMENT_LATENCY=1`、`DPA4_RUN_SLOT_LATENCY=1` 各跑一次 | 拿到 `segment_sum` 与 `slot_pack_scale` 的 speedup（**目前缺这两格**） |
+| L2 单算子 | `DPA4_RUN_SEGMENT_LATENCY=1`、`DPA4_RUN_SLOT_LATENCY=1` 各跑一次 | ✅ 2026-11-23 已拿到：`segment_sum` 2.42×/2.57×/1.99×、`slot_pack_scale` 4.36×、`slot_reduce` 3.76×、`segment_softmax` 11.93×/6.79×、`force_assembly` 3.35× |
 | L4 端到端 | `--fused off` / `--fused on` + `compare_fused_runs.py` | `fused` 字段：`pack_hits>0`、`aggregate_hits=3`、`force_hits=1`，`*_fallbacks=0`；设备时间下降 |
 
 ## 7. 更新日志
@@ -104,6 +104,7 @@
 | 2026-11-19 | 用 launch→region 归因钉死两个真实站点：C1 的 `index_select`+`mul`+`copy_` 全在 **`GatedActivation.forward`**（`activation.py:213`，映射 `gates = gating_scalars.index_select(2, expand_index)`），不是 `so2_message`；C2′ 的 `sum [E,10,1,64]` 在 **`SO2Linear.forward`**（`so2.py:812`）的 `(mixed * channel_basis).sum(dim=2)`，权重依赖输出槽 → `slot_reduce` 不匹配。C1 估算由 −45…−55 下调到 −20…−25，C2′ 收益归零并并入 C7 |
 | 2026-11-23 | 查清上游已有实现：`pt_expt/kernels` 下五套融合（native CUDA / CuTe / cuTile / Triton / Python），native 一律只编 `USE_CUDA_TOOLKIT AND DEEPMD_TORCH_HAS_CUDA`，DCU 构建里 `dpa4_so2_conv` 不存在 → 静默回退稠密路径；legacy `pt` 的 dispatch 反而已就位。由 trace 反解本 checkpoint 为 `CF=64/lmax=3`，正好是上游 `air` 标定点（225.3 kFMA），故 C7 的收益改为"待单特化 A/B 实测" |
 | 2026-11-23 | 修 `test_slot_ops_accuracy` 的 autograd 用例：`slot_pack_scale` / `slot_reduce` 的 native 入口只有前向，补了 `torch.autograd.Function` 包装（前向仍走 native kernel，反向用 torch 算子，主机侧与参考逐位对照）；C1b 的 native 反向 kernel 仍是优化项 |
+| 2026-11-23 | 跑通 `verify_fused.py --stage all` 的 host/build/acc/lat：L2 单算子拿到真机数（见 §2/§3）；`par` 的 envelope 用例暴露陈旧 fixture（`SimpleNamespace` 假 block 缺 `forward_envelope`，`_blocks()` 认不出 → `bound_envelope=False`），补上绑定的 stock 方法并先断言 `stats.blocks` |
 | 2026-11-23 | 新增 [`execution-model.md`](execution-model.md)：按张量家族把 1218.6 ms 分成 G1–G9，只有 `G2 槽位段`（580.0 ms / 47.6%）值得做段级 megakernel（4 KB/边驻留、无跨 block 依赖），全模型 megakernel 不做；C7 的池子由 66 ms 修正为 580 ms |
 | 2026-11-23 | 新增 `op_time_share.py` 与 [`op-time-share.md`](op-time-share.md)：按 `nn.Module: ModelWrapper_0` 作用域（用 **launch 时间**过滤）给出前向 + 反向全部算子的时间占比，2614/2614 kernel、1218.58 ms 全部在作用域内。**据此修正两处估算**：B3 的真实池只有 1.7 ms（原 −60…−85 ms 作废，那 95 ms 里是 gate/槽位 gather 的反向），B1 上限 −10 ms。同时新增 C1b（同一 gate 链的反向，35.3 ms 池） |
 
