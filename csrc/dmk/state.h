@@ -54,6 +54,7 @@ struct State {
     lds::Semaphore* instruction_finished;
     lds::Semaphore* page_finished;  // [page][stage bit], flattened
     lds::Semaphore* semaphores_ready;
+    lds::Event* events;  // [config::kEvents], persistent for the whole kernel
     Page* pages;
 
     int instruction_index;
@@ -66,13 +67,14 @@ struct State {
     __device__ State(InstructionState* states,
                      lds::Semaphore* arrived, lds::Semaphore* finished,
                      lds::Semaphore* pages_finished,
-                     lds::Semaphore* ready, Page* page_array,
-                     uint64_t clock)
+                     lds::Semaphore* ready, lds::Event* event_array,
+                     Page* page_array, uint64_t clock)
         : instruction_states(states),
           instruction_arrived(arrived),
           instruction_finished(finished),
           page_finished(pages_finished),
           semaphores_ready(ready),
+          events(event_array),
           pages(page_array),
           instruction_index(0),
           instruction_ring(0),
@@ -103,6 +105,21 @@ struct State {
     __device__ void* scratch() const { return slot().scratch; }
 
     __device__ int pid(int lid) const { return pid_order()[lid]; }
+
+    // Cross-instruction dependency counters: the producer arrives after its
+    // data is visible, the consumer waits until the host-provided target has
+    // been reached. Unlike s.semaphores(), they survive instruction slots.
+    __device__ void arrive_event(int event, uint32_t amount = 1) const {
+        events[event].arrive(amount);
+    }
+
+    __device__ void wait_event(int event, uint32_t target) const {
+        events[event].wait(target);
+    }
+
+    __device__ uint32_t event_arrivals(int event) const {
+        return events[event].arrivals();
+    }
 
     __device__ void wait_page_ready(int pid) const {
 #pragma unroll

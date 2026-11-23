@@ -116,6 +116,46 @@ struct alignas(16) Semaphore {
     }
 };
 
+// Monotonic counter for cross-instruction (and cross-op) dependencies.
+//
+// A Semaphore is phase-based and lives in an instruction slot, so it is only
+// valid while that slot is alive; a dependency that spans instructions (op A's
+// output feeding op B, or a tile feeding the next tile) needs a counter that
+// never resets. The producer arrives, the consumer waits until the count
+// reaches the target the host encoded for it, and any later instruction can
+// wait the same event for a larger target.
+struct alignas(4) Event {
+    // No default member initializer: it lives in static __shared__ memory.
+    uint32_t count;
+
+    __device__ void init() {
+        count = 0;
+        __threadfence_block();
+    }
+
+    __device__ void arrive(uint32_t amount = 1) {
+        if (amount == 0) return;
+        __threadfence_block();
+        atomicAdd(&count, amount);
+    }
+
+    __device__ uint32_t arrivals() const {
+        return *reinterpret_cast<const volatile uint32_t*>(&count);
+    }
+
+    __device__ void wait(uint32_t target) const {
+        while (arrivals() < target) {
+        }
+        __threadfence_block();
+    }
+
+    __device__ bool try_wait(uint32_t target) const {
+        return arrivals() >= target;
+    }
+};
+
+static_assert(sizeof(Event) == 4, "event must stay one 32-bit word");
+
 static_assert(sizeof(Semaphore) == 16, "semaphore must stay 16-byte aligned");
 static_assert(alignof(Semaphore) == 16, "semaphore must stay 16-byte aligned");
 

@@ -69,7 +69,7 @@ instruction_finished × 2            = 32 B
 page_finished[6][1]                 = 96 B
 semaphores_ready                    = 16 B
 ------------------------------------------------------
-kStaticBytes                        = 10416 B
+kStaticBytes                        = 10448 B
 ```
 
 动态 LDS：
@@ -77,7 +77,7 @@ kStaticBytes                        = 10416 B
 ```
 6 pages × 8192 B = 49152 B
 launch 申请      = 49152 + 128（对齐 slack）= 49280 B
-static + launch  = 59696 B < 65536 B
+static + launch  = 59728 B < 65536 B
 ```
 
 `config.h` 里有 `static_assert` 把这三项卡死；`launch_mk` 还会在运行期
@@ -195,6 +195,37 @@ s.pages[pid].ptr();          // 访问
 `State::wait_page_ready(pid)` 对所有 `STAGE_BITS` 做
 `wait((instruction_index >> bit) & 1)`；当前 `kStageBits = 1`。
 `finish_page(pid, count)` 对每个 bit `arrive(count)`。
+
+---
+
+### 3.4 跨算子依赖：event 计数
+
+`page_finished` 只回答「这个 page 现在能不能被写」，它**不是**数据依赖：两个 page
+可能都空闲，但下游要等的是「上游算完并把结果写出来了」。这种依赖用
+`lds::Event`（4 B 单调计数器，静态 LDS 里 `config::kEvents = 8` 个）表达：
+
+```cpp
+struct Event { uint32_t count; };
+// arrive: __threadfence_block() + atomicAdd(&count, n)
+// wait(target): while (count < target) {} + __threadfence_block()
+```
+
+协议：
+
+1. 生产者在数据可见之后 `s.arrive_event(id)`（HBM 路径放在 `store()` 写完、
+   fence 之后；LDS handoff 放在 `run()` 末尾）；
+2. 消费者在读取之前 `s.wait_event(id, target)`（HBM 路径放在 `load()` 拷数据之前；
+   LDS handoff 放在 `run()` 读 page 之前）；
+3. `target` 由 host 生成指令流时写进指令字——生成器知道这个消费者依赖第几条指令、
+   生产者每条指令 arrive 几次，所以不需要运行时猜。
+
+和 per-instruction 的 `s.semaphores()` 的区别：后者随流水槽复用被 invalidate，
+只在一条指令内有效；`Event` 在 kernel 生命周期内单调递增，可以跨任意多条指令、
+被多个下游以不同 `target` 等待，所以适合「op A 的输出 → op B 的输入」这种边。
+
+和 page 相位的关系：page 相位管**复用**（buffer 能不能被覆盖），`Event` 管**数据**
+（结果有没有到）。两者不能互相替代——例如双缓冲的 `load(i+1)` 需要 page 相位，
+而 `op B` 读 `op A` 的 HBM 输出需要 event。
 
 ---
 
@@ -588,7 +619,7 @@ python tests/csrc/run_dmk_lds_test.py
 
 ```
 device: ... (gfx928)
-wave=64 LDS/block=65536 static=10416 dynamic=49152 launch=49280 pages=6 x 8192 B
+wave=64 LDS/block=65536 static=10448 dynamic=49152 launch=49280 pages=6 x 8192 B
 ...
 page-based megakernel checks passed
 ```

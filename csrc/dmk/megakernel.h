@@ -65,6 +65,7 @@ __device__ inline void mk_internal(const Globals& g) {
     __shared__ lds::Semaphore
         page_finished[config::kNumPages][config::kStageBits];
     __shared__ lds::Semaphore semaphores_ready;
+    __shared__ lds::Event events[config::kEvents];
 
     extern __shared__ int dynamic_lds[];
     const std::uintptr_t raw =
@@ -77,7 +78,7 @@ __device__ inline void mk_internal(const Globals& g) {
     static_assert(
         sizeof(instruction_states) + sizeof(instruction_arrived) +
                 sizeof(instruction_finished) + sizeof(page_finished) +
-                sizeof(semaphores_ready) ==
+                sizeof(semaphores_ready) + sizeof(events) ==
             kStaticBytes,
         "static LDS accounting drifted from config.h");
 
@@ -101,6 +102,7 @@ __device__ inline void mk_internal(const Globals& g) {
             page_finished[threadIdx.x][bit].arrive(count);
         }
     }
+    if (threadIdx.x < config::kEvents) events[threadIdx.x].init();
     if (threadIdx.x == 0) {
         semaphores_ready.init(1);
         semaphores_ready.arrive(1);
@@ -112,6 +114,7 @@ __device__ inline void mk_internal(const Globals& g) {
                 instruction_finished,
                 &page_finished[0][0],
                 &semaphores_ready,
+                events,
                 pages,
                 static_cast<uint64_t>(clock64())};
 

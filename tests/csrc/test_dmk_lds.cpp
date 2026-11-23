@@ -59,7 +59,8 @@ void test_config_budget() {
           sizeof(InstructionState) * config::kStages +
               sizeof(lds::Semaphore) *
                   (2 * config::kStages + 1 +
-                   config::kNumPages * config::kStageBits));
+                   config::kNumPages * config::kStageBits) +
+              sizeof(lds::Event) * config::kEvents);
     CHECK(kStaticBytes + kLaunchBytes <= config::kLdsBytesPerCu);
 
     CHECK(sizeof(lds::Semaphore) == 16);
@@ -84,6 +85,27 @@ void test_phase_arithmetic() {
     CHECK(dmk::lds::phase_for_ticket(8, 4) == 0);
     CHECK(dmk::lds::phase_for_ticket(12, 4) == 1);
     CHECK(dmk::lds::phase_for_ticket(42, 0) == 0);
+}
+
+void test_events() {
+    // Cross-instruction dependencies: a producer arrives, a consumer waits for
+    // the target count. Unlike a Semaphore the counter never resets, so a
+    // later instruction can wait for a larger target.
+    CHECK(sizeof(lds::Event) == 4);
+    lds::Event event{};
+    event.init();
+    CHECK(event.arrivals() == 0);
+    CHECK(!event.try_wait(1));
+    event.arrive();
+    CHECK(event.arrivals() == 1);
+    CHECK(event.try_wait(1));
+    event.wait(1);  // already reached: returns without spinning
+    event.arrive(3);
+    CHECK(event.arrivals() == 4);
+    CHECK(event.try_wait(4));
+    CHECK(!event.try_wait(5));
+    event.arrive(0);  // a zero arrival is a no-op
+    CHECK(event.arrivals() == 4);
 }
 
 void test_page_permutation() {
@@ -209,6 +231,7 @@ void test_globals_contract() {
 int main() {
     test_config_budget();
     test_phase_arithmetic();
+    test_events();
     test_page_permutation();
     test_vector_access();
     test_globals_contract();

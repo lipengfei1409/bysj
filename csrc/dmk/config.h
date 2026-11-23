@@ -10,10 +10,10 @@
 //
 // The reference configuration is tuned for H100 (228 KiB / 16 KiB pages / 13
 // pages). DCU has 64 KiB per CU, so this configuration uses 8 KiB pages:
-//   static  10,416 B
+//   static  10,448 B
 //   dynamic 49,152 B (6 pages)
 //   launch  49,280 B (dynamic + one 128 B alignment unit)
-//   total   59,696 B, leaving ~5.8 KiB for compiler static scratch.
+//   total   59,728 B, leaving ~5.8 KiB for compiler static scratch.
 //
 // The tunables are plain constants in dmk::config instead of a Config struct
 // template parameter: the DCU has one fixed LDS budget, so every page, state
@@ -39,6 +39,12 @@ inline constexpr int kTimingWidth = 128;
 
 // Per-instruction semaphores (weights_arrived / outputs_finished / ...).
 inline constexpr int kDynamicSemaphores = 16;
+
+// Persistent counters for dependencies that span instructions (an op's output
+// feeding the next op, or the next tile of the same op). They live in static
+// LDS for the whole kernel and never reset, unlike the per-instruction
+// semaphores.
+inline constexpr int kEvents = 8;
 
 // Roles: 4 consumer waves plus loader, storer and controller. The Blackwell
 // reference also has a launcher wave for async MMA/TMA issue; DCU's synchronous
@@ -100,7 +106,8 @@ static_assert(sizeof(InstructionState) % 128 == 0,
 inline constexpr size_t kStaticBytes =
     sizeof(InstructionState) * config::kStages +
     sizeof(lds::Semaphore) *
-        (2 * config::kStages + 1 + config::kNumPages * config::kStageBits);
+        (2 * config::kStages + 1 + config::kNumPages * config::kStageBits) +
+    sizeof(lds::Event) * config::kEvents;
 inline constexpr size_t kDynamicBytes =
     static_cast<size_t>(config::kNumPages) * config::kPageSize;
 inline constexpr size_t kLaunchBytes = kDynamicBytes + config::kDynamicAlign;
