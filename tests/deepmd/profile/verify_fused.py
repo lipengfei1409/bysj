@@ -61,7 +61,7 @@ def _find_project(start: Path) -> Path:
 
 
 _PROJECT = _find_project(_HERE)
-STAGES = ("host", "build", "acc", "lat", "par", "e2e")
+STAGES = ("host", "build", "acc", "lat", "ope2e", "par", "e2e")
 DEFAULT_END_TO_END_OUT = Path("/root/private_data/lipengfei/test_result/verify")
 
 
@@ -123,6 +123,12 @@ def build_plan(
          {"DPA4_RUN_EDGE_COMBINE_LATENCY": "1",
           "DPA4_EDGE_COMBINE_LATENCY_JSON": str(out_dir / "edge_combine_latency.json")},
          "edge combine A/B latency"),
+    ]
+    plan["ope2e"] = [
+        ([py, "-m", "unittest", "discover", "-s", "tests/csrc/e2e",
+          "-p", "test_edge_combine*", "-v"],
+         {"DPA4_RUN_EDGE_COMBINE_E2E": "1"},
+         "edge combine end-to-end (operator scope)"),
     ]
     plan["par"] = [
         ([py, "-m", "unittest", "discover", "-s", "tests/csrc/accuracy",

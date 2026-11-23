@@ -66,6 +66,12 @@ class PlanTests(unittest.TestCase):
         self.assertIn("DPA4_RUN_SLOT_LATENCY", environ[1])
         self.assertEqual(environ[0]["DPA4_SEGMENT_LATENCY_JSON"], "/tmp/v/seg_latency.json")
 
+    def test_operator_end_to_end_stage_runs_the_edge_combine_suite(self) -> None:
+        plan = verify_fused.build_plan(out_dir=Path("/tmp/v"))
+        (command, extra, _label), = plan["ope2e"]
+        self.assertIn("tests/csrc/e2e", command)
+        self.assertEqual(extra, {"DPA4_RUN_EDGE_COMBINE_E2E": "1"})
+
     def test_end_to_end_needs_a_model_and_an_input(self) -> None:
         self.assertEqual(verify_fused.build_plan()["e2e"], [])
         plan = verify_fused.build_plan(model_file="m.pt", input_npz="i.npz")
