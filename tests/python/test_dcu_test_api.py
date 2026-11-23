@@ -40,10 +40,25 @@ REMOVED_NAMES = {
 }
 
 
-def _python_files():
-    for tree in DCU_TREES:
-        if tree.is_dir():
-            yield from sorted(tree.rglob("*.py"))
+_SKIP_DIRS = {"__pycache__"}
+
+
+def _python_files(trees=DCU_TREES):
+    """Yield the DCU test sources, ignoring hidden and cached directories.
+
+    A Jupyter checkpoint copy (``.ipynb_checkpoints/*-checkpoint.py``) is a stale
+    duplicate that still imports removed packages, and it exists only on the
+    machines that edited those notebooks -- importing it would fail there and
+    nowhere else.  Only real sources count.
+    """
+    for tree in trees:
+        if not Path(tree).is_dir():
+            continue
+        for path in sorted(Path(tree).rglob("*.py")):
+            parts = path.relative_to(tree).parts
+            if any(part.startswith(".") or part in _SKIP_DIRS for part in parts):
+                continue
+            yield path
 
 
 class RemovedNameTests(unittest.TestCase):
@@ -61,6 +76,21 @@ class RemovedNameTests(unittest.TestCase):
 
 
 class DcuTestImportTests(unittest.TestCase):
+    def test_hidden_and_cached_directories_are_ignored(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "test_real.py").write_text("VALUE = 1\n")
+            checkpoint = root / ".ipynb_checkpoints"
+            checkpoint.mkdir()
+            (checkpoint / "test_stale-checkpoint.py").write_text("import tilelang_ops\n")
+            cached = root / "__pycache__"
+            cached.mkdir()
+            (cached / "test_cached.py").write_text("import nothing\n")
+            found = [path.name for path in _python_files((root,))]
+        self.assertEqual(found, ["test_real.py"])
+
     def test_every_dcu_test_module_imports_on_the_host(self):
         loaded = []
         for path in _python_files():

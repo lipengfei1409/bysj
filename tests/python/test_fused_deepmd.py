@@ -12,6 +12,7 @@ import contextlib
 import io
 import types
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 
 import torch
@@ -293,8 +294,12 @@ class FusedDispatchTests(unittest.TestCase):
         self.assertIs(block.forward_envelope.__self__, block)
 
     def test_install_is_a_noop_without_the_extension(self):
+        # `ops=None` means "resolve the extension"; on a DCU host with the
+        # extension built that resolution succeeds and the seams do bind, so the
+        # branch under test has to be forced rather than inferred from the host.
         model = FakeModel([FakeBlock(torch.zeros(2, 1, 1))])
-        stats = fused_deepmd.deepmd_patch(model, ops=None, verbose=False)
+        with mock.patch.object(fused_deepmd, "_load_ops", lambda: None):
+            stats = fused_deepmd.deepmd_patch(model, ops=None, verbose=False)
         self.assertFalse(stats.bound_softmax or stats.bound_envelope)
         self.assertEqual(fused_deepmd.status(stats)["blocks"], 1)
 
