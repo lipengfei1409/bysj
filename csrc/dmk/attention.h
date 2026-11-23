@@ -39,6 +39,7 @@
 #include "dtype.h"
 #include "op.h"
 #include "state.h"
+#include "tile.h"
 #include "tensor.h"
 
 #include <cmath>
@@ -145,9 +146,6 @@ public:
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int dim = inst.dim;
-        const int rows = static_cast<int>(g.out.shape.dims[0]);
-        const int first_row = inst.query_tile * attention::kQueryTile;
-        const int first_key = inst.key_tile * attention::kKeyTile;
 
         const int q_pid = s.pid(attention::kQueryPage);
         const int k_pid = s.pid(attention::kKeyPage);
@@ -161,26 +159,34 @@ public:
         s.wait_page_ready(state_pid);
         s.wait_page_ready(s.pid(attention::kScratchPage));
 
+        // Each page holds one tile: Q/K/V tiles are 16 x D blocks of their
+        // matrices, clamped at the tensor edge by make_tile.
+        const auto tile_shape = tile::TileShape<2>{
+            {attention::kQueryTile, static_cast<size_t>(dim)}};
+        const auto page_layout =
+            tensor::StridedLayout<2>{{attention::kRowStride, 1}};
+        const auto page_shape = [dim](int rows) {
+            return tensor::Shape<2>{{static_cast<size_t>(rows),
+                                     static_cast<size_t>(dim)}};
+        };
+
         // The first key tile of a query tile (re)loads Q and resets the
         // output tile and the softmax state; later tiles reuse the pages.
         if (inst.key_tile == 0) {
-            T* q_page = static_cast<T*>(s.pages[q_pid].ptr());
-            float* o_page = static_cast<float*>(s.pages[o_pid].ptr());
+            const size_t q_coord[2] = {
+                static_cast<size_t>(inst.query_tile), 0};
+            const auto q_src = tile::make_tile(g.q, tile_shape, q_coord);
+            const auto q_dst = tile::make_lds_view(
+                static_cast<T*>(s.pages[q_pid].ptr()),
+                page_shape(attention::kQueryTile), page_layout);
+            tile::load_tile(q_dst, q_src, lane, config::kWaveSize);
+
+            const auto o_dst = tile::make_lds_view(
+                static_cast<float*>(s.pages[o_pid].ptr()),
+                page_shape(attention::kQueryTile), page_layout);
+            tile::fill_tile(o_dst, 0.0f, lane, config::kWaveSize);
+
             float* state = static_cast<float*>(s.pages[state_pid].ptr());
-            const auto stride0 = g.q.layout.strides[0];
-            const auto stride1 = g.q.layout.strides[1];
-            for (int index = lane; index < attention::kQueryTile * dim;
-                 index += config::kWaveSize) {
-                const int row = index / dim;
-                const int col = index % dim;
-                const int query = first_row + row;
-                q_page[row * attention::kRowStride + col] =
-                    query < rows
-                        ? g.q.data[static_cast<size_t>(query) * stride0 +
-                                   static_cast<size_t>(col) * stride1]
-                        : dtype::from_float<T>(0.0f);
-                o_page[row * attention::kRowStride + col] = 0.0f;
-            }
             if (lane < attention::kQueryTile) {
                 state[lane] = -INFINITY;
                 state[attention::kQueryTile + lane] = 0.0f;
@@ -188,28 +194,18 @@ public:
             }
         }
 
-        // K/V tile; rows past the end are zeroed and masked in the scores.
-        T* k_page = static_cast<T*>(s.pages[k_pid].ptr());
-        T* v_page = static_cast<T*>(s.pages[v_pid].ptr());
-        const auto k_stride0 = g.k.layout.strides[0];
-        const auto k_stride1 = g.k.layout.strides[1];
-        const auto v_stride0 = g.v.layout.strides[0];
-        const auto v_stride1 = g.v.layout.strides[1];
-        for (int index = lane; index < attention::kKeyTile * dim;
-             index += config::kWaveSize) {
-            const int row = index / dim;
-            const int col = index % dim;
-            const int key = first_key + row;
-            const bool valid = key < inst.num_keys;
-            k_page[row * attention::kRowStride + col] =
-                valid ? g.k.data[static_cast<size_t>(key) * k_stride0 +
-                                  static_cast<size_t>(col) * k_stride1]
-                      : dtype::from_float<T>(0.0f);
-            v_page[row * attention::kRowStride + col] =
-                valid ? g.v.data[static_cast<size_t>(key) * v_stride0 +
-                                  static_cast<size_t>(col) * v_stride1]
-                      : dtype::from_float<T>(0.0f);
-        }
+        const size_t kv_coord[2] = {static_cast<size_t>(inst.key_tile), 0};
+        const auto k_src = tile::make_tile(g.k, tile_shape, kv_coord);
+        const auto k_dst = tile::make_lds_view(
+            static_cast<T*>(s.pages[k_pid].ptr()),
+            page_shape(attention::kKeyTile), page_layout);
+        tile::load_tile(k_dst, k_src, lane, config::kWaveSize);
+
+        const auto v_src = tile::make_tile(g.v, tile_shape, kv_coord);
+        const auto v_dst = tile::make_lds_view(
+            static_cast<T*>(s.pages[v_pid].ptr()),
+            page_shape(attention::kKeyTile), page_layout);
+        tile::load_tile(v_dst, v_src, lane, config::kWaveSize);
 
         lds::wave_barrier();
         __threadfence_block();

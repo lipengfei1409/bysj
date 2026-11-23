@@ -6,6 +6,7 @@
 #include "dumma.h"
 #include "op.h"
 #include "state.h"
+#include "tile.h"
 
 #include <type_traits>
 
@@ -406,6 +407,11 @@ __device__ inline void run_gemm_wave(const GemmParamsT<T>& params,
 // the standalone DUMMA microbenchmark (it batches k and several tiles, which is
 // exactly what the page VM does not do); this class owns the page/semaphore
 // lifecycle and is what the controller sees.
+//
+// Tile layout: the operator tiles all three matrices with its own 16x16 tile
+// shape, so load() stages exactly one tile per page through tile::load_tile
+// and store() writes one tile with tile::copy_tile. Tile coordinates must be
+// non-negative multiples of 16 (the honest side of the instruction stream).
 namespace dmk::mk {
 
 template <typename Globals>
@@ -414,10 +420,7 @@ public:
     static constexpr int opcode = 2;
     static constexpr int kTile = 16;
     static constexpr int kTileElements = kTile * kTile;
-
-    static constexpr size_t kVector = sizeof(float4) / sizeof(float);
-    static constexpr size_t kRowVectors = kTile / kVector;       // 4 per row
-    static constexpr size_t kTileVectors = kTile * kRowVectors;  // one per lane
+    static constexpr tile::TileShape<2> kTileShape{{kTile, kTile}};
 
     struct Instruction {
         int m0;
@@ -440,34 +443,6 @@ public:
         return 2;
     }
 
-    // One 16x16 tile between HBM and a page. With contiguous columns each row
-    // is four 16 B chunks, so the 64 vectors of the tile map one-to-one onto
-    // the lanes of a wave; any other layout is copied element by element.
-    __device__ static void copy_tile(float* dst, size_t dst_row_stride,
-                                     size_t dst_col_stride, const float* src,
-                                     size_t src_row_stride,
-                                     size_t src_col_stride, int lane) {
-        if (dst_col_stride == 1 && src_col_stride == 1 &&
-            dst_row_stride % kVector == 0 && src_row_stride % kVector == 0 &&
-            copy::aligned<float4>(dst) && copy::aligned<float4>(src)) {
-            for (size_t vector = static_cast<size_t>(lane);
-                 vector < kTileVectors; vector += config::kWaveSize) {
-                const size_t row = vector / kRowVectors;
-                const size_t col = (vector % kRowVectors) * kVector;
-                copy::store_vec<float4>(
-                    dst + row * dst_row_stride + col,
-                    copy::load_vec<float4>(src + row * src_row_stride + col));
-            }
-            return;
-        }
-        for (int i = lane; i < kTileElements; i += config::kWaveSize) {
-            const int row = i / kTile;
-            const int col = i % kTile;
-            dst[row * dst_row_stride + col * dst_col_stride] =
-                src[row * src_row_stride + col * src_col_stride];
-        }
-    }
-
     __device__ void load(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
@@ -479,65 +454,22 @@ public:
         s.wait_page_ready(pid_b);
         s.wait_page_ready(pid_c);
 
-        float* a_page = static_cast<float*>(s.pages[pid_a].ptr());
-        float* b_page = static_cast<float*>(s.pages[pid_b].ptr());
-        const auto a = g.matrix_a;
-        const auto b = g.matrix_b;
+        const auto shape = tensor::Shape<2>{{kTile, kTile}};
+        const auto layout = tensor::StridedLayout<2>{{kTile, 1}};
 
-        const int a_rows = static_cast<int>(a.shape.dims[0]);
-        const int a_cols = static_cast<int>(a.shape.dims[1]);
-        const int b_rows = static_cast<int>(b.shape.dims[0]);
-        const int b_cols = static_cast<int>(b.shape.dims[1]);
+        const size_t a_origin[2] = {static_cast<size_t>(inst.m0),
+                                    static_cast<size_t>(inst.k0)};
+        const auto a_src = tile::make_tile_at(g.matrix_a, kTileShape, a_origin);
+        const auto a_dst = tile::make_lds_view(
+            static_cast<float*>(s.pages[pid_a].ptr()), shape, layout);
+        tile::load_tile(a_dst, a_src, lane, config::kWaveSize);
 
-        const bool a_full = inst.m0 >= 0 && inst.k0 >= 0 &&
-                            inst.m0 + kTile <= a_rows &&
-                            inst.k0 + kTile <= a_cols;
-        if (a_full) {
-            copy_tile(a_page, kTile, 1,
-                      a.data +
-                          static_cast<size_t>(inst.m0) * a.layout.strides[0] +
-                          static_cast<size_t>(inst.k0) * a.layout.strides[1],
-                      a.layout.strides[0], a.layout.strides[1], lane);
-        } else {
-            for (int i = lane; i < kTileElements; i += config::kWaveSize) {
-                const int row = i / kTile;
-                const int col = i % kTile;
-                const int ar = inst.m0 + row;
-                const int ak = inst.k0 + col;
-                a_page[i] =
-                    ar >= 0 && ar < a_rows && ak >= 0 && ak < a_cols
-                        ? a.data[static_cast<size_t>(ar) *
-                                     a.layout.strides[0] +
-                                 static_cast<size_t>(ak) *
-                                     a.layout.strides[1]]
-                        : 0.0f;
-            }
-        }
-
-        const bool b_full = inst.k0 >= 0 && inst.n0 >= 0 &&
-                            inst.k0 + kTile <= b_rows &&
-                            inst.n0 + kTile <= b_cols;
-        if (b_full) {
-            copy_tile(b_page, kTile, 1,
-                      b.data +
-                          static_cast<size_t>(inst.k0) * b.layout.strides[0] +
-                          static_cast<size_t>(inst.n0) * b.layout.strides[1],
-                      b.layout.strides[0], b.layout.strides[1], lane);
-        } else {
-            for (int i = lane; i < kTileElements; i += config::kWaveSize) {
-                const int row = i / kTile;
-                const int col = i % kTile;
-                const int bk = inst.k0 + row;
-                const int bn = inst.n0 + col;
-                b_page[i] =
-                    bk >= 0 && bk < b_rows && bn >= 0 && bn < b_cols
-                        ? b.data[static_cast<size_t>(bk) *
-                                     b.layout.strides[0] +
-                                 static_cast<size_t>(bn) *
-                                     b.layout.strides[1]]
-                        : 0.0f;
-            }
-        }
+        const size_t b_origin[2] = {static_cast<size_t>(inst.k0),
+                                    static_cast<size_t>(inst.n0)};
+        const auto b_src = tile::make_tile_at(g.matrix_b, kTileShape, b_origin);
+        const auto b_dst = tile::make_lds_view(
+            static_cast<float*>(s.pages[pid_b].ptr()), shape, layout);
+        tile::load_tile(b_dst, b_src, lane, config::kWaveSize);
 
         lds::wave_barrier();
         __threadfence_block();
@@ -589,33 +521,13 @@ public:
 
         s.semaphores()[1].wait(0);
 
-        const float* c_page = static_cast<const float*>(s.pages[pid_c].ptr());
-        auto c = g.matrix_c;
-        const int c_rows = static_cast<int>(c.shape.dims[0]);
-        const int c_cols = static_cast<int>(c.shape.dims[1]);
-
-        const bool c_full = inst.m0 >= 0 && inst.n0 >= 0 &&
-                            inst.m0 + kTile <= c_rows &&
-                            inst.n0 + kTile <= c_cols;
-        if (c_full) {
-            copy_tile(c.data +
-                          static_cast<size_t>(inst.m0) * c.layout.strides[0] +
-                          static_cast<size_t>(inst.n0) * c.layout.strides[1],
-                      c.layout.strides[0], c.layout.strides[1], c_page, kTile,
-                      1, lane);
-        } else {
-            for (int i = lane; i < kTileElements; i += config::kWaveSize) {
-                const int row = i / kTile;
-                const int col = i % kTile;
-                const int cr = inst.m0 + row;
-                const int cc = inst.n0 + col;
-                if (cr >= 0 && cr < c_rows && cc >= 0 && cc < c_cols) {
-                    c.data[static_cast<size_t>(cr) * c.layout.strides[0] +
-                           static_cast<size_t>(cc) * c.layout.strides[1]] =
-                        c_page[i];
-                }
-            }
-        }
+        const size_t c_origin[2] = {static_cast<size_t>(inst.m0),
+                                    static_cast<size_t>(inst.n0)};
+        const auto c_dst = tile::make_tile_at(g.matrix_c, kTileShape, c_origin);
+        const auto c_src = tile::make_lds_view(
+            static_cast<const float*>(s.pages[pid_c].ptr()), c_dst.shape,
+            tensor::StridedLayout<2>{{kTile, 1}});
+        tile::copy_tile(c_dst, c_src, lane, config::kWaveSize);
 
         lds::wave_barrier();
         __threadfence_block();

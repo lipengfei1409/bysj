@@ -8,8 +8,10 @@
 #include "copy.h"
 #include "lds.h"
 #include "megakernel.h"
+#include "tile.h"
 #include "state.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <type_traits>
@@ -162,6 +164,131 @@ void test_vector_access() {
     for (size_t i = 3; i < 255; ++i) CHECK(page[i] == 0.0f);
 }
 
+// Tile views: a tile is a logical block (tile_m x tile_n, or tile_b x tile_m
+// x tile_n for rank 3), not a contiguous run of storage, so the tests check
+// the clamped shapes, the copy result and the zero fill of the padded tail.
+void test_tile_views() {
+    using namespace dmk;
+    constexpr size_t kRows = 5;
+    constexpr size_t kCols = 7;
+    auto value = [](size_t row, size_t col) {
+        return static_cast<float>(row * 10 + col);
+    };
+
+    // 2D, row-major.
+    float row_major[kRows * kCols];
+    for (size_t row = 0; row < kRows; ++row)
+        for (size_t col = 0; col < kCols; ++col)
+            row_major[row * kCols + col] = value(row, col);
+    const tensor::Shape<2> shape2{{kRows, kCols}};
+    const tensor::Tensor<const float, 2, tensor::MemorySpace::HBM> matrix{
+        row_major, shape2, tensor::HbmLayout<2>::contiguous(shape2)};
+    const tile::TileShape<2> tile2{{2, 3}};
+    CHECK(tile::tile_count(shape2, tile2, 0) == 3);
+    CHECK(tile::tile_count(shape2, tile2, 1) == 3);
+
+    alignas(16) float buffer[2 * 3];
+    for (size_t tile_row = 0; tile_row < 3; ++tile_row) {
+        for (size_t tile_col = 0; tile_col < 3; ++tile_col) {
+            const size_t coord[2] = {tile_row, tile_col};
+            const auto source = tile::make_tile(matrix, tile2, coord);
+            CHECK(source.shape.dims[0] ==
+                  std::min<size_t>(2, kRows - tile_row * 2));
+            CHECK(source.shape.dims[1] ==
+                  std::min<size_t>(3, kCols - tile_col * 3));
+            const auto destination = tile::make_lds_view(buffer, source.shape);
+            for (size_t worker = 0; worker < 4; ++worker)
+                CHECK(tile::copy_tile(destination, source, worker, 4));
+            bool same = true;
+            for (size_t row = 0; row < source.shape.dims[0]; ++row)
+                for (size_t col = 0; col < source.shape.dims[1]; ++col)
+                    same = same && buffer[row * source.shape.dims[1] + col] ==
+                                       value(tile_row * 2 + row,
+                                             tile_col * 3 + col);
+            CHECK(same);
+        }
+    }
+
+    // A tile past the end is empty and copies nothing.
+    const size_t outside[2] = {3, 0};
+    CHECK(tile::make_tile(matrix, tile2, outside).numel() == 0);
+
+    // load_tile zero-fills the full destination, so the padded rows of an
+    // edge tile read as zero.
+    alignas(16) float padded[2 * 3];
+    for (float& element : padded) element = -1.0f;
+    const size_t edge[2] = {2, 2};  // rows 4..5, cols 6..8 -> 1 x 1
+    const auto edge_source = tile::make_tile(matrix, tile2, edge);
+    const auto edge_destination =
+        tile::make_lds_view(padded, tensor::Shape<2>{{2, 3}});
+    for (size_t worker = 0; worker < 4; ++worker)
+        CHECK(tile::load_tile(edge_destination, edge_source, worker, 4));
+    CHECK(padded[0] == value(4, 6));
+    for (size_t i = 1; i < 6; ++i) CHECK(padded[i] == 0.0f);
+
+    // 2D, column-major: the tile keeps the parent strides, so the copy must
+    // see the same logical block.
+    float column_major[kRows * kCols];
+    for (size_t row = 0; row < kRows; ++row)
+        for (size_t col = 0; col < kCols; ++col)
+            column_major[col * kRows + row] = value(row, col);
+    const tensor::Tensor<const float, 2, tensor::MemorySpace::HBM> transposed{
+        column_major, shape2, tensor::HbmLayout<2>{{1, kRows}}};
+    const size_t coord[2] = {1, 1};
+    const auto source = tile::make_tile(transposed, tile2, coord);
+    CHECK(source.shape.dims[0] == 2 && source.shape.dims[1] == 3);
+    const auto destination = tile::make_lds_view(buffer, source.shape);
+    for (size_t worker = 0; worker < 4; ++worker)
+        CHECK(tile::copy_tile(destination, source, worker, 4));
+    bool same = true;
+    for (size_t row = 0; row < 2; ++row)
+        for (size_t col = 0; col < 3; ++col)
+            same = same && buffer[row * 3 + col] == value(2 + row, 3 + col);
+    CHECK(same);
+
+    // make_tile_at: a block at an arbitrary origin, which is what instruction
+    // words carry (e.g. a GEMM tile at (m0, n0) that need not be 16-aligned).
+    const size_t origin[2] = {1, 2};
+    const auto block = tile::make_tile_at(matrix, tile2, origin);
+    CHECK(block.shape.dims[0] == 2 && block.shape.dims[1] == 3);
+    const auto block_destination = tile::make_lds_view(buffer, block.shape);
+    for (size_t worker = 0; worker < 4; ++worker)
+        CHECK(tile::copy_tile(block_destination, block, worker, 4));
+    same = true;
+    for (size_t row = 0; row < 2; ++row)
+        for (size_t col = 0; col < 3; ++col)
+            same = same && buffer[row * 3 + col] == value(1 + row, 2 + col);
+    CHECK(same);
+
+    // 3D, batched: [2, 5, 7] with tile [1, 2, 3].
+    float batched[2 * kRows * kCols];
+    for (size_t batch = 0; batch < 2; ++batch)
+        for (size_t row = 0; row < kRows; ++row)
+            for (size_t col = 0; col < kCols; ++col)
+                batched[(batch * kRows + row) * kCols + col] =
+                    value(row, col) + static_cast<float>(batch) * 100.0f;
+    const tensor::Shape<3> shape3{{2, kRows, kCols}};
+    const tensor::Tensor<const float, 3, tensor::MemorySpace::HBM> batch{
+        batched, shape3, tensor::HbmLayout<3>::contiguous(shape3)};
+    const tile::TileShape<3> tile3{{1, 2, 3}};
+    CHECK(tile::tile_count(shape3, tile3, 0) == 2);
+    CHECK(tile::tile_count(shape3, tile3, 1) == 3);
+    CHECK(tile::tile_count(shape3, tile3, 2) == 3);
+
+    alignas(16) float tile3_buffer[1 * 2 * 3];
+    const size_t coord3[3] = {1, 2, 1};
+    const auto source3 = tile::make_tile(batch, tile3, coord3);
+    CHECK(source3.shape.dims[0] == 1 && source3.shape.dims[1] == 1 &&
+          source3.shape.dims[2] == 3);
+    const auto destination3 = tile::make_lds_view(tile3_buffer, source3.shape);
+    for (size_t worker = 0; worker < 4; ++worker)
+        CHECK(tile::copy_tile(destination3, source3, worker, 4));
+    same = true;
+    for (size_t col = 0; col < 3; ++col)
+        same = same && tile3_buffer[col] == value(4, 3 + col) + 100.0f;
+    CHECK(same);
+}
+
 void test_globals_contract() {
     const Shape<3> instruction_shape{{2, 4, 32}};
     const Shape<1> data_shape{{2048}};
@@ -210,6 +337,7 @@ int main() {
     test_phase_arithmetic();
     test_page_permutation();
     test_vector_access();
+    test_tile_views();
     test_globals_contract();
     if (failures != 0) {
         std::fprintf(stderr, "%d LDS host check(s) failed\n", failures);

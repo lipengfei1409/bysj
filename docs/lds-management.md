@@ -466,6 +466,12 @@ dtype 与 MMA 尺寸按 DUMMA 手册表 3.1 用模板参数表达（累加器固
 | `__hip_bfloat16` | m16n16k16 | gfx928 / 936 / 938 |
 
 `K` 只影响每条 MMA 的 k 步长和 LDS staging 大小，wave/staging/epilogue 三者共用。
+
+算子用 tile 视图寻址（`csrc/dmk/tile.h`）：tile 是逻辑数据块而不是连续存储，
+`make_tile(tensor, tile, coord)` / `make_tile_at(tensor, tile, origin)` 取一个块并
+在边界 clamp，`load_tile` / `copy_tile` 一次搬一个 tile（HBM ↔ LDS），每个算子自己
+定 `TileShape`（GemmOp 16×16，AttentionOp 16×D），rank 2 / rank 3（带 batch 维）
+通用。GemmOp 和 AttentionOp 的 `load()/store()` 已经是每页一个 tile 的一次拷贝。
 不支持的 `(T, K)` 组合会在 `mma_supported` 的 `static_assert` 处报错；测试 runner
 按 `--offload-arch` 决定是否定义 `DMK_MMA_F32K8` / `DMK_MMA_F16`。attention 的
 Q/K/V/O 同 dtype（float / `__half` / `__hip_bfloat16`），内部统一转 float 计算。
@@ -521,6 +527,7 @@ python tests/csrc/run_dmk_ops_test.py --op attention
 | `csrc/dmk/embedding.h` | `EmbeddingOp<Globals>` |
 | `csrc/dmk/attention.h` | `AttentionGlobalsT<T>`、`AttentionOp<Globals>`（page 版 flash attention，opcode 5） |
 | `csrc/dmk/dtype.h` | float/`__half`/`__hip_bfloat16` 与 float 之间的转换 trait |
+| `csrc/dmk/tile.h` | `TileShape`、`TileView`、`make_tile(_at)`、`load_tile`/`copy_tile`（2D/3D tile 视图） |
 | `csrc/dmk/megakernel.h` | `MkGlobals`、`mk_internal`、`mk` kernel 模板、`launch_mk` 声明 |
 | `csrc/megakernel.cpp` | demo kernel 实例、动态 LDS/设备检查、`launch_mk` |
 | `tests/csrc/test_dmk_lds.cpp` | host 逻辑测试 |
