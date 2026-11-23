@@ -62,6 +62,15 @@ class AbReportTests(unittest.TestCase):
         lines = ab_report.verdict(ab_report.report(self.root, ["base", "kc3"]))
         self.assertTrue(any("routed OFF" in line for line in lines), lines)
 
+    def test_bare_and_prefixed_tags_both_resolve(self) -> None:
+        # `e2e_kc3` on disk versus `kc3` on the command line is how a correct
+        # set of runs read as MISSING.
+        _write(self.root, "e2e_kc3", device_ms=880.0, conv_ms=620.0)
+        for tag in ("e2e_kc3", "kc3"):
+            row = ab_report.report(self.root, [tag])[0]
+            self.assertFalse(row.get("missing"), tag)
+            self.assertAlmostEqual(row["device_ms"], 880.0, places=3)
+
     def test_missing_run_is_an_error_and_names_the_expected_path(self) -> None:
         import contextlib
         import io

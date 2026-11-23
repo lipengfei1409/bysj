@@ -35,8 +35,19 @@ NOISE_MS = 20.0
 
 
 def _summary(root: Path, tag: str) -> Path | None:
-    paths = sorted(glob.glob(str(root / tag / "dpa4_*" / "dpa4_inference_profile_summary.json")))
-    return Path(paths[-1]) if paths else None
+    """Find one run's summary, accepting either ``<tag>`` or ``e2e_<tag>``.
+
+    The directories carry an ``e2e_`` prefix while the conversation -- and the
+    shell loop that produced them -- used bare tags, which is exactly how a
+    correct set of runs reads as MISSING.
+    """
+    for name in (tag, tag if tag.startswith("e2e_") else f"e2e_{tag}"):
+        paths = sorted(
+            glob.glob(str(root / name / "dpa4_*" / "dpa4_inference_profile_summary.json"))
+        )
+        if paths:
+            return Path(paths[-1])
+    return None
 
 
 def _device_ms(summary: dict) -> float | None:
@@ -60,7 +71,10 @@ def report(root: Path, tags: list[str]) -> list[dict]:
                 {
                     "tag": tag,
                     "missing": True,
-                    "expected": str(root / tag / "dpa4_*/dpa4_inference_profile_summary.json"),
+                    "expected": str(
+                        root / (tag if tag.startswith("e2e_") else f"e2e_{tag}")
+                        / "dpa4_*/dpa4_inference_profile_summary.json"
+                    ),
                 }
             )
             continue
