@@ -206,16 +206,20 @@ registered: True
 
 **未验证**：性能。算子算得对不等于算得快，下一步是端到端 A/B。
 
-## 6. 与 DeepMD 的接线（下一步）
+## 6. 接线（已实现）
 
-算子注册只是第一半；要让模型真的走到它，还需要：
+`python/model/so2_conv_hip.py` 把两道门打开，`DPA4Model(..., so2_conv="hip")` 与
+profile CLI 的 `--so2-conv hip` 都走它：
 
-1. 在构造 `DeepPot` **之前**设 `DP_CUDA_INFER=2`（gates 在模型构造时读取）；
-2. 绕过 `_profitable`（它拿 Triton 组合当基准，而 Triton 在本机编不出来），
-   并把这个判断写进 `FusedStats`，不要静默；
-3. 用 `verify_fused.py` 的 e2e 判据对比：`fused` 计数、launch 数、设备时间。
+1. 加载扩展（`csrc/so2_conv_hip/build.py` 的 `build()`）；
+2. 在**构造 `DeepPot` 之前**把 `DP_CUDA_INFER` 抬到 2（`cuda_infer_level()` 在模型构造时读取）；
+3. 把 `deepmd.pt_expt.kernels.cuda.dpa4.so2_conv._profitable` 替换为恒真，并在
+   `status()` / summary 的 `so2_conv` 字段里**显式记录**这个覆盖——它是工程判断
+   （基准是稠密路径而非 Triton），不是上游的推荐；
+4. `disable()` 还原判据与环境变量（CLI 进程内保持开启，因为 force 路径每次调用都会重读该门）。
 
-第 1、2 步是 `DPA4Model` 的事，改动很小，但**必须先有本文 §4 的 `registered: True`**。
+前置条件都满足后才允许：`registered` 为假时 `enable()` 返回原因、不碰判据，
+`DPA4Model` 直接抛 `RuntimeError` 而不是静默退回稠密。
 
 ## 7. 验证清单
 
@@ -228,4 +232,5 @@ registered: True
 | ridge 用 HIP 属性重算 | 同上 | ✅ |
 | **能编译、能注册** | DCU：`python3 csrc/so2_conv_hip/build.py --check` | ✅ 2026-11-23，5 个算子全部 ok，ridge=24.0 |
 | **数值与稠密一致** | DCU：`tests/dcu/run_upstream_conv_test.py` | ✅ 2026-11-23：**10 passed / 55 subtests**（前向 vs 稠密逐 zoo、反向 vs autograd、归约可复现、make_fx、零边、零 envelope、多头拒绝） |
-| **端到端收益** | DCU：`verify_fused.py --stage all` | ⬜ 待跑 |
+| **接线** | `--so2-conv hip` / `DPA4Model(so2_conv="hip")` | ✅ 主机 6 项测试 |
+| **端到端收益** | DCU：`--so2-conv hip` 的 A/B | ⬜ 待跑 |

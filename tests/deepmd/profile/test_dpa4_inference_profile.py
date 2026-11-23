@@ -776,6 +776,23 @@ def _run_dpa4(args) -> int:
     args.device = str(device)
     triton_report = _triton_report(args)
     print("Requested Triton path: " + json.dumps(triton_report), flush=True)
+    # Upstream binds the fused SO(2) convolution while the descriptor is built,
+    # so this has to run before the checkpoint is loaded (and stays enabled for
+    # the process: the force path re-reads the same gate per call).
+    so2_conv_report: dict[str, Any] = {}
+    if getattr(args, "so2_conv", "off") == "hip":
+        from model.so2_conv_hip import enable as enable_so2_conv_hip
+
+        so2_conv_report = dict(enable_so2_conv_hip(verbose=True))
+        print(
+            "Fused SO(2) convolution: " + json.dumps(so2_conv_report, sort_keys=True),
+            flush=True,
+        )
+        if not so2_conv_report.get("enabled"):
+            raise RuntimeError(
+                "so2_conv=hip could not route the fused convolution: "
+                + str(so2_conv_report.get("reason", "unknown"))
+            )
     model = _construct_deepmd_model(args)
     fused_report: dict[str, Any] = {}
     fused_stats: Any = None
@@ -932,6 +949,8 @@ def _run_dpa4(args) -> int:
             **memory_report,
             **timing_report,
         }
+        if so2_conv_report:
+            report["so2_conv"] = so2_conv_report
         if fused_stats is not None:
             fused_report = dict(fused_stats.as_dict())
             fused_report["requested"] = args.fused
@@ -1436,6 +1455,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="bind this project's fused HIP operators into the loaded DeepMD "
              "model before profiling (off by default); 'on' installs the seams "
              "that measured positive, 'all' installs every seam",
+    )
+    dpa4.add_argument(
+        "--so2-conv", choices=("off", "hip"), default="off",
+        help="route DeepMD's fused SO(2) convolution through this project's HIP "
+             "port (builds/loads the extension, raises DP_CUDA_INFER to 2 and "
+             "overrides upstream's profitability guard; see "
+             "docs/so2-conv-hip.md)",
     )
     dpa4.add_argument(
         "--triton-infer", type=int, choices=(0, 1, 2, 3), default=None,

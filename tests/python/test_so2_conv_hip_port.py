@@ -258,6 +258,97 @@ class BuildGuardTests(unittest.TestCase):
         self.assertNotIn("cpp_extension.load(", text)
 
 
+class RoutingTests(unittest.TestCase):
+    """`model.so2_conv_hip` opens upstream's two gates and restores them."""
+
+    def setUp(self) -> None:
+        import types
+
+        from model import so2_conv_hip
+
+        self.module = so2_conv_hip
+        self.original_env = os.environ.pop("DP_CUDA_INFER", None)
+        self.guard = types.SimpleNamespace(_profitable=lambda conv: False)
+        self.built = []
+
+        def fake_build_module():
+            class Stub:
+                @staticmethod
+                def build(*, force=False, verbose=False):
+                    self.built.append((force, verbose))
+
+                @staticmethod
+                def registered():
+                    return True
+
+            return Stub
+
+        self._real_load = so2_conv_hip._load_build_module
+        self._real_guard = so2_conv_hip._guard_module
+        so2_conv_hip._load_build_module = fake_build_module
+        so2_conv_hip._guard_module = lambda: self.guard
+
+    def tearDown(self) -> None:
+        self.module._load_build_module = self._real_load
+        self.module._guard_module = self._real_guard
+        self.module.disable()
+        os.environ.pop("DP_CUDA_INFER", None)
+        if self.original_env is not None:
+            os.environ["DP_CUDA_INFER"] = self.original_env
+
+    def test_enable_raises_the_construction_gate_first(self) -> None:
+        status = self.module.enable()
+        self.assertTrue(status["enabled"])
+        self.assertTrue(status["guard_overridden"])
+        self.assertEqual(os.environ["DP_CUDA_INFER"], "2")
+        self.assertEqual(self.built, [(False, False)])
+
+    def test_enable_patches_the_profitability_guard(self) -> None:
+        self.assertFalse(self.guard._profitable(object()))
+        self.module.enable()
+        self.assertTrue(self.guard._profitable(object()))
+
+    def test_disable_restores_guard_and_environment(self) -> None:
+        original = self.guard._profitable
+        self.module.enable()
+        self.module.disable()
+        self.assertIs(self.guard._profitable, original)
+        self.assertNotIn("DP_CUDA_INFER", os.environ)
+
+    def test_enable_is_idempotent(self) -> None:
+        self.module.enable()
+        status = self.module.enable()
+        self.assertEqual(status.get("reason"), "already enabled")
+        self.assertEqual(len(self.built), 1)
+
+    def test_a_failed_build_leaves_the_guard_alone(self) -> None:
+        def failing():
+            class Stub:
+                @staticmethod
+                def build(*, force=False, verbose=False):
+                    raise RuntimeError("no visible DCU")
+
+                @staticmethod
+                def registered():
+                    return False
+
+            return Stub
+
+        original = self.guard._profitable
+        self.module._load_build_module = failing
+        status = self.module.enable()
+        self.assertFalse(status["enabled"])
+        self.assertIn("no visible DCU", status["reason"])
+        self.assertIs(self.guard._profitable, original)
+
+    def test_status_reports_the_override(self) -> None:
+        self.module.enable()
+        status = self.module.status()
+        self.assertTrue(status["enabled"])
+        self.assertTrue(status["guard_overridden"])
+        self.assertEqual(status["DP_CUDA_INFER"], "2")
+
+
 class UpstreamRunnerTests(unittest.TestCase):
     """The runner that points DeepMD's own conv tests at this port."""
 
