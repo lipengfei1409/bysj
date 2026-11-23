@@ -75,6 +75,7 @@ class FusedStats:
     bound_pack: bool = False
     blocks: int = 0
     last_error: str | None = None
+    errors: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +96,7 @@ class FusedStats:
             "bound_pack": self.bound_pack,
             "blocks": self.blocks,
             "last_error": self.last_error,
+            "errors": dict(self.errors),
         }
 
 
@@ -208,7 +210,7 @@ class _Session:
             if isinstance(alpha, tuple):
                 alpha = alpha[0]
         except Exception as error:  # noqa: BLE001 - fall back, never break inference
-            self._record(error)
+            self._record(error, "softmax")
             stats.softmax_fallbacks += 1
             return self.reference_softmax(
                 logits, edge_env, dst, n_nodes, z_bias_raw, eps, None
@@ -264,7 +266,7 @@ class _Session:
                 order=order,
             )
         except Exception as error:  # noqa: BLE001 - fall back, never break inference
-            self._record(error)
+            self._record(error, "envelope")
             stats.envelope_fallbacks += 1
             return original(x, edge_cache, radial_feat)
         stats.envelope_hits += 1
@@ -317,16 +319,24 @@ class _Session:
                 n_focus, gate_scalar_source.shape[1], int(block.lmax), channels
             )
             value_rows = x.narrow(degree_axis, 1, rows - 1)
+            source_rows = gating_scalars.reshape(
+                n_focus * n_edge, int(block.lmax), channels
+            )
+            scale_rows = value_rows.reshape(n_focus * n_edge, rows - 1, channels)
+            # Narrowing along the degree axis leaves strides that reshape cannot
+            # collapse, and the native op requires dense inputs.
+            if not source_rows.is_contiguous():
+                source_rows = source_rows.contiguous()
+            if not scale_rows.is_contiguous():
+                scale_rows = scale_rows.contiguous()
             packed = self.slot_ops.slot_pack_scale(
-                gating_scalars.reshape(n_focus * n_edge, int(block.lmax), channels),
-                expand_index,
-                value_rows.reshape(n_focus * n_edge, rows - 1, channels),
+                source_rows, expand_index, scale_rows
             ).reshape(n_focus, n_edge, rows - 1, channels)
             out = x.new_empty(x.shape)
             out.narrow(degree_axis, 0, 1).copy_(x0)
             out.narrow(degree_axis, 1, rows - 1).copy_(packed)
         except Exception as error:  # noqa: BLE001 - fall back, never break inference
-            self._record(error)
+            self._record(error, "pack")
             stats.pack_fallbacks += 1
             return _call_forward(original, x, gate)
         stats.pack_hits += 1
@@ -356,15 +366,9 @@ class _Session:
         """
         stats = self.stats
         dst = getattr(edge_cache, "dst", None)
-        if (
-            not _usable_tensor(x)
-            or not isinstance(dst, torch.Tensor)
-            or dst.dtype != torch.int64
-            or dst.ndim != 1
-            or dst.numel() == 0
-            or not _usable_tensor(x_l0_node)
-            or any(not hasattr(block, name) for name in self._BLOCK_ATTRIBUTES)
-        ):
+        reason = self._aggregate_reason(block, x, dst, x_l0_node)
+        if reason is not None:
+            self._note("aggregate", "guard: " + reason)
             stats.aggregate_fallbacks += 1
             return original(x, edge_cache, radial_feat, x_l0_node)
         n_node = int(x.shape[0])
@@ -418,7 +422,7 @@ class _Session:
                 n_node, block.ebed_dim_full, block.hidden_channels
             ).to(dtype=block.dtype)
         except Exception as error:  # noqa: BLE001 - fall back, never break inference
-            self._record(error)
+            self._record(error, "aggregate")
             stats.aggregate_fallbacks += 1
             return original(x, edge_cache, radial_feat, x_l0_node)
         stats.aggregate_hits += 1
@@ -444,19 +448,11 @@ class _Session:
         """
         stats = self.stats
         edges = int(g.shape[0]) if isinstance(g, torch.Tensor) else -1
-        if (
-            not _usable_tensor(g)
-            or not _usable_tensor(edge_vec)
-            or g.shape != edge_vec.shape
-            or g.shape[-1] != 3
-            or not _usable_tensor(dst_row_ptr, dtype=torch.int64)
-            or not _usable_tensor(src_row_ptr, dtype=torch.int64)
-            or not _usable_tensor(dst_order, dtype=torch.int64)
-            or not _usable_tensor(src_order, dtype=torch.int64)
-            or dst_order.numel() != edges
-            or src_order.numel() != edges
-            or dst_row_ptr.numel() != src_row_ptr.numel()
-        ):
+        reason = self._force_reason(
+            g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr
+        )
+        if reason is not None:
+            self._note("force", "guard: " + reason)
             stats.force_fallbacks += 1
             return self._force_fallback(
                 g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr
@@ -473,7 +469,7 @@ class _Session:
                 dst_order=dst_order,
             )
         except Exception as error:  # noqa: BLE001 - fall back, never break inference
-            self._record(error)
+            self._record(error, "force")
             stats.force_fallbacks += 1
             return self._force_fallback(
                 g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr
@@ -496,8 +492,57 @@ class _Session:
         virial.index_add_(0, src_ext, w_edge)
         return force, virial
 
-    def _record(self, error: Exception) -> None:
-        self.stats.last_error = f"{type(error).__name__}: {error}"
+    def _note(self, seam: str, message: str) -> None:
+        """Record why a seam's guard rejected a call."""
+        self.stats.errors[seam] = message
+        self.stats.last_error = f"{seam}: {message}"
+
+    @staticmethod
+    def _force_reason(g, edge_vec, dst_order, dst_row_ptr, src_order, src_row_ptr):
+        if not isinstance(g, torch.Tensor):
+            return "g is not a tensor"
+        edges = int(g.shape[0])
+        if not _usable_tensor(g):
+            return "g is not a contiguous fp32 CUDA tensor"
+        if not _usable_tensor(edge_vec):
+            return "edge_vec is not a contiguous fp32 CUDA tensor"
+        if g.shape != edge_vec.shape or g.shape[-1] != 3:
+            return (f"g/edge_vec are not both (E, 3): {tuple(g.shape)} vs "
+                    f"{tuple(edge_vec.shape)}")
+        if not _usable_tensor(dst_row_ptr, dtype=torch.int64):
+            return "dst_row_ptr is not a contiguous int64 CUDA tensor"
+        if not _usable_tensor(src_row_ptr, dtype=torch.int64):
+            return "src_row_ptr is not a contiguous int64 CUDA tensor"
+        if dst_row_ptr.numel() != src_row_ptr.numel():
+            return (f"the offsets describe different atom counts: "
+                    f"{dst_row_ptr.numel()} vs {src_row_ptr.numel()}")
+        for name, order in (("dst_order", dst_order), ("src_order", src_order)):
+            if not _usable_tensor(order, dtype=torch.int64):
+                return f"{name} is not a contiguous int64 CUDA tensor"
+            if order.numel() != edges:
+                return f"{name} has {order.numel()} entries for {edges} edges"
+        return None
+
+    def _aggregate_reason(self, block, x, dst, x_l0_node):
+        if not _usable_tensor(x):
+            return "x is not a contiguous fp32 CUDA tensor"
+        if (not isinstance(dst, torch.Tensor) or dst.dtype != torch.int64
+                or dst.ndim != 1 or dst.numel() == 0):
+            return "edge_cache.dst is not a non-empty int64 vector"
+        if not _usable_tensor(x_l0_node):
+            return "x_l0_node is not a contiguous fp32 CUDA tensor"
+        missing = [name for name in self._BLOCK_ATTRIBUTES
+                   if not hasattr(block, name)]
+        if missing:
+            return "block is missing " + ", ".join(missing)
+        return None
+
+    def _record(self, error: Exception, seam: str = "") -> None:
+        message = f"{type(error).__name__}: {error}"
+        if seam:
+            self.stats.errors[seam] = message
+            message = f"{seam}: {message}"
+        self.stats.last_error = message
         if not self.warned:
             self.warned = True
             warnings.warn(

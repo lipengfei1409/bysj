@@ -24,6 +24,7 @@ def _summary(*, device_us: float, launches: int, hits: dict | None = None,
              fallbacks: dict | None = None, last_error: str = "") -> dict:
     return {
         "device_event_count": launches,
+        "trace_analysis": {"device_kernel_calls": launches},
         "top_profiler_events": [
             {"name": "dpa4/inference.single_energy_force", "self_device_us": device_us},
         ],
@@ -212,6 +213,16 @@ class JudgeTests(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertTrue(any("device time did not drop" in m for m in messages))
+
+    def test_unique_event_count_is_not_the_launch_count(self) -> None:
+        # A fused path adds kernel names, so device_event_count can rise while
+        # the launch count falls; the verdict must follow the launches.
+        baseline = _summary(device_us=1_218_600.0, launches=2614)
+        patched = _summary(device_us=1_200_000.0, launches=2543)
+        patched["device_event_count"] = 251
+        ok, messages = verify_fused.judge(baseline, patched)
+        self.assertTrue(ok, messages)
+        self.assertTrue(any("launches 2614 -> 2543" in m for m in messages))
 
     def test_missing_device_total_fails(self) -> None:
         ok, messages = verify_fused.judge(

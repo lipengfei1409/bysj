@@ -164,14 +164,18 @@ def judge(baseline: dict, patched: dict) -> tuple[bool, list[str]]:
         ok = False
         messages.append(f"FAIL last_error: {fused['last_error']}")
 
-    base_launches = baseline.get("device_event_count")
-    fused_launches = patched.get("device_event_count")
-    if isinstance(base_launches, int) and isinstance(fused_launches, int):
-        if fused_launches >= base_launches:
-            ok = False
-            messages.append(f"FAIL launch count did not drop: {base_launches} -> {fused_launches}")
-        else:
-            messages.append(f"ok   launches {base_launches} -> {fused_launches} ({fused_launches - base_launches:+d})")
+    base_launches = _launch_count(baseline)
+    fused_launches = _launch_count(patched)
+    if base_launches is None or fused_launches is None:
+        messages.append("skip launch criterion: trace_analysis.device_kernel_calls missing")
+    elif fused_launches >= base_launches:
+        ok = False
+        messages.append(f"FAIL launch count did not drop: {base_launches} -> {fused_launches}")
+    else:
+        messages.append(
+            f"ok   launches {base_launches} -> {fused_launches} "
+            f"({fused_launches - base_launches:+d})"
+        )
 
     base_ms, fused_ms = _device_ms(baseline), _device_ms(patched)
     if base_ms is None or fused_ms is None:
@@ -194,6 +198,16 @@ def judge(baseline: dict, patched: dict) -> tuple[bool, list[str]]:
 def _latest_summary(root: Path) -> Path | None:
     found = sorted(glob.glob(str(root / "**" / "dpa4_inference_profile_summary.json"), recursive=True))
     return Path(found[-1]) if found else None
+
+
+def _launch_count(summary: dict) -> int | None:
+    """Kernel launches per the trace analysis.
+
+    ``device_event_count`` counts *unique* profiler event names, which a fused
+    path can raise by adding kernels, so it cannot judge the launch count.
+    """
+    value = (summary.get("trace_analysis") or {}).get("device_kernel_calls")
+    return value if isinstance(value, int) else None
 
 
 def _status_text(status: str | bool) -> str:
