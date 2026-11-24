@@ -542,6 +542,33 @@ python tests/csrc/run_dmk_ops_test.py --op attention
 
 ---
 
+### 5.9 指令流构建（Python 侧）
+
+运行时只认一张 `(blocks, num_instructions, 32)` 的 `int32` 张量；它由
+`python/kernels/mk_stream.py` 在主机侧构建：
+
+```python
+from kernels.mk_stream import InstructionStream, attention, gemm, noop
+
+stream = InstructionStream(blocks=3)
+for tile in range(3):
+    stream.emit(tile, attention(query_tile=tile, num_keys=4096, dim=64))
+stream.emit(0, gemm(m0=0, n0=0, k_tiles=64))     # 同一 block 的第二条指令
+instructions = stream.tensor()                    # (3, 2, 32) int32，短的 block 用 NoOp 补齐
+```
+
+- 每个 op 一个编码函数，字布局与 C++ 的 `Instruction` 结构逐字对应：
+  `noop` / `elementwise(tile, count, scale, bias)` / `gemm(m0, n0, k_tiles)` /
+  `embedding(src_row, dst_row, count)` / `attention(query_tile, num_keys, dim)`；
+- `float` 参数按 `__float_as_int` 的位模式写（小端有符号 32 位重解释）；
+- `InstructionStream.emit(block, instr)` 追加，`tensor()` 把每个 block 补齐到统一长度
+  （`NoOp` 填充），这正是控制器按 `blockIdx.x` 取指的布局；
+- `attention_stream(query_tiles, blocks=..., num_keys=..., dim=...)` 是「每个 query
+  tile 一条指令、按 block 轮转」的现成用法；
+- `validate()` 在送设备前拒绝空流和未知 opcode。
+
+---
+
 ## 6. 代码结构
 
 | 文件 | 内容 |
@@ -561,6 +588,7 @@ python tests/csrc/run_dmk_ops_test.py --op attention
 | `csrc/dmk/tile.h` | `TileShape`、`TileView`、`make_tile(_at)`、`load_tile`/`copy_tile`（2D/3D tile 视图） |
 | `csrc/dmk/megakernel.h` | `MkGlobals`、`mk_internal`、`mk` kernel 模板、`launch_mk` 声明 |
 | `csrc/megakernel.cpp` | demo kernel 实例、动态 LDS/设备检查、`launch_mk` |
+| `python/kernels/mk_stream.py` | 主机侧指令流/图构建（op 编码 + `InstructionStream` + `attention_stream`） |
 | `tests/csrc/test_dmk_lds.cpp` | host 逻辑测试 |
 | `tests/csrc/test_dmk_lds_megakernel.cpp` | DCU 设备测试 |
 | `tests/csrc/test_dmk_gemm_standalone.cpp` | 独立 GEMM 算子测试（CPU 参考） |
@@ -568,6 +596,7 @@ python tests/csrc/run_dmk_ops_test.py --op attention
 | `tests/csrc/test_dmk_tile.cpp` | tile 视图/拷贝测试（host + 可选设备往返） |
 | `tests/csrc/run_dmk_ops_test.py` | 独立算子测试的 hipcc 直编 + 运行 |
 | `tests/csrc/run_dmk_lds_test.py` | hipcc 直编 + 运行 |
+| `tests/python/test_mk_stream.py` | 指令编码/补齐/轮转的主机测试 |
 
 ---
 
