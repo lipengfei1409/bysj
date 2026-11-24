@@ -63,3 +63,14 @@ Tensor edge_combine_hip(std::vector<Tensor> factors,
 Tensor slot_pack_scale_hip(Tensor src, Tensor slot, c10::optional<Tensor> scale);
 
 Tensor slot_reduce_hip(Tensor src, c10::optional<Tensor> weight);
+
+// --- C7-a/C7-b: monomial runs and the block-diagonal mixing GEMM ----------
+
+Tensor monomial_runs_hip(Tensor q, Tensor exps, Tensor coeff);
+
+Tensor monomial_runs_backward_hip(Tensor grad_runs, Tensor q, Tensor dexp,
+                                  Tensor dcoeff);
+
+Tensor blockdiag_gemm_hip(Tensor x, Tensor weights, Tensor offsets);
+
+Tensor blockdiag_gemm_backward_hip(Tensor grad_out, Tensor weights, Tensor offsets);

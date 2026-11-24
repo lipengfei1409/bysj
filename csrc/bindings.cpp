@@ -30,6 +30,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("slot"), py::arg("scale") = py::none());
   m.def("slot_reduce", &slot_reduce_hip, py::arg("src"),
         py::arg("weight") = py::none());
+  m.def("monomial_runs", &monomial_runs_hip, py::arg("q"), py::arg("exps"),
+        py::arg("coeff"));
+  m.def("monomial_runs_backward", &monomial_runs_backward_hip,
+        py::arg("grad_runs"), py::arg("q"), py::arg("dexp"), py::arg("dcoeff"));
+  m.def("blockdiag_gemm", &blockdiag_gemm_hip, py::arg("x"),
+        py::arg("weights"), py::arg("offsets"));
+  m.def("blockdiag_gemm_backward", &blockdiag_gemm_backward_hip,
+        py::arg("grad_out"), py::arg("weights"), py::arg("offsets"));
   m.def("edge_combine", &edge_combine_hip, py::arg("factors"),
         py::arg("modes"), py::arg("coefficients"), py::arg("term_starts"),
         py::arg("term_counts"), py::arg("edges"), py::arg("rows"),

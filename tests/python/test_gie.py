@@ -62,6 +62,8 @@ class GIEBuildConfigurationTests(unittest.TestCase):
                 "csrc/force_assembly.cpp",
                 "csrc/slot_ops.cpp",
                 "csrc/edge_combine.cpp",
+    "csrc/monomial.cpp",
+    "csrc/blockdiag.cpp",
             ],
         )
         self.assertEqual(extension_args["define_macros"], [])

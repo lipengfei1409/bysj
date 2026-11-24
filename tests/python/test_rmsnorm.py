@@ -53,6 +53,8 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
                 "csrc/force_assembly.cpp",
                 "csrc/slot_ops.cpp",
                 "csrc/edge_combine.cpp",
+    "csrc/monomial.cpp",
+    "csrc/blockdiag.cpp",
             ],
         )
         self.assertEqual(extension["define_macros"], [])
