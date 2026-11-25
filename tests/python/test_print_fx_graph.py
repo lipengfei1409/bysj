@@ -33,6 +33,14 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(module.op_name(torch.ops.aten.bmm.default), "aten.bmm")
         self.assertEqual(module.op_name(torch.ops.aten.mul.Tensor), "aten.mul")
 
+    def test_every_overload_collapses_to_the_base_name(self) -> None:
+        # The trace prints the resolved overload (``aten.sum.dim_IntList``);
+        # the family table must see ``sum`` either way.
+        module = _module()
+        self.assertEqual(module.op_name(torch.ops.aten.sum.dim_IntList), "aten.sum")
+        self.assertEqual(module.op_name(torch.ops.aten.mul.Tensor), "aten.mul")
+        self.assertEqual(module.family_of(torch.ops.aten.sum.dim_IntList), "reduce")
+
     def test_families_follow_the_base_name(self) -> None:
         module = _module()
         self.assertEqual(module.family_of(torch.ops.aten.bmm.default), "gemm")

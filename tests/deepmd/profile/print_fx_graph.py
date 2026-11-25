@@ -14,11 +14,22 @@ graph (block-diagonal SO(2) contraction on any non-CPU target, the fused GIE
 scatter on CUDA).  So ``--device cpu`` is the honest CPU graph, and
 ``--device cuda`` is the DCU-oriented graph, both traced on CPU.
 
+The graph is traced through ``forward_common_lower`` rather than the export
+wrapper, because a spin checkpoint (``has_spin``) takes a signature the wrapper
+does not accept.  ``--mode atomic`` traces the energy path; the force path calls
+``autograd.grad`` inside the graph, and ``make_fx`` cannot trace that on this
+checkpoint (``The differentiated Tensor at index 1 appears to not have been
+used``), so ``--mode full`` reports that instead of pretending.
+
+``--stub-lib`` lets this run on a CPU-only host that has the DeepMD *source*
+but not the compiled ``deepmd.lib``: the graph is the dense reference path, so
+the extension is never called.
+
 Usage::
 
     python tests/deepmd/profile/print_fx_graph.py --model-file "$MODEL" --summary
     python tests/deepmd/profile/print_fx_graph.py --model-file "$MODEL" \\
-        --device cuda --out /tmp/dpa4_cuda.fx.txt
+        --stub-lib --out /tmp/dpa4_cpu.fx.txt
 
 The full text goes to stdout and, with ``--out``, to a file; ``--summary``
 prints only the header and the op-family table.
@@ -156,9 +167,11 @@ def op_name(target) -> str:
         text = str(target)
     if "torch.ops." in text:
         text = text.split("torch.ops.", 1)[1]
-    for suffix in (".default", ".Tensor", ".Scalar"):
-        if text.endswith(suffix):
-            text = text[: -len(suffix)]
+    # ``aten.sum.dim_IntList`` / ``aten.mul.Tensor`` / ``aten.bmm.default``:
+    # the last component is the overload, not part of the op name.
+    parts = text.split(".")
+    if len(parts) >= 3 and parts[0] in {"aten", "prims", "quantized", "dim"}:
+        return ".".join(parts[: -1])
     return text
 
 
@@ -207,9 +220,38 @@ def print_summary(report: dict) -> None:
         print(f"  {op:44s} {count:6d}  {_pct(count, report['call_function'])}")
 
 
-def build_graph(model_file: str, *, nloc: int, target_device: str) -> tuple:
+def install_stub_lib() -> str:
+    """Satisfy ``deepmd.lib`` from a source checkout with no compiled extension.
+
+    ``deepmd.env`` only needs ``deepmd.lib.__path__[0]`` (plus a
+    ``run_config.ini`` beside it) for the pure-Python path, so a module with a
+    directory of its own is enough -- and the traced graph is the dense
+    reference path, which never calls into the extension.
+    """
+    import sys
+    import tempfile
+    import types
+
+    import deepmd
+
+    if hasattr(deepmd, "lib"):
+        return "already importable"
+    directory = Path(tempfile.mkdtemp(prefix="deepmd_lib_stub_"))
+    source = Path(deepmd.__file__).resolve().parents[1] / "source" / "config" / "run_config.ini"
+    if source.is_file():
+        (directory / "run_config.ini").write_bytes(source.read_bytes())
+    stub = types.ModuleType("deepmd.lib")
+    stub.__path__ = [str(directory)]
+    sys.modules["deepmd.lib"] = stub
+    deepmd.lib = stub
+    return str(directory)
+
+
+def build_graph(model_file: str, *, nloc: int, target_device: str,
+                mode: str = "atomic") -> tuple:
     """Load the checkpoint, trace the lower graph on CPU, return (graph, inputs)."""
     import torch
+    from torch.fx.experimental.proxy_tensor import make_fx
 
     from deepmd.pt.entrypoints.freeze_pt2 import (
         _extract_state_and_params,
@@ -231,7 +273,24 @@ def build_graph(model_file: str, *, nloc: int, target_device: str) -> tuple:
 
     has_spin = bool(getattr(model, "has_spin", False))
     _, sample = _resolve_nframes(model, nloc=nloc, device=torch.device("cpu"), has_spin=has_spin)
-    traced = model.forward_common_lower_exportable(*sample)
+    flags = {}
+    if mode == "atomic":
+        flags["atomic_output_only"] = True
+    elif mode == "embedding":
+        flags["embedding_only"] = True
+
+    def lower_fn(coord, atype, edge_index, edge_vec, edge_scatter_index, edge_mask,
+                 spin, charge_spin):
+        return model.forward_common_lower(
+            coord, atype, edge_index, edge_vec, edge_scatter_index, edge_mask,
+            None, None, None, None, None,
+            charge_spin=charge_spin, spin=spin, use_compile=False, **flags
+        )
+
+    coord, atype, edge_index, edge_vec, scatter, mask, spin, fparam, aparam, charge_spin = sample
+    traced = make_fx(lower_fn, tracing_mode="symbolic", _allow_non_fake_inputs=True)(
+        coord, atype, edge_index, edge_vec, scatter, mask, spin, charge_spin
+    )
     return traced, sample, model
 
 
@@ -244,12 +303,19 @@ def main(argv: list[str] | None = None) -> int:
                              "tracing is always CPU")
     parser.add_argument("--nloc", type=int, default=7)
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--stub-lib", action="store_true",
+                        help="satisfy deepmd.lib from the source tree (no compiled extension)")
+    parser.add_argument("--mode", default="atomic", choices=("atomic", "embedding", "full"),
+                        help="atomic: energy path; embedding: descriptor only; "
+                             "full: force path (not traceable on this checkpoint)")
     parser.add_argument("--summary", action="store_true", help="skip the full graph text")
     parser.add_argument("--max-nodes", type=int, default=0, help="truncate the printed graph")
     args = parser.parse_args(argv)
 
+    if args.stub_lib:
+        print(f"deepmd.lib : stubbed at {install_stub_lib()}")
     traced, sample, model = build_graph(
-        args.model_file, nloc=args.nloc, target_device=args.device
+        args.model_file, nloc=args.nloc, target_device=args.device, mode=args.mode
     )
     graph = traced.graph
     report = summarise(graph)
