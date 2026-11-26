@@ -153,7 +153,7 @@ P1/P2 是"在现有结构里榨 1.2–1.8x"。如果 P3 的目标算子用 Trito
 > `csrc/dmk/config.h`（静态 LDS + page 预算）、`lds.h`（mbarrier parity 替代）、
 > `state.h`（state/pid/page semaphore）、`op.h`（虚基类 + `make_op` 工厂）、
 > `controller.h`（取指 / page 置换 / 动态 semaphore）、`noop.h` /
-> `demo_op.h` / `gemm.h` / `embedding.h`、`megakernel.h` 与
+> `ops/elementwise.h` / `ops/gemm.h` / `ops/embedding.h`、`dmk/megakernel.h` 与
 > `tests/csrc/run_dmk_lds_test.py`；`copy.h` 只保留 `load_vec`/`store_vec`/
 > `aligned` 三个向量原语，16 B 访存的循环写在 Elementwise/Gemm/Embedding 各自的
 > `load()/store()` 里；按 DCU 同步 DUMMA 的实际情况去掉了
