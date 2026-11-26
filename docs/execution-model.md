@@ -97,6 +97,47 @@ head gate，且 "none of the per-edge intermediates reach device memory"
 `so2_conv_fwd_c64_l3.cu` 单特化 hipify 出来，拿一次真实 conv 与稠密组合做 A/B；
 若 < 0.6 再谈移植，否则 C7 直接砍掉。
 
+## 4.7 用 FX 图看模块（`tests/deepmd/profile/fx_graph.py`）
+
+一个脚本，一张目标表，`--target` 选要打印的模块：
+
+```bash
+python tests/deepmd/profile/fx_graph.py --list-targets
+python tests/deepmd/profile/fx_graph.py --model-file "$MODEL" --target model --summary
+python tests/deepmd/profile/fx_graph.py --model-file "$MODEL" --target so2_conv --index 0
+```
+
+| target | 是什么 | 怎么追踪 |
+| --- | --- | --- |
+| `model` | 整个 DPA4/SeZM（能量路径） | `forward_common_lower` + `make_fx(symbolic)`，与 DeepMD 的 AOTInductor 冻结同路 |
+| `so2_conv` | 一个 `SO2Convolution` 实例（`dpa4_so2_conv` 融合的那段 span） | 前向钩子抓描述符真实传入的张量，再单独 trace 该模块 |
+
+**为什么 `so2_conv` 不能从整图里切**：`make_fx` 不记录 `nn_module_stack`，按 `_softmax` 反查
+输入闭包会把整条前缀（2246 / 3749 个节点）都算进来。钩子抓参数再单 trace 是唯一精确的做法。
+
+**设备**：`--device` 决定检查点的 kernel 级别按哪个目标解析，`--trace-device` 决定图在哪算。
+两者独立，默认 `cpu`（产物谁都能读）；`--trace-device cuda` 需要卡，图上才会出现 HIP 专属分支
+与自定义算子。脚本会打印 `traced on: cuda (observed: cuda:0)`，`observed` 取自节点
+`tensor_meta.device`，是证据而不是声明。
+
+**实测**（`DPA4-Air-OMol25-100M-v20260820.pt`）：
+
+| 图 | 节点数 | layout | GEMM | 备注 |
+| --- | ---: | ---: | ---: | --- |
+| 整个模型 | 3395 | **54.6%** | 127（`bmm` 113） | `_softmax` 只有 3 个（三个交互块各一次） |
+| 一个 `SO2Convolution` | 473 | **69.3%** | 24 | **每个 GEMM 配 15 个布局算子** |
+
+`so2_conv` 里每个 `bmm` 前的窗口固定出现 19 次：
+
+```
+permute → permute → view → permute → view → bmm → view → permute → view
+```
+
+这就是 `blockdiag_gemm`（C7b「按存储原样吃权重、免连续化」）要消掉的 9 个节点/GEMM；
+也是 C6（逐元素链融合）拿不到链的图级原因——布局算子已经把张量拆成了两跳。
+
+图文本：`artifacts/dpa4_air_cpu.fx.txt.gz`（整模型）、`artifacts/dpa4_air_so2_conv.fx.txt.gz`（卷积）。
+
 ## 5. 建议的推进顺序
 
 | 档 | 内容 | 工作量 | 收益 | 风险 |

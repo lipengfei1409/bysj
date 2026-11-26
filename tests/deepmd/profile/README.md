@@ -142,14 +142,9 @@ python3 tests/deepmd/profile/op_time_share.py \
 
 - `analyze_trace.py` 按 `triton` / `aten` / `gemm` / `other` 分类统计设备时间，并给每个 kernel 一个 roofline 等价量（访存型按等效字节、GEMM 按等效 GFLOP）。**如果 trace 里没有 triton kernel，脚本会明确提示：该次测的是稠密参考路径，不能据此下调优结论。** `cast_report` 按"输入 dtype + 维度"分组 cast/copy；注意 CPU op 的耗时包含等待设备，单次远高于同组的调用是同步点而非拷贝成本。
 - `scan_fusion_patterns.py` 用 `cuda_runtime` 的 `correlation` 把每次 launch 对回 `cpu_op`，得到"算子名 + 形状"的 launch 序列；它先打印与 summary 的自动比对（总数、前向/反向分区），再给出按时间排序的签名、2–5 元相邻链与形状分类。链上的 `saving_ms` 是"每项 3 路流 × 最大 numel"的粗估，只用于排序。
-- `print_fx_graph.py` 把整个 DPA4/SeZM 模型打成 FX 图：复用 DeepMD 自己的 AOTInductor 冻结路径
-  （`forward_common_lower_exportable`，`make_fx` 会把内层 `autograd.grad` 展开成普通 ATen 节点）。
-  追踪固定在 CPU，`--device cuda` 只切换目标侧的 kernel 分支。
-- `fx_graph.py` **打印某个模块的 FX 图**：`--target model|so2_conv`，`--list-targets`
-  列出可打印的对象；新增目标只需在 `TARGETS` 里加一行。
-- `extract_fx_subgraph.py` 从整图里切出单个模块的图（`fx_graph.py` 内部复用它）；`--select conv` 用前向钩子抓
-  `SO2Convolution` 的真实输入再单独 trace（整图 trace 不带 `nn_module_stack`，按锚点切会
-  吞掉整条前缀）。
+- `fx_graph.py` **打印某个模块的 FX 图**（唯一的 FX 图脚本）：`--target model|so2_conv`，
+  `--list-targets` 列出可打印对象；`--trace-device cpu|cuda` 决定在哪追踪；新增目标只需在
+  `TARGETS` 里加一行。
 - `ab_report.py` 读一组端到端 A/B 的收益：设备时间、相对基线的 delta、conv 自身耗时、以及路由是否真的开启；
   判据见 [docs/so2-conv-hip.md](../../../docs/so2-conv-hip.md) §6.4。
 - `verify_fused.py` 把融合算子的验证阶梯串成一条命令（`host → build → acc → lat → par → e2e`），
