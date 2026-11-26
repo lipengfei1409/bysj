@@ -68,7 +68,7 @@ namespace dmk::mk {
 struct State;
 }  // namespace dmk::mk
 
-namespace ops::mk {
+namespace ops {
 
 template <typename Globals>
 class BaseOp {
@@ -137,4 +137,4 @@ __device__ BaseOp<Globals>* make_op(int opcode, void* storage,
                                                  instruction);
 }
 
-}  // namespace ops::mk
+}  // namespace ops

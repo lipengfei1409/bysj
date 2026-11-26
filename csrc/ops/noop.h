@@ -10,7 +10,7 @@
 #include "ops/op.h"
 #include "dmk/state.h"
 
-namespace ops::mk {
+namespace ops {
 
 template <typename Globals>
 class NoOp final : public BaseOp<Globals> {
@@ -41,4 +41,4 @@ public:
     __device__ void store(dmk::mk::State&, const Globals&) const override {}
 };
 
-}  // namespace ops::mk
+}  // namespace ops

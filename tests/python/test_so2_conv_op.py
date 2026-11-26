@@ -46,11 +46,19 @@ class TemplateConformanceTests(unittest.TestCase):
     def test_the_constructor_takes_the_instruction_words(self) -> None:
         self.assertIn("explicit So2ConvOp(const int* instruction)", self.text)
 
-    def test_opcode_does_not_collide_with_the_reference_op(self) -> None:
-        demo = (ROOT / "csrc" / "ops" / "demo_op.h").read_text()
-        demo_opcode = int(re.search(r"opcode = (\d+)", demo).group(1))
+    def test_opcode_is_free_in_the_dmk_table(self) -> None:
+        # The instruction word's opcode is what the runtime dispatches on, so the
+        # table must stay collision-free: 0 noop, 1 elementwise, 2 gemm,
+        # 3 embedding, 4 the SO(2) conv, 5 attention.
+        table = {0: "noop", 1: "elementwise", 2: "gemm", 3: "embedding", 5: "attention"}
         ours = int(re.search(r"kSo2ConvOpcode = (\d+)", self.text).group(1))
-        self.assertNotEqual(demo_opcode, ours)
+        self.assertEqual(ours, 4)
+        self.assertNotIn(ours, table)
+        for opcode, name in table.items():
+            header = ROOT / "csrc" / "ops" / f"{name}.h"
+            found = re.search(r"static constexpr int opcode = (\d+);", header.read_text())
+            self.assertIsNotNone(found, header.name)
+            self.assertEqual(int(found.group(1)), opcode, header.name)
 
 
 class ContractTests(unittest.TestCase):

@@ -103,7 +103,7 @@ struct AttentionGlobalsT {
 
 }  // namespace ops::attention
 
-namespace ops::mk {
+namespace ops {
 
 // Page-based flash-attention operator. One instruction is one whole query
 // tile over all keys: load() stages Q and the first K/V tile, run() walks the
@@ -391,4 +391,4 @@ private:
     }
 };
 
-}  // namespace ops::mk
+}  // namespace ops

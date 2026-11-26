@@ -32,7 +32,7 @@
 #include "ops/op.h"
 #include "dmk/state.h"
 
-namespace ops::mk {
+namespace ops {
 
 template <typename Globals>
 class ElementwiseOp final : public BaseOp<Globals> {
@@ -182,4 +182,4 @@ public:
     }
 };
 
-}  // namespace ops::mk
+}  // namespace ops

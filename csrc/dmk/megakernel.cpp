@@ -1,6 +1,6 @@
 #include "dmk/megakernel.h"
 
-#include "ops/demo_op.h"
+#include "ops/elementwise.h"
 #include "ops/embedding.h"
 #include "ops/gemm.h"
 #include "ops/noop.h"

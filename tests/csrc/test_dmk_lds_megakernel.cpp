@@ -6,7 +6,7 @@
 // re-launching the same kernel over fresh buffers.
 //
 // Build/run through: python tests/csrc/run_dmk_lds_test.py
-#include "demo_op.h"
+#include "ops/elementwise.h"
 #include "embedding.h"
 #include "gemm.h"
 #include "megakernel.h"

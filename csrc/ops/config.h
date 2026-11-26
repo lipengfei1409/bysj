@@ -19,7 +19,7 @@
 // template parameter: the DCU has one fixed LDS budget, so every page, state
 // and op sees the same numbers, and `config::kNumPages` reads shorter than
 // threading a `Config` type through every template. The derived LDS budget
-// stays in ops::mk because it depends on sizeof(InstructionState).
+// stays in ops because it depends on sizeof(InstructionState).
 //
 // Changing kPageSize/kNumPages/kConsumerWaves requires rechecking the
 // static_asserts below; the launch path also checks the runtime device limit
@@ -88,7 +88,7 @@ static_assert(kPageSize % kDynamicAlign == 0,
 
 }  // namespace ops::config
 
-namespace ops::mk {
+namespace ops {
 
 // One instruction pipeline slot, resident in static LDS.
 struct alignas(128) InstructionState {
@@ -117,4 +117,4 @@ static_assert(kLaunchBytes <= config::kLdsBytesPerCu,
 static_assert(kStaticBytes + kLaunchBytes <= config::kLdsBytesPerCu,
               "static + dynamic LDS plan exceeds the 64 KiB LDS block");
 
-}  // namespace ops::mk
+}  // namespace ops

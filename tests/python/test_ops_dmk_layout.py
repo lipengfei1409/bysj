@@ -25,7 +25,7 @@ def _headers(directory: Path) -> list[Path]:
 class LayoutTests(unittest.TestCase):
     def test_ops_holds_the_templates_and_the_factory(self) -> None:
         names = {p.name for p in _headers(OPS)}
-        for expected in ("op.h", "config.h", "demo_op.h", "gemm.h", "tile.h",
+        for expected in ("op.h", "config.h", "elementwise.h", "gemm.h", "tile.h",
                          "lds.h", "so2_conv_op.h", "so2_conv_math.h"):
             self.assertIn(expected, names)
 
@@ -64,7 +64,7 @@ class LayoutTests(unittest.TestCase):
 
     def test_ops_name_the_runtime_state_explicitly(self) -> None:
         # A hook's parameter must read dmk::mk::State, not a bare State that
-        # would silently be looked up in ops::mk.
+        # would silently be looked up in ops.
         template = (OPS / "op.h").read_text()
         self.assertIn("dmk::mk::State& state", template)
         for header in _headers(OPS):

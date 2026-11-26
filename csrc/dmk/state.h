@@ -26,8 +26,8 @@ namespace dmk::mk {
 namespace config = ops::config;
 namespace lds = ops::lds;
 namespace tensor = ops::tensor;
-using ops::mk::BaseOp;
-using ops::mk::InstructionState;
+using ops::BaseOp;
+using ops::InstructionState;
 
 // num_pages >= 1; each page is exactly kPageSize bytes and is aligned so vector
 // accesses and bank patterns stay predictable.

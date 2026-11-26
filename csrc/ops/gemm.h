@@ -406,7 +406,7 @@ __device__ inline void run_gemm_wave(const GemmParamsT<T>& params,
 // walks every k-tile and accumulates into the C page, store() writes C.
 // Pages: lid 0 = A k-tile, lid 1 = B k-tile, lid 2 = C tile; the pages the
 // operator does not own are released by load().
-namespace ops::mk {
+namespace ops {
 
 template <typename Globals>
 class GemmOp final : public BaseOp<Globals> {
@@ -559,4 +559,4 @@ public:
     }
 };
 
-}  // namespace ops::mk
+}  // namespace ops

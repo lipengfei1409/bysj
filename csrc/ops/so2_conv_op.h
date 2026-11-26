@@ -1,6 +1,6 @@
 #pragma once
 
-// SO(2) convolution as a page-based megakernel operator (ops::mk::BaseOp).
+// SO(2) convolution as a page-based megakernel operator (ops::BaseOp).
 //
 // One instruction is one operator invocation: an edge range of one SO(2)
 // convolution layer, forward.  run() owns the tile loop over that range, so the
@@ -69,7 +69,7 @@
 
 #include <cstddef>
 
-namespace ops::mk {
+namespace ops {
 
 //: Host-side pointers this op reads. The kernel's Globals must carry one.
 //
@@ -85,9 +85,10 @@ struct So2ConvTensorPack {
     float* msg;          // (n_edge, dim, channels) per-edge message, head-gated
 };
 
-//: Opcode of this operator. A free constant, so the host encoder does not have
-//: to instantiate So2ConvOp<Globals> for its value.
-inline constexpr int kSo2ConvOpcode = 2;
+//: Opcode of this operator. 4 is the free slot in the dmk table (0 noop,
+//: 1 elementwise, 2 gemm, 3 embedding, 5 attention), and a free constant so the
+//: host encoder does not have to instantiate So2ConvOp<Globals> for its value.
+inline constexpr int kSo2ConvOpcode = 4;
 
 template <typename Globals>
 class So2ConvOp final : public BaseOp<Globals> {
@@ -322,4 +323,4 @@ inline void encode_so2_conv_instruction(int* words, int begin, int end, int dim,
     words[6] = channels;
 }
 
-}  // namespace ops::mk
+}  // namespace ops
