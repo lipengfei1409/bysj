@@ -25,14 +25,10 @@ sources = [
     "csrc/edge_combine.cpp",
     "csrc/monomial.cpp",
     "csrc/blockdiag.cpp",
-    "csrc/so2_conv_dmk.cpp",
 ]
 ext_modules = [CUDAExtension(
     "kernels._C",
     sources=sources,
-    # `ops/` and `dmk/` are addressed as "ops/..." and "dmk/..." from every
-    # translation unit, including the headers they include from each other.
-    include_dirs=["csrc"],
     define_macros=[],
     extra_compile_args={"cxx": ["-O3", "-std=c++17"]},
 )]

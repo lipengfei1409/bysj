@@ -61,10 +61,13 @@ class LayoutTests(unittest.TestCase):
                         self.assertTrue((OPS.parent / target).is_file(), f"{path.name}: {target}")
 
 
+ORDINARY = DMK / "so2_conv_dmk.cpp"
+
+
 class TwoEntryPointTests(unittest.TestCase):
     def test_both_entries_share_one_math_header(self) -> None:
         op = (OPS / "so2_conv_op.h").read_text()
-        kernel = (ROOT / "csrc" / "so2_conv_dmk.cpp").read_text()
+        kernel = ORDINARY.read_text()
         for text, name in ((op, "so2_conv_op.h"), (kernel, "so2_conv_dmk.cpp")):
             self.assertIn('#include "ops/so2_conv_math.h"', text, name)
 
@@ -74,16 +77,27 @@ class TwoEntryPointTests(unittest.TestCase):
         self.assertIn("sigmoid_content", math)
         for text, name in (
             ((OPS / "so2_conv_op.h").read_text(), "so2_conv_op.h"),
-            ((ROOT / "csrc" / "so2_conv_dmk.cpp").read_text(), "so2_conv_dmk.cpp"),
+            (ORDINARY.read_text(), "so2_conv_dmk.cpp"),
         ):
             self.assertNotIn("__expf", text, name)
 
-    def test_the_ordinary_entry_point_is_buildable(self) -> None:
-        setup = (ROOT / "setup.py").read_text()
-        self.assertIn('"csrc/so2_conv_dmk.cpp"', setup)
-        self.assertIn('include_dirs=["csrc"]', setup)
-        self.assertIn("so2_conv_dmk_hip", (ROOT / "csrc" / "ops.h").read_text())
-        self.assertIn('m.def("so2_conv_dmk"', (ROOT / "csrc" / "bindings.cpp").read_text())
+    def test_the_ordinary_entry_point_is_built_only_by_the_dmk_subtree(self) -> None:
+        # The rule: the second (ordinary-launch) entry point is wired *only*
+        # under dmk/.  The top-level extension keeps no knowledge of it.
+        top = (ROOT / "setup.py").read_text()
+        self.assertNotIn("so2_conv_dmk", top)
+        self.assertNotIn("include_dirs", top)
+        self.assertNotIn('m.def("so2_conv_dmk"', (ROOT / "csrc" / "bindings.cpp").read_text())
+
+        dmk_setup = (DMK / "setup.py").read_text()
+        self.assertIn('os.path.join("csrc", "dmk", "so2_conv_dmk.cpp")', dmk_setup)
+        self.assertIn('"kernels.dmk._C"', dmk_setup)
+        self.assertIn('os.path.join(ROOT, "csrc")', dmk_setup)
+
+        # And the Python side lives in the dmk namespace, not in kernels.
+        self.assertTrue((ROOT / "python" / "kernels" / "dmk" / "so2_conv_dmk.py").is_file())
+        public = (ROOT / "python" / "kernels" / "__init__.py").read_text()
+        self.assertNotIn("so2_conv_dmk", public)
 
 
 if __name__ == "__main__":

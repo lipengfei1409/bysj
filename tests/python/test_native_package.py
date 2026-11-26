@@ -49,8 +49,6 @@ class NativePackageTests(unittest.TestCase):
                 "slot_available",
                 "slot_pack_scale",
                 "slot_reduce",
-        "so2_conv_dmk",
-        "so2_conv_dmk_available",
                 "zonal_scatter",
             ],
         )

@@ -17,8 +17,8 @@ import torch
 
 from reference.so2_conv_dmk import so2_conv_dmk_reference
 
-try:  # the wrapper lands with the op-pack integration
-    from kernels.so2_conv_dmk import so2_conv_dmk, so2_conv_dmk_available
+try:  # the dmk subtree ships its own extension; absent on a host build
+    from kernels.dmk import so2_conv_dmk, so2_conv_dmk_available
 except Exception:  # noqa: BLE001 - not wired yet, skip loudly below
     so2_conv_dmk = None
 
@@ -27,9 +27,9 @@ except Exception:  # noqa: BLE001 - not wired yet, skip loudly below
 
 
 _SKIP = (
-    "the C8 operator is not wired yet: add So2ConvTensorPack to the kernel's "
-    "Globals, add mk::So2ConvOp<Globals> to the op pack, and expose "
-    "kernels.so2_conv_dmk (see docs/so2-conv-dmk.md)"
+    "the dmk extension is not built here: on a DCU run "
+    "`python csrc/dmk/setup.py build_ext --inplace`, which provides "
+    "kernels.dmk.so2_conv_dmk (see docs/so2-conv-dmk.md)"
 )
 
 

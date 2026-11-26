@@ -16,13 +16,37 @@ from __future__ import annotations
 
 import torch
 
-from .native import _extension, require_dcu
+import importlib
+
+from ..native import require_dcu
+
+
+def _extension(required_symbol: str):
+    """Load ``kernels.dmk._C`` and require the requested entry point.
+
+    The dmk subtree has its own extension on purpose (``csrc/dmk/setup.py``):
+    the main ``kernels._C`` build stays free of the VM's LDS budget and page
+    layout, and the ordinary entry points that mirror the persistent ops are
+    only meaningful next to that runtime.
+    """
+    require_dcu()
+    try:
+        extension = importlib.import_module("kernels.dmk._C")
+    except (ImportError, OSError) as exc:
+        raise RuntimeError(
+            "build the dmk extension on a supported DCU: "
+            "python csrc/dmk/setup.py build_ext --inplace"
+        ) from exc
+    if not hasattr(extension, required_symbol):
+        raise RuntimeError(
+            f"the loaded kernels.dmk._C extension has no {required_symbol!r} entry point"
+        )
+    return extension
 
 
 def so2_conv_dmk_available() -> bool:
     """Return whether this process can load the ordinary SO(2) conv entry point."""
     try:
-        require_dcu()
         extension = _extension("so2_conv_dmk")
     except (ImportError, OSError, RuntimeError):
         return False

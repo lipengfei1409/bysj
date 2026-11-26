@@ -9,20 +9,30 @@
 
 这条方向由 `tests/python/test_ops_dmk_layout.py` 钉住（谁都不许裸 `#include "op.h"`，跨目录必须写全路径）。
 
-## 同一份算术，两个入口
+## 同一份算术，两个入口 —— 但第二种只在 `dmk/` 下接
 
 ```
 csrc/ops/so2_conv_math.h        ← 唯一的算术（rotate / gated layer / rotate back）
         ├── csrc/ops/so2_conv_op.h     持久化接入：BaseOp 子类，进 op pack，由 VM 驱动
-        └── csrc/so2_conv_dmk.cpp      普通接入：一次 launch，和 csrc/ 里其它 kernel 一样
+        └── csrc/dmk/so2_conv_dmk.cpp  普通接入：一次 launch（**只在 dmk 子树里构建**）
 ```
 
-普通入口已接进构建（`setup.py` 的 `sources`、`csrc/ops.h` 声明、`bindings.cpp` 的
-`so2_conv_dmk`）与 Python（`kernels.so2_conv_dmk`），所以
-`tests/csrc/accuracy/test_so2_conv_dmk_accuracy.py` **接上卡就能跑**，不必等 megakernel 接线。
+**约定（重要）**：普通接入方式**不接进顶层构建**。它不出现于
+
+- 顶层 `setup.py` 的 `sources` / `include_dirs`，
+- `csrc/ops.h` 的声明、`csrc/bindings.cpp` 的 `m.def`，
+- `python/kernels/__init__.py` 的公开导出。
+
+它只由 `csrc/dmk/setup.py` 构建成 `kernels.dmk._C`，Python 侧在
+`python/kernels/dmk/so2_conv_dmk.py`（`kernels.dmk.so2_conv_dmk`）。理由：megakernel 带着固定的
+LDS 预算、页布局与调度契约，顶层算子构建没有理由继承；而"镜像持久化算子的普通入口"只有放在那个
+运行时旁边才有意义。这条规则由 `tests/python/test_ops_dmk_layout.py` 钉住。
 
 ```bash
-# 普通算子（CPU 上只会 skip；DCU 上真跑）
+# 构建 dmk 子树自己的扩展（DCU 上）
+python csrc/dmk/setup.py build_ext --inplace
+
+# 普通算子数值（CPU 上只会 skip；DCU 上真跑）
 PYTHONPATH=python python3 -m unittest discover -s tests/csrc/accuracy -p 'test_so2_conv_dmk*' -v
 ```
 
