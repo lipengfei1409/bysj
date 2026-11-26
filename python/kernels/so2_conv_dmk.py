@@ -1,10 +1,11 @@
 """SO(2) convolution, ordinary kernel entry point (C8).
 
-The same per-edge span exists as a megakernel operator
-(``csrc/ops/so2_conv_op.h``, run under the persistent VM in ``csrc/dmk/``); this
-wrapper reaches the launch-a-kernel version in ``csrc/so2_conv_dmk.cpp``.  Both
-call ``csrc/ops/so2_conv_math.h``, so the two paths share the arithmetic and the
-accuracy test covers the semantics once for both.
+The same per-edge span also exists as a megakernel operator
+(``csrc/ops/so2_conv_op.h``, run under the persistent VM in ``csrc/dmk/``), but
+that one is source-only for now.  This wrapper reaches the launch-a-kernel
+version in ``csrc/so2_conv_dmk.cpp`` -- wired like every other operator here --
+so the shared arithmetic in ``csrc/ops/so2_conv_math.h`` can be validated on a
+DCU without waiting for the runtime.
 
     msg[e, d, c] = alpha[e] * (R^T[e] @ stack(R[e] @ x[src[e]][:, c]))
 
@@ -16,37 +17,13 @@ from __future__ import annotations
 
 import torch
 
-import importlib
-
-from ..native import require_dcu
-
-
-def _extension(required_symbol: str):
-    """Load ``kernels.dmk._C`` and require the requested entry point.
-
-    The dmk subtree has its own extension on purpose (``csrc/dmk/setup.py``):
-    the main ``kernels._C`` build stays free of the VM's LDS budget and page
-    layout, and the ordinary entry points that mirror the persistent ops are
-    only meaningful next to that runtime.
-    """
-    require_dcu()
-    try:
-        extension = importlib.import_module("kernels.dmk._C")
-    except (ImportError, OSError) as exc:
-        raise RuntimeError(
-            "build the dmk extension on a supported DCU: "
-            "python csrc/dmk/setup.py build_ext --inplace"
-        ) from exc
-    if not hasattr(extension, required_symbol):
-        raise RuntimeError(
-            f"the loaded kernels.dmk._C extension has no {required_symbol!r} entry point"
-        )
-    return extension
+from .native import _extension, require_dcu
 
 
 def so2_conv_dmk_available() -> bool:
     """Return whether this process can load the ordinary SO(2) conv entry point."""
     try:
+        require_dcu()
         extension = _extension("so2_conv_dmk")
     except (ImportError, OSError, RuntimeError):
         return False
@@ -56,16 +33,16 @@ def so2_conv_dmk_available() -> bool:
 def _validate(x, src, rot, rot_t, kc, alpha) -> None:
     if x.dim() != 3:
         raise ValueError("x must be (n_node, dim, channels)")
-    if x.dtype != torch.float32:
-        raise TypeError("x must be float32")
-    if src.dtype != torch.int64 or src.dim() != 1:
+    if src.dim() != 1 or src.dtype != torch.int64:
         raise TypeError("src must be an int64 (E,) vector")
     edges = int(src.shape[0])
     for name, tensor in (("rot", rot), ("rot_t", rot_t), ("kc", kc), ("alpha", alpha)):
         if tensor.shape[0] != edges:
             raise ValueError(f"{name} must have one row per edge")
     if rot.dim() != 3 or rot_t.dim() != 3 or kc.dim() != 5:
-        raise ValueError("expected rot (E, red, dim), rot_t (E, dim, red), kc (E, layers, 2, red, red)")
+        raise ValueError(
+            "expected rot (E, red, dim), rot_t (E, dim, red), kc (E, layers, 2, red, red)"
+        )
     if alpha.dim() != 1:
         raise ValueError("alpha must be (E,)")
     if int(rot.shape[2]) != int(rot_t.shape[1]) or int(rot.shape[1]) != int(rot_t.shape[2]):

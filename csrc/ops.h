@@ -75,6 +75,10 @@ Tensor blockdiag_gemm_hip(Tensor x, Tensor weights, Tensor offsets);
 
 Tensor blockdiag_gemm_backward_hip(Tensor grad_out, Tensor weights, Tensor offsets);
 
-// The SO(2) conv's ordinary entry point is *not* declared here: it belongs to
-// the dmk subtree (csrc/dmk/so2_conv_dmk.cpp, built as kernels.dmk._C), next to
-// the persistent op it mirrors.
+// --- C8: the SO(2) convolution, ordinary entry point ------------------------
+//
+// `csrc/so2_conv_dmk.cpp`. The persistent op that mirrors it
+// (`ops/so2_conv_op.h`) is source-only for now, so this is the only way to
+// reach ops/so2_conv_math.h from Python.
+Tensor so2_conv_dmk_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
+                        Tensor kc, Tensor alpha);

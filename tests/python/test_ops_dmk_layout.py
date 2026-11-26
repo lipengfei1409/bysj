@@ -61,7 +61,7 @@ class LayoutTests(unittest.TestCase):
                         self.assertTrue((OPS.parent / target).is_file(), f"{path.name}: {target}")
 
 
-ORDINARY = DMK / "so2_conv_dmk.cpp"
+ORDINARY = ROOT / "csrc" / "so2_conv_dmk.cpp"
 
 
 class TwoEntryPointTests(unittest.TestCase):
@@ -81,23 +81,27 @@ class TwoEntryPointTests(unittest.TestCase):
         ):
             self.assertNotIn("__expf", text, name)
 
-    def test_the_ordinary_entry_point_is_built_only_by_the_dmk_subtree(self) -> None:
-        # The rule: the second (ordinary-launch) entry point is wired *only*
-        # under dmk/.  The top-level extension keeps no knowledge of it.
+    def test_only_the_ordinary_entry_point_is_wired(self) -> None:
+        # Decision for now: reachable through the normal operator path, and the
+        # persistent op stays source-only until the runtime is wired.
+        self.assertTrue(ORDINARY.is_file())
         top = (ROOT / "setup.py").read_text()
-        self.assertNotIn("so2_conv_dmk", top)
-        self.assertNotIn("include_dirs", top)
-        self.assertNotIn('m.def("so2_conv_dmk"', (ROOT / "csrc" / "bindings.cpp").read_text())
+        self.assertIn('"csrc/so2_conv_dmk.cpp"', top)
+        self.assertIn('include_dirs=["csrc"]', top)
 
-        dmk_setup = (DMK / "setup.py").read_text()
-        self.assertIn('os.path.join("csrc", "dmk", "so2_conv_dmk.cpp")', dmk_setup)
-        self.assertIn('"kernels.dmk._C"', dmk_setup)
-        self.assertIn('os.path.join(ROOT, "csrc")', dmk_setup)
+        self.assertIn("so2_conv_dmk_hip", (ROOT / "csrc" / "ops.h").read_text())
+        self.assertIn('m.def("so2_conv_dmk"', (ROOT / "csrc" / "bindings.cpp").read_text())
+        self.assertIn("so2_conv_dmk", (ROOT / "python" / "kernels" / "__init__.py").read_text())
+        self.assertTrue((ROOT / "python" / "kernels" / "so2_conv_dmk.py").is_file())
 
-        # And the Python side lives in the dmk namespace, not in kernels.
-        self.assertTrue((ROOT / "python" / "kernels" / "dmk" / "so2_conv_dmk.py").is_file())
-        public = (ROOT / "python" / "kernels" / "__init__.py").read_text()
-        self.assertNotIn("so2_conv_dmk", public)
+    def test_the_persistent_op_is_not_built(self) -> None:
+        # So2ConvOp has no launch path yet, so nothing should compile it and no
+        # dmk-side build should exist.
+        for path in (ROOT / "setup.py", ROOT / "csrc" / "ops.h",
+                     ROOT / "csrc" / "bindings.cpp"):
+            self.assertNotIn("So2ConvOp", path.read_text(), path.name)
+        self.assertFalse((DMK / "setup.py").exists())
+        self.assertFalse((ROOT / "python" / "kernels" / "dmk").exists())
 
 
 if __name__ == "__main__":

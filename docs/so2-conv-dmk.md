@@ -17,24 +17,31 @@ csrc/ops/so2_conv_math.h        ← 唯一的算术（rotate / gated layer / rot
         └── csrc/dmk/so2_conv_dmk.cpp  普通接入：一次 launch（**只在 dmk 子树里构建**）
 ```
 
-**约定（重要）**：普通接入方式**不接进顶层构建**。它不出现于
+**当前只接普通入口。** 也就是说：
 
-- 顶层 `setup.py` 的 `sources` / `include_dirs`，
-- `csrc/ops.h` 的声明、`csrc/bindings.cpp` 的 `m.def`，
-- `python/kernels/__init__.py` 的公开导出。
-
-它只由 `csrc/dmk/setup.py` 构建成 `kernels.dmk._C`，Python 侧在
-`python/kernels/dmk/so2_conv_dmk.py`（`kernels.dmk.so2_conv_dmk`）。理由：megakernel 带着固定的
-LDS 预算、页布局与调度契约，顶层算子构建没有理由继承；而"镜像持久化算子的普通入口"只有放在那个
-运行时旁边才有意义。这条规则由 `tests/python/test_ops_dmk_layout.py` 钉住。
+| 位置 | 现状 |
+| --- | --- |
+| `csrc/so2_conv_dmk.cpp` | **在顶层 `csrc/`**，和 `rmsnorm.cpp`、`segment_sum.cpp` 一样编译 |
+| 顶层 `setup.py` 的 `sources` / `include_dirs` | 含 `csrc/so2_conv_dmk.cpp`，`include_dirs=["csrc"]`（`ops/...` 的包含路径） |
+| `csrc/ops.h` / `csrc/bindings.cpp` | `so2_conv_dmk_hip` 声明 + `m.def("so2_conv_dmk", ...)` |
+| `python/kernels/so2_conv_dmk.py` | `kernels.so2_conv_dmk` 公开导出 |
+| **持久化算子** `ops/so2_conv_op.h` | **只有源码**：没有 launch 路径、不进任何构建 |
+| `csrc/dmk/setup.py`、`python/kernels/dmk/` | **不存在** |
 
 ```bash
-# 构建 dmk 子树自己的扩展（DCU 上）
-python csrc/dmk/setup.py build_ext --inplace
+# 构建（和顶层其它算子一起）
+MAX_JOBS=4 python3 setup.py build_ext --inplace
 
-# 普通算子数值（CPU 上只会 skip；DCU 上真跑）
+# 数值（DCU 上跑，CPU 上 skip）
 PYTHONPATH=python python3 -m unittest discover -s tests/csrc/accuracy -p 'test_so2_conv_dmk*' -v
 ```
+
+现在这样就够用的理由：普通入口**不需要** VM 就能把 `ops/so2_conv_math.h` 的算术语义验证掉，
+而这正是下一步最需要知道的事（64-lane 布局的数学对不对、100M 量级的边数下什么速度）。等持久化
+路径真正接线时，它的 A/B 对照也是这个普通入口——两者共用一份算术，差别只在调度。
+
+两条边界由 `tests/python/test_ops_dmk_layout.py` 钉住：普通入口**必须**在顶层构建里，持久化算子
+**必须不在**（`So2ConvOp` 不许出现在 `setup.py` / `ops.h` / `bindings.cpp`，且不许有 dmk 侧构建）。
 
 ## 持久化算子（`ops/so2_conv_op.h`）
 

@@ -17,19 +17,12 @@ import torch
 
 from reference.so2_conv_dmk import so2_conv_dmk_reference
 
-try:  # the dmk subtree ships its own extension; absent on a host build
-    from kernels.dmk import so2_conv_dmk, so2_conv_dmk_available
-except Exception:  # noqa: BLE001 - not wired yet, skip loudly below
-    so2_conv_dmk = None
-
-    def so2_conv_dmk_available() -> bool:
-        return False
+from kernels.so2_conv_dmk import so2_conv_dmk, so2_conv_dmk_available
 
 
 _SKIP = (
-    "the dmk extension is not built here: on a DCU run "
-    "`python csrc/dmk/setup.py build_ext --inplace`, which provides "
-    "kernels.dmk.so2_conv_dmk (see docs/so2-conv-dmk.md)"
+    "requires the built ordinary SO(2) conv entry point (csrc/so2_conv_dmk.cpp) "
+    "and a supported DCU"
 )
 
 
