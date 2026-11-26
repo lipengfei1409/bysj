@@ -11,7 +11,7 @@
 #include <hip/hip_bf16.h>
 #include <hip/hip_fp16.h>
 
-namespace dmk::dtype {
+namespace ops::dtype {
 
 template <typename T>
 struct Traits;
@@ -52,4 +52,4 @@ DMK_HOST_DEVICE inline T from_float(float value) {
     return Traits<T>::from_float(value);
 }
 
-}  // namespace dmk::dtype
+}  // namespace ops::dtype

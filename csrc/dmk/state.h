@@ -14,9 +14,20 @@
 #include "ops/config.h"
 #include "ops/op.h"
 
+
 #include <cstdint>
 
 namespace dmk::mk {
+
+// The runtime drives the ops, so it names their types explicitly: the operator
+// templates live in ops::, the per-wave state stays here in dmk::mk.  The
+// aliases are scoped to this namespace so they cannot leak into a translation
+// unit that includes the header.
+namespace config = ops::config;
+namespace lds = ops::lds;
+namespace tensor = ops::tensor;
+using ops::mk::BaseOp;
+using ops::mk::InstructionState;
 
 // num_pages >= 1; each page is exactly kPageSize bytes and is aligned so vector
 // accesses and bank patterns stay predictable.

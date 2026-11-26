@@ -23,6 +23,13 @@
 #include <cassert>
 
 namespace dmk::mk {
+
+// The controller drives op objects polymorphically; those types belong to ops::.
+namespace config = ops::config;
+namespace lds = ops::lds;
+using ops::mk::BaseOp;
+using ops::mk::InstructionState;
+using ops::mk::make_op;
 namespace controller {
 
 // Prepare one instruction. The caller sets instruction_index/instruction_ring.

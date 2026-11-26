@@ -63,8 +63,12 @@
 #include <type_traits>
 
 namespace dmk::mk {
-
+// The per-wave state a hook receives lives with the runtime (dmk/state.h);
+// ops only name it.
 struct State;
+}  // namespace dmk::mk
+
+namespace ops::mk {
 
 template <typename Globals>
 class BaseOp {
@@ -75,14 +79,14 @@ public:
 
     // Construct this instruction's dynamic semaphores; return how many were
     // initialized (<= config::kDynamicSemaphores).
-    __device__ virtual int init_semaphores(State& state,
+    __device__ virtual int init_semaphores(dmk::mk::State& state,
                                            const Globals& globals) const = 0;
 
-    __device__ virtual void load(State& state,
+    __device__ virtual void load(dmk::mk::State& state,
                                  const Globals& globals) const = 0;
-    __device__ virtual void run(State& state,
+    __device__ virtual void run(dmk::mk::State& state,
                                 const Globals& globals) const = 0;
-    __device__ virtual void store(State& state,
+    __device__ virtual void store(dmk::mk::State& state,
                                   const Globals& globals) const = 0;
 
 protected:
@@ -133,4 +137,4 @@ __device__ BaseOp<Globals>* make_op(int opcode, void* storage,
                                                  instruction);
 }
 
-}  // namespace dmk::mk
+}  // namespace ops::mk

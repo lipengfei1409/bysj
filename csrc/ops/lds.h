@@ -38,7 +38,7 @@
 #endif
 #endif
 
-namespace dmk::lds {
+namespace ops::lds {
 
 constexpr size_t kDefaultAlignment = 128;
 
@@ -169,4 +169,4 @@ __device__ inline void wave_barrier() {
 #endif
 }
 
-}  // namespace dmk::lds
+}  // namespace ops::lds

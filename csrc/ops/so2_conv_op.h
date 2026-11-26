@@ -1,6 +1,6 @@
 #pragma once
 
-// SO(2) convolution as a page-based megakernel operator (dmk::mk::BaseOp).
+// SO(2) convolution as a page-based megakernel operator (ops::mk::BaseOp).
 //
 // One instruction is one operator invocation: an edge range of one SO(2)
 // convolution layer, forward.  run() owns the tile loop over that range, so the
@@ -69,7 +69,7 @@
 
 #include <cstddef>
 
-namespace dmk::mk {
+namespace ops::mk {
 
 //: Host-side pointers this op reads. The kernel's Globals must carry one.
 //
@@ -123,7 +123,7 @@ public:
 
     __device__ int release_lid(int query) const override { return query; }
 
-    __device__ int init_semaphores(State& s, const Globals&) const override {
+    __device__ int init_semaphores(dmk::mk::State& s, const Globals&) const override {
         s.semaphores()[0].init(1);
         s.semaphores()[1].init(config::kConsumerWaves);
         return 2;
@@ -165,7 +165,7 @@ public:
         if (lane == 0) alpha[0] = pack.alpha[edge];
     }
 
-    __device__ void load(State& s, const Globals& g) const override {
+    __device__ void load(dmk::mk::State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const auto& pack = g.so2;
@@ -194,7 +194,7 @@ public:
         }
     }
 
-    __device__ void run(State& s, const Globals& g) const override {
+    __device__ void run(dmk::mk::State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
@@ -262,7 +262,7 @@ public:
         if (lane == 0) s.semaphores()[1].arrive();
     }
 
-    __device__ void store(State& s, const Globals&) const override {
+    __device__ void store(dmk::mk::State& s, const Globals&) const override {
         const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid = s.pid(wave);
@@ -322,4 +322,4 @@ inline void encode_so2_conv_instruction(int* words, int begin, int end, int dim,
     words[6] = channels;
 }
 
-}  // namespace dmk::mk
+}  // namespace ops::mk

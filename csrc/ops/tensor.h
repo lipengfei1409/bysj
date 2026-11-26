@@ -2,7 +2,7 @@
 
 #include "ops/utils.h"
 
-namespace dmk::tensor {
+namespace ops::tensor {
 enum class MemorySpace { HBM, Shmem, Register };
 
 // Fixed rank, runtime extents. No heap allocation is needed in device code.
@@ -289,4 +289,4 @@ inline void to_torch(const Tensor<T, Rank, Space, Layout>& src,
 }
 #endif  // __HIP_DEVICE_COMPILE__
 
-}  // namespace dmk::tensor
+}  // namespace ops::tensor

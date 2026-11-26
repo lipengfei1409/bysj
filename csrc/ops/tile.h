@@ -32,7 +32,7 @@
 #include <cstddef>
 #include <type_traits>
 
-namespace dmk::tile {
+namespace ops::tile {
 
 using tensor::MemorySpace;
 using tensor::Shape;
@@ -298,4 +298,4 @@ DMK_HOST_DEVICE inline bool load_tile(const Dst& dst, const Src& src,
     return true;
 }
 
-}  // namespace dmk::tile
+}  // namespace ops::tile

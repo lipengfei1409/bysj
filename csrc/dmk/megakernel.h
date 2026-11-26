@@ -19,6 +19,9 @@
 
 namespace dmk::mk {
 
+namespace config = ops::config;
+namespace lds = ops::lds;
+
 using tensor::MemorySpace;
 using tensor::Shape;
 using tensor::Tensor;

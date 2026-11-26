@@ -15,11 +15,11 @@
 //   launch  49,280 B (dynamic + one 128 B alignment unit)
 //   total   59,728 B, leaving ~5.8 KiB for compiler static scratch.
 //
-// The tunables are plain constants in dmk::config instead of a Config struct
+// The tunables are plain constants in ops::config instead of a Config struct
 // template parameter: the DCU has one fixed LDS budget, so every page, state
 // and op sees the same numbers, and `config::kNumPages` reads shorter than
 // threading a `Config` type through every template. The derived LDS budget
-// stays in dmk::mk because it depends on sizeof(InstructionState).
+// stays in ops::mk because it depends on sizeof(InstructionState).
 //
 // Changing kPageSize/kNumPages/kConsumerWaves requires rechecking the
 // static_asserts below; the launch path also checks the runtime device limit
@@ -29,7 +29,7 @@
 
 #include <cstddef>
 
-namespace dmk::config {
+namespace ops::config {
 
 // Instruction pipeline (same shape as the reference implementation).
 inline constexpr int kStages = 2;
@@ -86,9 +86,9 @@ static_assert(kWorkerWaves == kTotalWaves - 1,
 static_assert(kPageSize % kDynamicAlign == 0,
               "pages must start on the dynamic LDS alignment");
 
-}  // namespace dmk::config
+}  // namespace ops::config
 
-namespace dmk::mk {
+namespace ops::mk {
 
 // One instruction pipeline slot, resident in static LDS.
 struct alignas(128) InstructionState {
@@ -117,4 +117,4 @@ static_assert(kLaunchBytes <= config::kLdsBytesPerCu,
 static_assert(kStaticBytes + kLaunchBytes <= config::kLdsBytesPerCu,
               "static + dynamic LDS plan exceeds the 64 KiB LDS block");
 
-}  // namespace dmk::mk
+}  // namespace ops::mk

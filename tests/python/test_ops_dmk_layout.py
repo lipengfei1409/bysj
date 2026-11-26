@@ -47,6 +47,36 @@ class LayoutTests(unittest.TestCase):
         text = (DMK / "megakernel.h").read_text()
         self.assertIn('#include "ops/', text)
 
+    def test_ops_live_in_the_ops_namespace(self) -> None:
+        # Everything under csrc/ops/ is declared in ops:: -- the operator
+        # templates, the config contract, the LDS and tensor helpers.  The one
+        # exception is the forward declaration of the runtime's per-wave State,
+        # which has to name its real home (dmk::mk).
+        for header in _headers(OPS):
+            text = header.read_text()
+            # The only dmk:: block allowed here is the State forward declaration.
+            blocks = re.findall(r"\nnamespace (dmk::[A-Za-z_:]+) \{", text)
+            expected = ["dmk::mk{:"] if False else []
+            if "struct State;" in text:
+                self.assertEqual(blocks, ["dmk::mk"], header.name)
+            else:
+                self.assertEqual(blocks, expected, header.name)
+
+    def test_ops_name_the_runtime_state_explicitly(self) -> None:
+        # A hook's parameter must read dmk::mk::State, not a bare State that
+        # would silently be looked up in ops::mk.
+        template = (OPS / "op.h").read_text()
+        self.assertIn("dmk::mk::State& state", template)
+        for header in _headers(OPS):
+            text = header.read_text()
+            self.assertNotRegex(text, r"(?<!::)\bState&", header.name)
+
+    def test_the_runtime_aliases_the_ops_namespace(self) -> None:
+        for path in (DMK / "state.h", DMK / "megakernel.h", DMK / "controller.h"):
+            text = path.read_text()
+            self.assertIn("namespace config = ops::config;", text, path.name)
+            self.assertIn('namespace dmk::mk {', text, path.name)
+
     def test_includes_name_their_folder(self) -> None:
         # A bare `#include "op.h"` would resolve only by luck once the files are
         # in two directories; every cross-folder include is spelled out.

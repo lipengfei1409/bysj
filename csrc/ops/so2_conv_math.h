@@ -29,7 +29,7 @@
 
 #include <hip/hip_runtime.h>
 
-namespace dpa4::so2 {
+namespace ops::so2 {
 
 //: Upper bound on (lmax + 1)^2 and 3 * lmax + 1 for lmax <= 4.
 inline constexpr int kMaxDim = 32;
@@ -105,4 +105,4 @@ __device__ __forceinline__ void edge_span(const float* x, const float* rot,
     rotate_back(rot_t, xl, out, dim, red);
 }
 
-}  // namespace dpa4::so2
+}  // namespace ops::so2

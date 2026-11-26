@@ -33,7 +33,7 @@
 #endif
 #endif
 
-namespace dmk::copy {
+namespace ops::copy {
 
 template <typename Vec, typename T>
 DMK_HOST_DEVICE inline bool aligned(const T* pointer) {
@@ -54,4 +54,4 @@ DMK_HOST_DEVICE inline void store_vec(T* pointer, Vec value) {
     *reinterpret_cast<Vec*>(pointer) = value;
 }
 
-}  // namespace dmk::copy
+}  // namespace ops::copy

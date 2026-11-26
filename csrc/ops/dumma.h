@@ -2,7 +2,7 @@
 
 #include "ops/utils.h"
 
-namespace dmk::dumma {
+namespace ops::dumma {
 
 // Native DUMMA types and layout tags remain available through native::.
 namespace native = ::du::dumma;
@@ -43,4 +43,4 @@ __device__ inline void store_matrix(T* dst, const Fragment& src, unsigned ld,
     native::du_store_matrix_sync(dst, src, ld, layout);
 }
 
-}  // namespace dmk::dumma
+}  // namespace ops::dumma

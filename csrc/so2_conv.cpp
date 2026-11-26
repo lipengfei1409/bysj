@@ -51,14 +51,14 @@ __global__ void so2_conv_kernel(
          edge < edges; edge += stride) {
         const long src_node = src[edge];
         const float* xrow = x + static_cast<size_t>(src_node) * dim * channels;
-        float xv[dpa4::so2::kMaxDim];
+        float xv[ops::so2::kMaxDim];
         if (active) {
             for (int d = 0; d < dim; ++d)
                 xv[d] = xrow[static_cast<size_t>(d) * channels + channel];
         }
 
-        float xl[dpa4::so2::kMaxRed];
-        float y[dpa4::so2::kMaxDim];
+        float xl[ops::so2::kMaxRed];
+        float y[ops::so2::kMaxDim];
         float envelope = 0.0f;
         if (active) {
             const long rot_n = static_cast<long>(red) * dim;
@@ -67,7 +67,7 @@ __global__ void so2_conv_kernel(
             const float* rot_t_e = rot_t + static_cast<size_t>(edge) * rot_n;
             const float* kc_e = kc + static_cast<size_t>(edge) * layers * 2 * block;
             envelope = alpha[edge];
-            dpa4::so2::edge_span(xv, rot_e, rot_t_e, kc_e, dim, red, layers, y, xl);
+            ops::so2::edge_span(xv, rot_e, rot_t_e, kc_e, dim, red, layers, y, xl);
         }
 
         // Every lane writes only its own channel; idle lanes (C < 64) write
@@ -110,8 +110,8 @@ Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
               "every per-edge tensor must have one row per edge");
   TORCH_CHECK(kc.size(2) == 2 && kc.size(3) == red && kc.size(4) == red,
               "kc must hold a content and a gate kernel of (red, red)");
-  TORCH_CHECK(dim <= dpa4::so2::kMaxDim && red <= dpa4::so2::kMaxRed,
-              "this kernel supports dim, red <= ", dpa4::so2::kMaxDim);
+  TORCH_CHECK(dim <= ops::so2::kMaxDim && red <= ops::so2::kMaxRed,
+              "this kernel supports dim, red <= ", ops::so2::kMaxDim);
   TORCH_CHECK(channels <= 64,
               "one lane per channel requires channels <= 64, got ", channels);
   same_device(x, {rot, rot_t, kc, alpha});
