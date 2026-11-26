@@ -145,6 +145,8 @@ python3 tests/deepmd/profile/op_time_share.py \
 - `fx_graph.py` **打印某个模块的 FX 图**（唯一的 FX 图脚本）：`--target model|so2_conv`，
   `--list-targets` 列出可打印对象；`--trace-device cpu|cuda` 决定在哪追踪；新增目标只需在
   `TARGETS` 里加一行。
+- 两份已生成的图在 [`docs/artifacts/`](../../../docs/artifacts/)：`dpa4_air_cpu.fx.txt`（整模型）、
+  `dpa4_air_so2_conv.fx.txt`（一个 `SO2Convolution`），都是纯文本、带形状。
 - `ab_report.py` 读一组端到端 A/B 的收益：设备时间、相对基线的 delta、conv 自身耗时、以及路由是否真的开启；
   判据见 [docs/so2-conv-hip.md](../../../docs/so2-conv-hip.md) §6.4。
 - `verify_fused.py` 把融合算子的验证阶梯串成一条命令（`host → build → acc → lat → par → e2e`），

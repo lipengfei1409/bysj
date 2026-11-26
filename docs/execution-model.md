@@ -136,7 +136,7 @@ permute → permute → view → permute → view → bmm → view → permute �
 这就是 `blockdiag_gemm`（C7b「按存储原样吃权重、免连续化」）要消掉的 9 个节点/GEMM；
 也是 C6（逐元素链融合）拿不到链的图级原因——布局算子已经把张量拆成了两跳。
 
-图文本：`artifacts/dpa4_air_cpu.fx.txt.gz`（整模型）、`artifacts/dpa4_air_so2_conv.fx.txt.gz`（卷积）。
+图文本（纯文本，直接可读）：[`artifacts/dpa4_air_cpu.fx.txt`](artifacts/dpa4_air_cpu.fx.txt)（整模型 3470 行）、[`artifacts/dpa4_air_so2_conv.fx.txt`](artifacts/dpa4_air_so2_conv.fx.txt)（卷积 477 行）。
 
 ## 5. 建议的推进顺序
 
