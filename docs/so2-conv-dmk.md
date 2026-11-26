@@ -69,6 +69,17 @@ msg[e][d]   = alpha[e] · y[d]                          包络/注意力权重
 3. 发射端用 `mk::encode_so2_conv_instruction(words, begin, end, dim, red, layers, channels)`
    填 instruction，并先调用 `mk::so2_conv_tables_fit(dim, red, layers)` 校验页预算。
 
+## 测试
+
+| 文件 | 在哪跑 | 钉住什么 |
+| --- | --- | --- |
+| [`tests/python/test_so2_conv_dmk_op.py`](../tests/python/test_so2_conv_dmk_op.py) | 本机 | **模板合规**：五个钩子齐备、无析构（必须 trivially destructible）、构造函数吃指令字、opcode 不撞 `demo_op`；页预算 `(16,10,4)=1121 floats`、指令字 0–6 与编码器一致、信号量计数、`channel = lane` 的 lane 映射、缺失项已声明 |
+| [`tests/python/test_so2_conv_dmk_reference.py`](../tests/python/test_so2_conv_dmk_reference.py) | 本机 | **数学**：`kernel_order`（逐边逐通道的直译循环）与 `reference`（批量 einsum）互相吻合；正交旋转 + 零核 → 恒等；零 content 核 → 残差项消失；**content/gate 互换必须改变结果**（钉住两个核的顺序）；包络权重在回旋转之后乘；头文件里的阶段顺序与 oracle 一致 |
+| [`tests/csrc/accuracy/test_so2_conv_dmk_accuracy.py`](../tests/csrc/accuracy/test_so2_conv_dmk_accuracy.py) | DCU（待接入） | 与 oracle 对拍：生产形状 `(16,10,4,C=64)`、窄通道 `C=5`（空闲 lane 不许写）、边数 `1/3/5/7`（覆盖 `kConsumerWaves=4` 的每种尾部相位）、单层小形状、确定性 |
+
+两个 oracle 不是冗余：写测试时正是**批量 einsum 把 `err,erc->erc` 写成了取对角**（torch 对重复下标按对角处理），
+逐边循环立刻以 0.67 的误差报了出来。这类错误在单个 oracle 下会静默通过。
+
 ## 验证路径（与 hipified 版共用同一套门）
 
 ```bash
