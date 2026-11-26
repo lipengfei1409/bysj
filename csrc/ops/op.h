@@ -62,16 +62,11 @@
 #include <new>
 #include <type_traits>
 
-namespace dmk::mk {
-
-// The per-wave state a hook receives lives with the runtime (dmk/state.h); ops
-// only name it.  A forward declaration is required and sufficient: state.h
-// includes this header, so includes cannot go the other way.
-struct State;
-
-}  // namespace dmk::mk
-
 namespace ops {
+
+// The per-wave state a hook receives is declared in ops/state.h; it is part of
+// the contract between the runtime and the operators, not of the runtime.
+struct State;
 
 template <typename Globals>
 class BaseOp {
@@ -82,14 +77,14 @@ public:
 
     // Construct this instruction's dynamic semaphores; return how many were
     // initialized (<= config::kDynamicSemaphores).
-    __device__ virtual int init_semaphores(dmk::mk::State& state,
+    __device__ virtual int init_semaphores(State& state,
                                            const Globals& globals) const = 0;
 
-    __device__ virtual void load(dmk::mk::State& state,
+    __device__ virtual void load(State& state,
                                  const Globals& globals) const = 0;
-    __device__ virtual void run(dmk::mk::State& state,
+    __device__ virtual void run(State& state,
                                 const Globals& globals) const = 0;
-    __device__ virtual void store(dmk::mk::State& state,
+    __device__ virtual void store(State& state,
                                   const Globals& globals) const = 0;
 
 protected:

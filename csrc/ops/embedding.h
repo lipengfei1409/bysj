@@ -28,7 +28,7 @@
 
 #include "ops/copy.h"
 #include "ops/op.h"
-#include "dmk/state.h"
+#include "ops/state.h"
 
 namespace ops {
 
@@ -55,7 +55,7 @@ public:
 
     __device__ int release_lid(int query) const override { return query; }
 
-    __device__ int init_semaphores(dmk::mk::State& s,
+    __device__ int init_semaphores(State& s,
                                    const Globals&) const override {
         s.semaphores()[0].init(1);
         return 1;
@@ -82,7 +82,7 @@ public:
         return count;
     }
 
-    __device__ void load(dmk::mk::State& s, const Globals& g) const override {
+    __device__ void load(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid = s.pid(0);
@@ -131,9 +131,9 @@ public:
         }
     }
 
-    __device__ void run(dmk::mk::State&, const Globals&) const override {}
+    __device__ void run(State&, const Globals&) const override {}
 
-    __device__ void store(dmk::mk::State& s, const Globals& g) const override {
+    __device__ void store(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid = s.pid(0);

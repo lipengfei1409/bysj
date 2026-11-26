@@ -34,13 +34,13 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(names, {"megakernel.h", "state.h", "controller.h"})
         self.assertTrue((DMK / "megakernel.cpp").is_file())
 
-    def test_ops_depend_on_the_state_but_not_on_the_scheduler(self) -> None:
-        # A hook's parameter is `State&`, so ops legitimately include
-        # dmk/state.h; what they must never reach for is the driver.
+    def test_ops_never_include_anything_under_dmk(self) -> None:
+        # The rule, no exceptions: an operator header may not depend on the
+        # runtime.  The shared-memory contract it *is* written against lives in
+        # ops/state.h, so `ops` stays self-contained.
         for header in _headers(OPS):
             text = header.read_text()
-            for forbidden in ("dmk/megakernel.h", "dmk/controller.h"):
-                self.assertNotIn(f'#include "{forbidden}"', text, header.name)
+            self.assertNotIn('#include "dmk/', text, header.name)
 
     def test_the_runtime_may_include_ops(self) -> None:
         # The VM drives ops, so the dependency points this way only.
@@ -54,28 +54,34 @@ class LayoutTests(unittest.TestCase):
         # which has to name its real home (dmk::mk).
         for header in _headers(OPS):
             text = header.read_text()
-            # The only dmk:: block allowed here is the State forward declaration.
-            blocks = re.findall(r"\nnamespace (dmk::[A-Za-z_:]+) \{", text)
-            expected = ["dmk::mk{:"] if False else []
-            if "struct State;" in text:
-                self.assertEqual(blocks, ["dmk::mk"], header.name)
-            else:
-                self.assertEqual(blocks, expected, header.name)
+            # No dmk:: namespace may be opened here, not even for the State
+            # forward declaration: that lives in ops/state.h now.
+            self.assertEqual(
+                re.findall(r"\nnamespace (dmk::[A-Za-z_:]+) \{", text), [], header.name
+            )
 
-    def test_ops_name_the_runtime_state_explicitly(self) -> None:
-        # A hook's parameter must read dmk::mk::State, not a bare State that
-        # would silently be looked up in ops.
+    def test_the_state_contract_lives_with_the_ops(self) -> None:
+        # `State` is the interface between runtime and operator, so it is
+        # declared in ops/state.h and hooks take a bare `State&`.
         template = (OPS / "op.h").read_text()
-        self.assertIn("dmk::mk::State& state", template)
+        self.assertIn("struct State;", template)
+        self.assertNotIn("dmk::", template)
+        self.assertIn("State& state", template)
+        contract = (OPS / "state.h").read_text()
+        self.assertIn("struct State {", contract)
         for header in _headers(OPS):
-            text = header.read_text()
-            self.assertNotRegex(text, r"(?<!::)\bState&", header.name)
+            self.assertNotIn("dmk::", header.read_text(), header.name)
 
     def test_the_runtime_aliases_the_ops_namespace(self) -> None:
         for path in (DMK / "state.h", DMK / "megakernel.h", DMK / "controller.h"):
             text = path.read_text()
             self.assertIn("namespace config = ops::config;", text, path.name)
             self.assertIn('namespace dmk::mk {', text, path.name)
+
+    def test_the_runtime_builds_on_the_ops_contract(self) -> None:
+        text = (DMK / "state.h").read_text()
+        self.assertIn('#include "ops/state.h"', text)
+        self.assertIn("using ops::State;", text)
 
     def test_includes_name_their_folder(self) -> None:
         # A bare `#include "op.h"` would resolve only by luck once the files are

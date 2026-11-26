@@ -38,7 +38,7 @@
 #include "ops/config.h"
 #include "ops/dtype.h"
 #include "ops/op.h"
-#include "dmk/state.h"
+#include "ops/state.h"
 #include "ops/tile.h"
 #include "ops/tensor.h"
 
@@ -131,7 +131,7 @@ public:
 
     __device__ int release_lid(int query) const override { return query; }
 
-    __device__ int init_semaphores(dmk::mk::State& s,
+    __device__ int init_semaphores(State& s,
                                    const Globals&) const override {
         s.semaphores()[0].init(1);
         s.semaphores()[1].init(config::kConsumerWaves);
@@ -139,7 +139,7 @@ public:
     }
 
     // Q tile of this query tile, clamped at the matrix edge.
-    __device__ static void stage_query(dmk::mk::State& s, const Globals& g,
+    __device__ static void stage_query(State& s, const Globals& g,
                                        const Instruction& inst, int lane) {
         const auto shape = tensor::Shape<2>{
             {attention::kQueryTile, static_cast<size_t>(inst.dim)}};
@@ -159,7 +159,7 @@ public:
     }
 
     // K/V tile `key_tile`, clamped at the number of keys.
-    __device__ static void stage_keys(dmk::mk::State& s, const Globals& g,
+    __device__ static void stage_keys(State& s, const Globals& g,
                                       const Instruction& inst, int key_tile,
                                       int lane) {
         const auto shape = tensor::Shape<2>{
@@ -184,7 +184,7 @@ public:
             v_src, lane, config::kWaveSize);
     }
 
-    __device__ void load(dmk::mk::State& s, const Globals& g) const override {
+    __device__ void load(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
 
@@ -224,7 +224,7 @@ public:
     }
 
     // The whole attention for this query tile: every key tile in turn.
-    __device__ void run(dmk::mk::State& s, const Globals& g) const override {
+    __device__ void run(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
@@ -250,7 +250,7 @@ public:
         if (lane == 0) s.semaphores()[1].arrive();
     }
 
-    __device__ void store(dmk::mk::State& s, const Globals& g) const override {
+    __device__ void store(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int dim = inst.dim;
@@ -289,7 +289,7 @@ public:
 
 private:
     // One 16x16 score tile: S = Q K^T, online-softmax update, O += P V.
-    __device__ void score_and_accumulate(dmk::mk::State& s, const Instruction& inst,
+    __device__ void score_and_accumulate(State& s, const Instruction& inst,
                                          int key_tile, int lane) const {
         const int dim = inst.dim;
         const int first_key = key_tile * attention::kKeyTile;

@@ -5,7 +5,7 @@
 #include "ops/dtype.h"
 #include "ops/dumma.h"
 #include "ops/op.h"
-#include "dmk/state.h"
+#include "ops/state.h"
 #include "ops/tile.h"
 
 #include <type_traits>
@@ -430,7 +430,7 @@ public:
 
     __device__ int release_lid(int query) const override { return query; }
 
-    __device__ int init_semaphores(dmk::mk::State& s,
+    __device__ int init_semaphores(State& s,
                                    const Globals&) const override {
         s.semaphores()[0].init(1);
         s.semaphores()[1].init(config::kConsumerWaves);
@@ -439,7 +439,7 @@ public:
 
     // Stage the A/B k-tile at (k * 16) into the two operand pages. The runtime
     // calls it once (k = 0), run() calls it for the remaining k.
-    __device__ static void stage_operands(dmk::mk::State& s, const Globals& g,
+    __device__ static void stage_operands(State& s, const Globals& g,
                                           const Instruction& inst, int k,
                                           int lane) {
         const auto shape = tensor::Shape<2>{{kTile, kTile}};
@@ -462,7 +462,7 @@ public:
             b_src, lane, config::kWaveSize);
     }
 
-    __device__ void load(dmk::mk::State& s, const Globals& g) const override {
+    __device__ void load(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid_a = s.pid(0);
@@ -491,7 +491,7 @@ public:
     }
 
     // The whole GEMM for this output tile: every k-tile, accumulating into C.
-    __device__ void run(dmk::mk::State& s, const Globals& g) const override {
+    __device__ void run(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
@@ -532,7 +532,7 @@ public:
         if (lane == 0) s.semaphores()[1].arrive();
     }
 
-    __device__ void store(dmk::mk::State& s, const Globals& g) const override {
+    __device__ void store(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid_a = s.pid(0);
