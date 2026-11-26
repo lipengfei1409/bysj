@@ -316,11 +316,20 @@ def print_targets() -> None:
 
 
 def _observed_device(graph) -> str:
-    """Device the traced tensors actually live on -- the trace's own evidence."""
+    """Device the traced tensors actually live on -- the trace's own evidence.
+
+    A symbolic (``make_fx`` fake-tensor) trace keeps shapes and dtypes but drops
+    the device, so "unknown" there is a property of the trace, not a failure to
+    look; a real trace (the ``so2_conv`` target) reports the actual device.
+    """
+    seen_meta = False
     for node in graph.nodes:
         if node.op != "call_function":
             continue
         meta = (node.meta or {}).get("tensor_meta")
+        if meta is None:
+            continue
+        seen_meta = True
         device = getattr(meta, "device", None)
         if device is not None:
             return str(device)
@@ -328,7 +337,9 @@ def _observed_device(graph) -> str:
             device = getattr(meta[0], "device", None)
             if device is not None:
                 return str(device)
-    return "unknown"
+    if seen_meta:
+        return "unknown (a symbolic trace records no device metadata)"
+    return "unknown (no tensor metadata)"
 
 
 def _describe(graph, options) -> tuple:
