@@ -356,9 +356,13 @@ def _describe(module, options) -> tuple:
         text = str(graph)
     elif options.format == "shapes":
         text = render(nodes)
-    else:
-        # The GraphModule's own print interface.
+    elif options.format == "code":
         text = str(module)
+    else:
+        # The GraphModule's readable print: source plus per-node shapes.
+        text = module.print_readable(
+            print_output=False, include_stride=False, include_device=True
+        )
     return ops, families, text
 
 
@@ -380,9 +384,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="so2_conv target: which instance to print (0-based)")
     parser.add_argument("--stub-lib", action="store_true",
                         help="satisfy deepmd.lib from the source tree (no compiled extension)")
-    parser.add_argument("--format", default="code", choices=("code", "ssa", "shapes"),
-                        help="code: GraphModule's print interface (default); "
-                             "ssa: str(graph); shapes: one line per node with its shape")
+    parser.add_argument("--format", default="readable",
+                        choices=("readable", "code", "ssa", "shapes"),
+                        help="readable: GraphModule.print_readable (default); "
+                             "code: str(graph_module); ssa: str(graph); "
+                             "shapes: one line per node with its shape")
     parser.add_argument("--summary", action="store_true", help="skip the node listing")
     parser.add_argument("--max-nodes", type=int, default=0)
     parser.add_argument("--out", type=Path, default=None)

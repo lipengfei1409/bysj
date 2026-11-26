@@ -1,536 +1,533 @@
 # DPA4-OMol/DPA4-Air-OMol25-100M-v20260820.pt
-# target=so2_conv  format=code (GraphModule print)  3 SO2Convolution instances; traced #0 (lmax=3, channels=64) on 2 tensor inputs
+# target=so2_conv  format=readable (GraphModule.print_readable)  3 SO2Convolution instances; traced #0 (lmax=3, channels=64) on 2 tensor inputs
 
-call()
+class call(torch.nn.Module):
+    def forward(self, x_1: "f32[28, 16, 64]cpu", radial_feat_1: "f32[92, 4, 64]cpu"):
+        # No stacktrace found for following nodes
+        unsqueeze: "f32[28, 16, 1, 64]cpu" = torch.ops.aten.unsqueeze.default(x_1, 2);  x_1 = None
+        _param_constant0: "f32[4, 64, 64]cpu" = self._param_constant0
+        view: "f32[4, 64, 1, 64]cpu" = torch.ops.aten.view.default(_param_constant0, [4, 64, 1, 64]);  _param_constant0 = None
+        _tensor_constant0: "i64[16]cpu" = self._tensor_constant0
+        index_select: "f32[16, 64, 1, 64]cpu" = torch.ops.aten.index_select.default(view, 0, _tensor_constant0);  view = _tensor_constant0 = None
+        unsqueeze_1: "f32[28, 16, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze, 4);  unsqueeze = None
+        permute: "f32[28, 16, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_1, [0, 1, 2, 4, 3]);  unsqueeze_1 = None
+        unsqueeze_2: "f32[16, 64, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(index_select, 4);  index_select = None
+        permute_1: "f32[1, 16, 1, 64, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_2, [4, 0, 2, 3, 1]);  unsqueeze_2 = None
+        permute_2: "f32[16, 28, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute, [1, 0, 4, 2, 3]);  permute = None
+        view_1: "f32[16, 28, 64]cpu" = torch.ops.aten.view.default(permute_2, [16, 28, 64]);  permute_2 = None
+        permute_3: "f32[16, 64, 1, 64, 1]cpu" = torch.ops.aten.permute.default(permute_1, [1, 4, 2, 3, 0]);  permute_1 = None
+        view_2: "f32[16, 64, 64]cpu" = torch.ops.aten.view.default(permute_3, [16, 64, 64]);  permute_3 = None
+        bmm: "f32[16, 28, 64]cpu" = torch.ops.aten.bmm.default(view_1, view_2);  view_1 = view_2 = None
+        view_3: "f32[16, 28, 1, 1, 64]cpu" = torch.ops.aten.view.default(bmm, [16, 28, 1, 1, 64]);  bmm = None
+        permute_4: "f32[28, 16, 1, 64, 1]cpu" = torch.ops.aten.permute.default(view_3, [1, 0, 3, 4, 2]);  view_3 = None
+        view_4: "f32[28, 16, 1, 64]cpu" = torch.ops.aten.view.default(permute_4, [28, 16, 1, 64]);  permute_4 = None
+        squeeze: "f32[28, 16, 64]cpu" = torch.ops.aten.squeeze.dim(view_4, 2);  view_4 = None
+        select: "f32[28, 64]cpu" = torch.ops.aten.select.int(squeeze, 1, 0)
+        view_5: "f32[28, 1, 64]cpu" = torch.ops.aten.view.default(select, [28, 1, 64]);  select = None
+        _tensor_constant1: "i64[92]cpu" = self._tensor_constant1
+        index_select_1: "f32[92, 16, 64]cpu" = torch.ops.aten.index_select.default(squeeze, 0, _tensor_constant1);  _tensor_constant1 = None
+        _tensor_constant2: "f32[92, 10, 16]cpu" = self._tensor_constant2
+        bmm_1: "f32[92, 10, 64]cpu" = torch.ops.aten.bmm.default(_tensor_constant2, index_select_1);  _tensor_constant2 = index_select_1 = None
+        _tensor_constant3: "i64[10]cpu" = self._tensor_constant3
+        index: "f32[92, 10, 64]cpu" = torch.ops.aten.index.Tensor(radial_feat_1, [None, _tensor_constant3]);  radial_feat_1 = _tensor_constant3 = None
+        slice_1: "f32[92, 4, 64]cpu" = torch.ops.aten.slice.Tensor(index, 1, 0, 4)
+        view_6: "f32[92, 256]cpu" = torch.ops.aten.view.default(slice_1, [92, 256]);  slice_1 = None
+        _param_constant1: "f32[256, 25]cpu" = self._param_constant1
+        mm: "f32[92, 25]cpu" = torch.ops.aten.mm.default(view_6, _param_constant1);  view_6 = _param_constant1 = None
+        view_7: "f32[92, 25, 1]cpu" = torch.ops.aten.view.default(mm, [92, 25, 1]);  mm = None
+        new_zeros: "f32[92, 100, 1]cpu" = torch.ops.aten.new_zeros.default(view_7, [92, 100, 1], pin_memory = False)
+        _tensor_constant4: "i64[34]cpu" = self._tensor_constant4
+        index_select_2: "f32[92, 34, 1]cpu" = torch.ops.aten.index_select.default(view_7, 1, _tensor_constant4);  view_7 = _tensor_constant4 = None
+        _tensor_constant5: "i64[34]cpu" = self._tensor_constant5
+        index_copy_: "f32[92, 100, 1]cpu" = torch.ops.aten.index_copy_.default(new_zeros, 1, _tensor_constant5, index_select_2);  new_zeros = _tensor_constant5 = index_select_2 = None
+        view_8: "f32[92, 10, 10, 1]cpu" = torch.ops.aten.view.default(index_copy_, [92, 10, 10, 1]);  index_copy_ = None
+        unsqueeze_3: "f32[92, 10, 10, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(view_8, 4);  view_8 = None
+        permute_5: "f32[92, 10, 1, 1, 10]cpu" = torch.ops.aten.permute.default(unsqueeze_3, [0, 1, 3, 4, 2]);  unsqueeze_3 = None
+        unsqueeze_4: "f32[92, 10, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(bmm_1, 3);  bmm_1 = None
+        unsqueeze_5: "f32[92, 10, 64, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_4, 4);  unsqueeze_4 = None
+        permute_6: "f32[92, 1, 1, 64, 10]cpu" = torch.ops.aten.permute.default(unsqueeze_5, [0, 3, 4, 2, 1]);  unsqueeze_5 = None
+        permute_7: "f32[92, 10, 10, 1, 1]cpu" = torch.ops.aten.permute.default(permute_5, [0, 1, 4, 2, 3]);  permute_5 = None
+        view_9: "f32[92, 10, 10]cpu" = torch.ops.aten.view.default(permute_7, [92, 10, 10]);  permute_7 = None
+        permute_8: "f32[92, 10, 1, 64, 1]cpu" = torch.ops.aten.permute.default(permute_6, [0, 4, 2, 3, 1]);  permute_6 = None
+        view_10: "f32[92, 10, 64]cpu" = torch.ops.aten.view.default(permute_8, [92, 10, 64]);  permute_8 = None
+        bmm_2: "f32[92, 10, 64]cpu" = torch.ops.aten.bmm.default(view_9, view_10);  view_9 = view_10 = None
+        view_11: "f32[92, 10, 1, 1, 64]cpu" = torch.ops.aten.view.default(bmm_2, [92, 10, 1, 1, 64]);  bmm_2 = None
+        permute_9: "f32[92, 10, 1, 64, 1]cpu" = torch.ops.aten.permute.default(view_11, [0, 1, 3, 4, 2]);  view_11 = None
+        view_12: "f32[92, 10, 1, 64]cpu" = torch.ops.aten.view.default(permute_9, [92, 10, 1, 64]);  permute_9 = None
+        _param_constant2: "f32[1, 64]cpu" = self._param_constant2
+        view_13: "f32[1, 1, 1, 64]cpu" = torch.ops.aten.view.default(_param_constant2, [1, 1, 1, 64]);  _param_constant2 = None
+        mul: "f32[92, 10, 1, 64]cpu" = torch.ops.aten.mul.Tensor(view_12, view_13);  view_12 = view_13 = None
+        sum_1: "f32[92, 10, 64]cpu" = torch.ops.aten.sum.dim_IntList(mul, [2]);  mul = None
+        select_1: "f32[92, 64]cpu" = torch.ops.aten.select.int(index, 1, 0)
+        view_14: "f32[92, 1, 64]cpu" = torch.ops.aten.view.default(select_1, [92, 1, 64]);  select_1 = view_14 = None
+        view_15: "f32[92, 10, 1, 64]cpu" = torch.ops.aten.view.default(sum_1, [92, 10, 1, 64]);  sum_1 = None
+        permute_10: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.permute.default(view_15, [2, 0, 1, 3]);  view_15 = None
+        view_16: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(permute_10, [1, 92, 640])
+        unsqueeze_6: "f32[1, 92, 640, 1]cpu" = torch.ops.aten.unsqueeze.default(view_16, 3);  view_16 = None
+        permute_11: "f32[1, 92, 1, 640]cpu" = torch.ops.aten.permute.default(unsqueeze_6, [0, 1, 3, 2]);  unsqueeze_6 = None
+        _tensor_constant6: "f32[640, 1, 640]cpu" = self._tensor_constant6
+        unsqueeze_7: "f32[640, 1, 640, 1]cpu" = torch.ops.aten.unsqueeze.default(_tensor_constant6, 3);  _tensor_constant6 = None
+        permute_12: "f32[1, 1, 640, 640]cpu" = torch.ops.aten.permute.default(unsqueeze_7, [1, 3, 2, 0]);  unsqueeze_7 = None
+        permute_13: "f32[92, 640, 1, 1]cpu" = torch.ops.aten.permute.default(permute_11, [1, 3, 0, 2]);  permute_11 = None
+        view_17: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(permute_13, [1, 92, 640]);  permute_13 = None
+        permute_14: "f32[640, 1, 640, 1]cpu" = torch.ops.aten.permute.default(permute_12, [3, 0, 2, 1]);  permute_12 = None
+        view_18: "f32[1, 640, 640]cpu" = torch.ops.aten.view.default(permute_14, [1, 640, 640]);  permute_14 = None
+        bmm_3: "f32[1, 92, 640]cpu" = torch.ops.aten.bmm.default(view_17, view_18);  view_17 = view_18 = None
+        view_19: "f32[92, 1, 1, 640]cpu" = torch.ops.aten.view.default(bmm_3, [92, 1, 1, 640]);  bmm_3 = None
+        permute_15: "f32[1, 92, 640, 1]cpu" = torch.ops.aten.permute.default(view_19, [2, 0, 3, 1]);  view_19 = None
+        view_20: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(permute_15, [1, 92, 640]);  permute_15 = None
+        view_21: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.view.default(view_20, [1, 92, 10, 64]);  view_20 = None
+        select_2: "f32[1, 92, 64]cpu" = torch.ops.aten.select.int(view_21, 2, 0)
+        slice_2: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.slice.Tensor(view_21, 2, 0, 1)
+        silu: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.silu.default(slice_2);  slice_2 = None
+        transpose: "f32[92, 1, 64]cpu" = torch.ops.aten.transpose.int(select_2, 0, 1);  select_2 = None
+        _param_constant3: "f32[64, 192]cpu" = self._param_constant3
+        view_22: "f32[64, 1, 192]cpu" = torch.ops.aten.view.default(_param_constant3, [64, 1, 192]);  _param_constant3 = None
+        unsqueeze_8: "f32[92, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(transpose, 3);  transpose = None
+        permute_16: "f32[92, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_8, [0, 1, 3, 2]);  unsqueeze_8 = None
+        unsqueeze_9: "f32[64, 1, 192, 1]cpu" = torch.ops.aten.unsqueeze.default(view_22, 3);  view_22 = None
+        permute_17: "f32[1, 1, 192, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_9, [3, 1, 2, 0]);  unsqueeze_9 = None
+        permute_18: "f32[92, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_16, [0, 3, 1, 2]);  permute_16 = None
+        view_23: "f32[1, 92, 64]cpu" = torch.ops.aten.view.default(permute_18, [1, 92, 64]);  permute_18 = None
+        permute_19: "f32[64, 1, 192, 1]cpu" = torch.ops.aten.permute.default(permute_17, [3, 1, 2, 0]);  permute_17 = None
+        view_24: "f32[1, 64, 192]cpu" = torch.ops.aten.view.default(permute_19, [1, 64, 192]);  permute_19 = None
+        bmm_4: "f32[1, 92, 192]cpu" = torch.ops.aten.bmm.default(view_23, view_24);  view_23 = view_24 = None
+        view_25: "f32[92, 1, 1, 192]cpu" = torch.ops.aten.view.default(bmm_4, [92, 1, 1, 192]);  bmm_4 = None
+        permute_20: "f32[92, 1, 192, 1]cpu" = torch.ops.aten.permute.default(view_25, [0, 2, 3, 1]);  view_25 = None
+        view_26: "f32[92, 1, 192]cpu" = torch.ops.aten.view.default(permute_20, [92, 1, 192]);  permute_20 = None
+        transpose_1: "f32[1, 92, 192]cpu" = torch.ops.aten.transpose.int(view_26, 0, 1);  view_26 = None
+        sigmoid: "f32[1, 92, 192]cpu" = torch.ops.aten.sigmoid.default(transpose_1);  transpose_1 = None
+        alias: "f32[1, 92, 192]cpu" = torch.ops.aten.alias.default(sigmoid);  alias = None
+        view_27: "f32[1, 92, 3, 64]cpu" = torch.ops.aten.view.default(sigmoid, [1, 92, 3, 64]);  sigmoid = None
+        _tensor_constant7: "i64[9]cpu" = self._tensor_constant7
+        index_select_3: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.index_select.default(view_27, 2, _tensor_constant7);  view_27 = _tensor_constant7 = None
+        new_empty: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.new_empty.default(view_21, [1, 92, 10, 64], pin_memory = False)
+        slice_3: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.slice.Tensor(new_empty, 2, 0, 1)
+        copy_: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.copy_.default(slice_3, silu);  slice_3 = silu = copy_ = None
+        slice_4: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.slice.Tensor(new_empty, 2, 1, 10)
+        slice_5: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.slice.Tensor(view_21, 2, 1, 10);  view_21 = None
+        mul_1: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.mul.Tensor(slice_5, index_select_3);  slice_5 = index_select_3 = None
+        copy__1: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.copy_.default(slice_4, mul_1);  slice_4 = mul_1 = copy__1 = None
+        add: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.add.Tensor(permute_10, new_empty);  permute_10 = new_empty = None
+        view_28: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(add, [1, 92, 640])
+        unsqueeze_10: "f32[1, 92, 640, 1]cpu" = torch.ops.aten.unsqueeze.default(view_28, 3);  view_28 = None
+        permute_21: "f32[1, 92, 1, 640]cpu" = torch.ops.aten.permute.default(unsqueeze_10, [0, 1, 3, 2]);  unsqueeze_10 = None
+        _tensor_constant8: "f32[640, 1, 640]cpu" = self._tensor_constant8
+        unsqueeze_11: "f32[640, 1, 640, 1]cpu" = torch.ops.aten.unsqueeze.default(_tensor_constant8, 3);  _tensor_constant8 = None
+        permute_22: "f32[1, 1, 640, 640]cpu" = torch.ops.aten.permute.default(unsqueeze_11, [1, 3, 2, 0]);  unsqueeze_11 = None
+        permute_23: "f32[92, 640, 1, 1]cpu" = torch.ops.aten.permute.default(permute_21, [1, 3, 0, 2]);  permute_21 = None
+        view_29: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(permute_23, [1, 92, 640]);  permute_23 = None
+        permute_24: "f32[640, 1, 640, 1]cpu" = torch.ops.aten.permute.default(permute_22, [3, 0, 2, 1]);  permute_22 = None
+        view_30: "f32[1, 640, 640]cpu" = torch.ops.aten.view.default(permute_24, [1, 640, 640]);  permute_24 = None
+        bmm_5: "f32[1, 92, 640]cpu" = torch.ops.aten.bmm.default(view_29, view_30);  view_29 = view_30 = None
+        view_31: "f32[92, 1, 1, 640]cpu" = torch.ops.aten.view.default(bmm_5, [92, 1, 1, 640]);  bmm_5 = None
+        permute_25: "f32[1, 92, 640, 1]cpu" = torch.ops.aten.permute.default(view_31, [2, 0, 3, 1]);  view_31 = None
+        view_32: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(permute_25, [1, 92, 640]);  permute_25 = None
+        view_33: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.view.default(view_32, [1, 92, 10, 64]);  view_32 = None
+        select_3: "f32[1, 92, 64]cpu" = torch.ops.aten.select.int(view_33, 2, 0)
+        slice_6: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.slice.Tensor(view_33, 2, 0, 1)
+        silu_1: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.silu.default(slice_6);  slice_6 = None
+        transpose_2: "f32[92, 1, 64]cpu" = torch.ops.aten.transpose.int(select_3, 0, 1);  select_3 = None
+        _param_constant4: "f32[64, 192]cpu" = self._param_constant4
+        view_34: "f32[64, 1, 192]cpu" = torch.ops.aten.view.default(_param_constant4, [64, 1, 192]);  _param_constant4 = None
+        unsqueeze_12: "f32[92, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(transpose_2, 3);  transpose_2 = None
+        permute_26: "f32[92, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_12, [0, 1, 3, 2]);  unsqueeze_12 = None
+        unsqueeze_13: "f32[64, 1, 192, 1]cpu" = torch.ops.aten.unsqueeze.default(view_34, 3);  view_34 = None
+        permute_27: "f32[1, 1, 192, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_13, [3, 1, 2, 0]);  unsqueeze_13 = None
+        permute_28: "f32[92, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_26, [0, 3, 1, 2]);  permute_26 = None
+        view_35: "f32[1, 92, 64]cpu" = torch.ops.aten.view.default(permute_28, [1, 92, 64]);  permute_28 = None
+        permute_29: "f32[64, 1, 192, 1]cpu" = torch.ops.aten.permute.default(permute_27, [3, 1, 2, 0]);  permute_27 = None
+        view_36: "f32[1, 64, 192]cpu" = torch.ops.aten.view.default(permute_29, [1, 64, 192]);  permute_29 = None
+        bmm_6: "f32[1, 92, 192]cpu" = torch.ops.aten.bmm.default(view_35, view_36);  view_35 = view_36 = None
+        view_37: "f32[92, 1, 1, 192]cpu" = torch.ops.aten.view.default(bmm_6, [92, 1, 1, 192]);  bmm_6 = None
+        permute_30: "f32[92, 1, 192, 1]cpu" = torch.ops.aten.permute.default(view_37, [0, 2, 3, 1]);  view_37 = None
+        view_38: "f32[92, 1, 192]cpu" = torch.ops.aten.view.default(permute_30, [92, 1, 192]);  permute_30 = None
+        transpose_3: "f32[1, 92, 192]cpu" = torch.ops.aten.transpose.int(view_38, 0, 1);  view_38 = None
+        sigmoid_1: "f32[1, 92, 192]cpu" = torch.ops.aten.sigmoid.default(transpose_3);  transpose_3 = None
+        alias_1: "f32[1, 92, 192]cpu" = torch.ops.aten.alias.default(sigmoid_1);  alias_1 = None
+        view_39: "f32[1, 92, 3, 64]cpu" = torch.ops.aten.view.default(sigmoid_1, [1, 92, 3, 64]);  sigmoid_1 = None
+        _tensor_constant9: "i64[9]cpu" = self._tensor_constant9
+        index_select_4: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.index_select.default(view_39, 2, _tensor_constant9);  view_39 = _tensor_constant9 = None
+        new_empty_1: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.new_empty.default(view_33, [1, 92, 10, 64], pin_memory = False)
+        slice_7: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.slice.Tensor(new_empty_1, 2, 0, 1)
+        copy__2: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.copy_.default(slice_7, silu_1);  slice_7 = silu_1 = copy__2 = None
+        slice_8: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.slice.Tensor(new_empty_1, 2, 1, 10)
+        slice_9: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.slice.Tensor(view_33, 2, 1, 10);  view_33 = None
+        mul_2: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.mul.Tensor(slice_9, index_select_4);  slice_9 = index_select_4 = None
+        copy__3: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.copy_.default(slice_8, mul_2);  slice_8 = mul_2 = copy__3 = None
+        add_1: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.add.Tensor(add, new_empty_1);  add = new_empty_1 = None
+        view_40: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(add_1, [1, 92, 640])
+        unsqueeze_14: "f32[1, 92, 640, 1]cpu" = torch.ops.aten.unsqueeze.default(view_40, 3);  view_40 = None
+        permute_31: "f32[1, 92, 1, 640]cpu" = torch.ops.aten.permute.default(unsqueeze_14, [0, 1, 3, 2]);  unsqueeze_14 = None
+        _tensor_constant10: "f32[640, 1, 640]cpu" = self._tensor_constant10
+        unsqueeze_15: "f32[640, 1, 640, 1]cpu" = torch.ops.aten.unsqueeze.default(_tensor_constant10, 3);  _tensor_constant10 = None
+        permute_32: "f32[1, 1, 640, 640]cpu" = torch.ops.aten.permute.default(unsqueeze_15, [1, 3, 2, 0]);  unsqueeze_15 = None
+        permute_33: "f32[92, 640, 1, 1]cpu" = torch.ops.aten.permute.default(permute_31, [1, 3, 0, 2]);  permute_31 = None
+        view_41: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(permute_33, [1, 92, 640]);  permute_33 = None
+        permute_34: "f32[640, 1, 640, 1]cpu" = torch.ops.aten.permute.default(permute_32, [3, 0, 2, 1]);  permute_32 = None
+        view_42: "f32[1, 640, 640]cpu" = torch.ops.aten.view.default(permute_34, [1, 640, 640]);  permute_34 = None
+        bmm_7: "f32[1, 92, 640]cpu" = torch.ops.aten.bmm.default(view_41, view_42);  view_41 = view_42 = None
+        view_43: "f32[92, 1, 1, 640]cpu" = torch.ops.aten.view.default(bmm_7, [92, 1, 1, 640]);  bmm_7 = None
+        permute_35: "f32[1, 92, 640, 1]cpu" = torch.ops.aten.permute.default(view_43, [2, 0, 3, 1]);  view_43 = None
+        view_44: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(permute_35, [1, 92, 640]);  permute_35 = None
+        view_45: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.view.default(view_44, [1, 92, 10, 64]);  view_44 = None
+        select_4: "f32[1, 92, 64]cpu" = torch.ops.aten.select.int(view_45, 2, 0)
+        slice_10: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.slice.Tensor(view_45, 2, 0, 1)
+        silu_2: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.silu.default(slice_10);  slice_10 = None
+        transpose_4: "f32[92, 1, 64]cpu" = torch.ops.aten.transpose.int(select_4, 0, 1);  select_4 = None
+        _param_constant5: "f32[64, 192]cpu" = self._param_constant5
+        view_46: "f32[64, 1, 192]cpu" = torch.ops.aten.view.default(_param_constant5, [64, 1, 192]);  _param_constant5 = None
+        unsqueeze_16: "f32[92, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(transpose_4, 3);  transpose_4 = None
+        permute_36: "f32[92, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_16, [0, 1, 3, 2]);  unsqueeze_16 = None
+        unsqueeze_17: "f32[64, 1, 192, 1]cpu" = torch.ops.aten.unsqueeze.default(view_46, 3);  view_46 = None
+        permute_37: "f32[1, 1, 192, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_17, [3, 1, 2, 0]);  unsqueeze_17 = None
+        permute_38: "f32[92, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_36, [0, 3, 1, 2]);  permute_36 = None
+        view_47: "f32[1, 92, 64]cpu" = torch.ops.aten.view.default(permute_38, [1, 92, 64]);  permute_38 = None
+        permute_39: "f32[64, 1, 192, 1]cpu" = torch.ops.aten.permute.default(permute_37, [3, 1, 2, 0]);  permute_37 = None
+        view_48: "f32[1, 64, 192]cpu" = torch.ops.aten.view.default(permute_39, [1, 64, 192]);  permute_39 = None
+        bmm_8: "f32[1, 92, 192]cpu" = torch.ops.aten.bmm.default(view_47, view_48);  view_47 = view_48 = None
+        view_49: "f32[92, 1, 1, 192]cpu" = torch.ops.aten.view.default(bmm_8, [92, 1, 1, 192]);  bmm_8 = None
+        permute_40: "f32[92, 1, 192, 1]cpu" = torch.ops.aten.permute.default(view_49, [0, 2, 3, 1]);  view_49 = None
+        view_50: "f32[92, 1, 192]cpu" = torch.ops.aten.view.default(permute_40, [92, 1, 192]);  permute_40 = None
+        transpose_5: "f32[1, 92, 192]cpu" = torch.ops.aten.transpose.int(view_50, 0, 1);  view_50 = None
+        sigmoid_2: "f32[1, 92, 192]cpu" = torch.ops.aten.sigmoid.default(transpose_5);  transpose_5 = None
+        alias_2: "f32[1, 92, 192]cpu" = torch.ops.aten.alias.default(sigmoid_2);  alias_2 = None
+        view_51: "f32[1, 92, 3, 64]cpu" = torch.ops.aten.view.default(sigmoid_2, [1, 92, 3, 64]);  sigmoid_2 = None
+        _tensor_constant11: "i64[9]cpu" = self._tensor_constant11
+        index_select_5: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.index_select.default(view_51, 2, _tensor_constant11);  view_51 = _tensor_constant11 = None
+        new_empty_2: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.new_empty.default(view_45, [1, 92, 10, 64], pin_memory = False)
+        slice_11: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.slice.Tensor(new_empty_2, 2, 0, 1)
+        copy__4: "f32[1, 92, 1, 64]cpu" = torch.ops.aten.copy_.default(slice_11, silu_2);  slice_11 = silu_2 = copy__4 = None
+        slice_12: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.slice.Tensor(new_empty_2, 2, 1, 10)
+        slice_13: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.slice.Tensor(view_45, 2, 1, 10);  view_45 = None
+        mul_3: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.mul.Tensor(slice_13, index_select_5);  slice_13 = index_select_5 = None
+        copy__5: "f32[1, 92, 9, 64]cpu" = torch.ops.aten.copy_.default(slice_12, mul_3);  slice_12 = mul_3 = copy__5 = None
+        add_2: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.add.Tensor(add_1, new_empty_2);  add_1 = new_empty_2 = None
+        view_52: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(add_2, [1, 92, 640])
+        unsqueeze_18: "f32[1, 92, 640, 1]cpu" = torch.ops.aten.unsqueeze.default(view_52, 3);  view_52 = None
+        permute_41: "f32[1, 92, 1, 640]cpu" = torch.ops.aten.permute.default(unsqueeze_18, [0, 1, 3, 2]);  unsqueeze_18 = None
+        _tensor_constant12: "f32[640, 1, 640]cpu" = self._tensor_constant12
+        unsqueeze_19: "f32[640, 1, 640, 1]cpu" = torch.ops.aten.unsqueeze.default(_tensor_constant12, 3);  _tensor_constant12 = None
+        permute_42: "f32[1, 1, 640, 640]cpu" = torch.ops.aten.permute.default(unsqueeze_19, [1, 3, 2, 0]);  unsqueeze_19 = None
+        permute_43: "f32[92, 640, 1, 1]cpu" = torch.ops.aten.permute.default(permute_41, [1, 3, 0, 2]);  permute_41 = None
+        view_53: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(permute_43, [1, 92, 640]);  permute_43 = None
+        permute_44: "f32[640, 1, 640, 1]cpu" = torch.ops.aten.permute.default(permute_42, [3, 0, 2, 1]);  permute_42 = None
+        view_54: "f32[1, 640, 640]cpu" = torch.ops.aten.view.default(permute_44, [1, 640, 640]);  permute_44 = None
+        bmm_9: "f32[1, 92, 640]cpu" = torch.ops.aten.bmm.default(view_53, view_54);  view_53 = view_54 = None
+        view_55: "f32[92, 1, 1, 640]cpu" = torch.ops.aten.view.default(bmm_9, [92, 1, 1, 640]);  bmm_9 = None
+        permute_45: "f32[1, 92, 640, 1]cpu" = torch.ops.aten.permute.default(view_55, [2, 0, 3, 1]);  view_55 = None
+        view_56: "f32[1, 92, 640]cpu" = torch.ops.aten.view.default(permute_45, [1, 92, 640]);  permute_45 = None
+        view_57: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.view.default(view_56, [1, 92, 10, 64]);  view_56 = None
+        add_3: "f32[1, 92, 10, 64]cpu" = torch.ops.aten.add.Tensor(add_2, view_57);  add_2 = view_57 = None
+        permute_46: "f32[92, 1, 10, 64]cpu" = torch.ops.aten.permute.default(add_3, [1, 0, 2, 3]);  add_3 = None
+        transpose_6: "f32[92, 10, 1, 64]cpu" = torch.ops.aten.transpose.int(permute_46, 1, 2);  permute_46 = None
+        view_58: "f32[92, 10, 64]cpu" = torch.ops.aten.view.default(transpose_6, [92, 10, 64]);  transpose_6 = None
+        _tensor_constant13: "f32[92, 16, 10]cpu" = self._tensor_constant13
+        bmm_10: "f32[92, 16, 64]cpu" = torch.ops.aten.bmm.default(_tensor_constant13, view_58);  _tensor_constant13 = view_58 = None
+        _tensor_constant14: "f32[16]cpu" = self._tensor_constant14
+        view_59: "f32[1, 16, 1]cpu" = torch.ops.aten.view.default(_tensor_constant14, [1, -1, 1]);  _tensor_constant14 = None
+        mul_4: "f32[92, 16, 64]cpu" = torch.ops.aten.mul.Tensor(bmm_10, view_59);  bmm_10 = view_59 = None
+        pow_1: "f32[28, 1, 64]cpu" = torch.ops.aten.pow.Tensor_Scalar(view_5, 2)
+        mean: "f32[28, 1, 1]cpu" = torch.ops.aten.mean.dim(pow_1, [-1], True);  pow_1 = None
+        _tensor_constant15: "f32[]cpu" = self._tensor_constant15
+        add_4: "f32[28, 1, 1]cpu" = torch.ops.aten.add.Tensor(mean, _tensor_constant15);  mean = _tensor_constant15 = None
+        rsqrt: "f32[28, 1, 1]cpu" = torch.ops.aten.rsqrt.default(add_4);  add_4 = None
+        alias_3: "f32[28, 1, 1]cpu" = torch.ops.aten.alias.default(rsqrt);  alias_3 = None
+        mul_5: "f32[28, 1, 64]cpu" = torch.ops.aten.mul.Tensor(view_5, rsqrt);  rsqrt = None
+        _param_constant6: "f32[1, 64]cpu" = self._param_constant6
+        unsqueeze_20: "f32[1, 1, 64]cpu" = torch.ops.aten.unsqueeze.default(_param_constant6, 0);  _param_constant6 = None
+        mul_6: "f32[28, 1, 64]cpu" = torch.ops.aten.mul.Tensor(mul_5, unsqueeze_20);  mul_5 = unsqueeze_20 = None
+        _param_constant7: "f32[64, 64]cpu" = self._param_constant7
+        view_60: "f32[64, 1, 64]cpu" = torch.ops.aten.view.default(_param_constant7, [64, 1, 64]);  _param_constant7 = None
+        unsqueeze_21: "f32[28, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(mul_6, 3)
+        permute_47: "f32[28, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_21, [0, 1, 3, 2]);  unsqueeze_21 = None
+        unsqueeze_22: "f32[64, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(view_60, 3);  view_60 = None
+        permute_48: "f32[1, 1, 64, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_22, [3, 1, 2, 0]);  unsqueeze_22 = None
+        permute_49: "f32[28, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_47, [0, 3, 1, 2]);  permute_47 = None
+        view_61: "f32[1, 28, 64]cpu" = torch.ops.aten.view.default(permute_49, [1, 28, 64]);  permute_49 = None
+        permute_50: "f32[64, 1, 64, 1]cpu" = torch.ops.aten.permute.default(permute_48, [3, 1, 2, 0]);  permute_48 = None
+        view_62: "f32[1, 64, 64]cpu" = torch.ops.aten.view.default(permute_50, [1, 64, 64]);  permute_50 = None
+        bmm_11: "f32[1, 28, 64]cpu" = torch.ops.aten.bmm.default(view_61, view_62);  view_61 = view_62 = None
+        view_63: "f32[28, 1, 1, 64]cpu" = torch.ops.aten.view.default(bmm_11, [28, 1, 1, 64]);  bmm_11 = None
+        permute_51: "f32[28, 1, 64, 1]cpu" = torch.ops.aten.permute.default(view_63, [0, 2, 3, 1]);  view_63 = None
+        view_64: "f32[28, 1, 64]cpu" = torch.ops.aten.view.default(permute_51, [28, 1, 64]);  permute_51 = None
+        _param_constant8: "f32[64, 64]cpu" = self._param_constant8
+        view_65: "f32[64, 1, 64]cpu" = torch.ops.aten.view.default(_param_constant8, [64, 1, 64]);  _param_constant8 = None
+        unsqueeze_23: "f32[28, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(mul_6, 3);  mul_6 = None
+        permute_52: "f32[28, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_23, [0, 1, 3, 2]);  unsqueeze_23 = None
+        unsqueeze_24: "f32[64, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(view_65, 3);  view_65 = None
+        permute_53: "f32[1, 1, 64, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_24, [3, 1, 2, 0]);  unsqueeze_24 = None
+        permute_54: "f32[28, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_52, [0, 3, 1, 2]);  permute_52 = None
+        view_66: "f32[1, 28, 64]cpu" = torch.ops.aten.view.default(permute_54, [1, 28, 64]);  permute_54 = None
+        permute_55: "f32[64, 1, 64, 1]cpu" = torch.ops.aten.permute.default(permute_53, [3, 1, 2, 0]);  permute_53 = None
+        view_67: "f32[1, 64, 64]cpu" = torch.ops.aten.view.default(permute_55, [1, 64, 64]);  permute_55 = None
+        bmm_12: "f32[1, 28, 64]cpu" = torch.ops.aten.bmm.default(view_66, view_67);  view_66 = view_67 = None
+        view_68: "f32[28, 1, 1, 64]cpu" = torch.ops.aten.view.default(bmm_12, [28, 1, 1, 64]);  bmm_12 = None
+        permute_56: "f32[28, 1, 64, 1]cpu" = torch.ops.aten.permute.default(view_68, [0, 2, 3, 1]);  view_68 = None
+        view_69: "f32[28, 1, 64]cpu" = torch.ops.aten.view.default(permute_56, [28, 1, 64]);  permute_56 = None
+        _tensor_constant16: "i64[92]cpu" = self._tensor_constant16
+        index_select_6: "f32[92, 1, 64]cpu" = torch.ops.aten.index_select.default(view_64, 0, _tensor_constant16);  view_64 = _tensor_constant16 = None
+        view_70: "f32[92, 1, 1, 64]cpu" = torch.ops.aten.view.default(index_select_6, [92, 1, 1, 64]);  index_select_6 = None
+        _tensor_constant1_1: "i64[92]cpu" = self._tensor_constant1
+        index_select_7: "f32[92, 1, 64]cpu" = torch.ops.aten.index_select.default(view_69, 0, _tensor_constant1_1);  view_69 = _tensor_constant1_1 = None
+        view_71: "f32[92, 1, 1, 64]cpu" = torch.ops.aten.view.default(index_select_7, [92, 1, 1, 64]);  index_select_7 = None
+        mul_7: "f32[92, 1, 1, 64]cpu" = torch.ops.aten.mul.Tensor(view_70, view_71);  view_70 = view_71 = None
+        sum_2: "f32[92, 1, 1]cpu" = torch.ops.aten.sum.dim_IntList(mul_7, [-1]);  mul_7 = None
+        mul_8: "f32[92, 1, 1]cpu" = torch.ops.aten.mul.Tensor(sum_2, 0.125);  sum_2 = None
+        select_5: "f32[92, 64]cpu" = torch.ops.aten.select.int(index, 1, 0);  index = None
+        view_72: "f32[92, 1, 64]cpu" = torch.ops.aten.view.default(select_5, [92, 1, 64]);  select_5 = None
+        unsqueeze_25: "f32[92, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(view_72, 3);  view_72 = None
+        permute_57: "f32[92, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_25, [0, 1, 3, 2]);  unsqueeze_25 = None
+        _param_constant9: "f32[64, 1, 1]cpu" = self._param_constant9
+        unsqueeze_26: "f32[64, 1, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(_param_constant9, 3);  _param_constant9 = None
+        permute_58: "f32[1, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_26, [3, 1, 2, 0]);  unsqueeze_26 = None
+        permute_59: "f32[92, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_57, [0, 3, 1, 2]);  permute_57 = None
+        view_73: "f32[1, 92, 64]cpu" = torch.ops.aten.view.default(permute_59, [1, 92, 64]);  permute_59 = None
+        permute_60: "f32[64, 1, 1, 1]cpu" = torch.ops.aten.permute.default(permute_58, [3, 1, 2, 0]);  permute_58 = None
+        view_74: "f32[1, 64, 1]cpu" = torch.ops.aten.view.default(permute_60, [1, 64, 1]);  permute_60 = None
+        bmm_13: "f32[1, 92, 1]cpu" = torch.ops.aten.bmm.default(view_73, view_74);  view_73 = view_74 = None
+        view_75: "f32[92, 1, 1, 1]cpu" = torch.ops.aten.view.default(bmm_13, [92, 1, 1, 1]);  bmm_13 = None
+        permute_61: "f32[92, 1, 1, 1]cpu" = torch.ops.aten.permute.default(view_75, [0, 2, 3, 1]);  view_75 = None
+        view_76: "f32[92, 1, 1]cpu" = torch.ops.aten.view.default(permute_61, [92, 1, 1]);  permute_61 = None
+        add_5: "f32[92, 1, 1]cpu" = torch.ops.aten.add.Tensor(mul_8, view_76);  mul_8 = view_76 = None
+        view_77: "f32[92, 1]cpu" = torch.ops.aten.view.default(add_5, [92, 1]);  add_5 = None
+        _tensor_constant17: "f32[92, 1]cpu" = self._tensor_constant17
+        view_78: "f32[92]cpu" = torch.ops.aten.view.default(_tensor_constant17, [92]);  _tensor_constant17 = None
+        gt: "b8[92]cpu" = torch.ops.aten.gt.Scalar(view_78, 0.0)
+        ones_like: "f32[92]cpu" = torch.ops.aten.ones_like.default(view_78, pin_memory = False)
+        where: "f32[92]cpu" = torch.ops.aten.where.self(gt, view_78, ones_like);  view_78 = ones_like = None
+        log: "f32[92]cpu" = torch.ops.aten.log.default(where);  where = None
+        mul_9: "f32[92]cpu" = torch.ops.aten.mul.Tensor(log, 2.0);  log = None
+        view_79: "b8[92, 1]cpu" = torch.ops.aten.view.default(gt, [92, 1]);  gt = None
+        view_80: "f32[92, 1]cpu" = torch.ops.aten.view.default(mul_9, [92, 1]);  mul_9 = None
+        add_6: "f32[92, 1]cpu" = torch.ops.aten.add.Tensor(view_77, view_80);  view_80 = None
+        full_like: "f32[92, 1]cpu" = torch.ops.aten.full_like.default(view_77, -inf, pin_memory = False);  view_77 = None
+        where_1: "f32[92, 1]cpu" = torch.ops.aten.where.self(view_79, add_6, full_like);  view_79 = add_6 = full_like = None
+        _param_constant10: "f32[1, 1]cpu" = self._param_constant10
+        softplus: "f32[1, 1]cpu" = torch.ops.aten.softplus.default(_param_constant10);  _param_constant10 = None
+        add_7: "f32[1, 1]cpu" = torch.ops.aten.add.Tensor(softplus, 1e-07);  softplus = None
+        view_81: "f32[1, 1]cpu" = torch.ops.aten.view.default(add_7, [1, 1]);  add_7 = None
+        log_1: "f32[1, 1]cpu" = torch.ops.aten.log.default(view_81);  view_81 = None
+        _tensor_constant16_1: "i64[92]cpu" = self._tensor_constant16
+        view_82: "i64[92, 1]cpu" = torch.ops.aten.view.default(_tensor_constant16_1, [92, 1]);  _tensor_constant16_1 = None
+        expand: "i64[92, 1]cpu" = torch.ops.aten.expand.default(view_82, [92, 1]);  view_82 = None
+        expand_1: "f32[28, 1]cpu" = torch.ops.aten.expand.default(log_1, [28, 1])
+        clone: "f32[28, 1]cpu" = torch.ops.aten.clone.default(expand_1);  expand_1 = None
+        scatter_reduce: "f32[28, 1]cpu" = torch.ops.aten.scatter_reduce.two(clone, 0, expand, where_1, 'amax');  clone = None
+        alias_4: "f32[28, 1]cpu" = torch.ops.aten.alias.default(scatter_reduce);  alias_4 = None
+        _tensor_constant16_2: "i64[92]cpu" = self._tensor_constant16
+        index_select_8: "f32[92, 1]cpu" = torch.ops.aten.index_select.default(scatter_reduce, 0, _tensor_constant16_2);  _tensor_constant16_2 = None
+        sub: "f32[92, 1]cpu" = torch.ops.aten.sub.Tensor(where_1, index_select_8);  where_1 = index_select_8 = None
+        exp: "f32[92, 1]cpu" = torch.ops.aten.exp.default(sub);  sub = None
+        alias_5: "f32[92, 1]cpu" = torch.ops.aten.alias.default(exp);  alias_5 = None
+        zeros: "f32[28, 1]cpu" = torch.ops.aten.zeros.default([28, 1], dtype = torch.float32, device = device(type='cpu'), pin_memory = False)
+        scatter_add: "f32[28, 1]cpu" = torch.ops.aten.scatter_add.default(zeros, 0, expand, exp);  zeros = expand = None
+        sub_1: "f32[28, 1]cpu" = torch.ops.aten.sub.Tensor(log_1, scatter_reduce);  log_1 = scatter_reduce = None
+        exp_1: "f32[28, 1]cpu" = torch.ops.aten.exp.default(sub_1);  sub_1 = None
+        alias_6: "f32[28, 1]cpu" = torch.ops.aten.alias.default(exp_1);  alias_6 = None
+        add_8: "f32[28, 1]cpu" = torch.ops.aten.add.Tensor(scatter_add, exp_1);  scatter_add = exp_1 = None
+        _tensor_constant16_3: "i64[92]cpu" = self._tensor_constant16
+        index_select_9: "f32[92, 1]cpu" = torch.ops.aten.index_select.default(add_8, 0, _tensor_constant16_3);  add_8 = _tensor_constant16_3 = None
+        div: "f32[92, 1]cpu" = torch.ops.aten.div.Tensor(exp, index_select_9);  exp = index_select_9 = None
+        view_83: "f32[92, 1, 1]cpu" = torch.ops.aten.view.default(div, [92, 1, 1]);  div = None
+        pow_2: "f32[28, 1, 64]cpu" = torch.ops.aten.pow.Tensor_Scalar(view_5, 2)
+        mean_1: "f32[28, 1, 1]cpu" = torch.ops.aten.mean.dim(pow_2, [-1], True);  pow_2 = None
+        _tensor_constant18: "f32[]cpu" = self._tensor_constant18
+        add_9: "f32[28, 1, 1]cpu" = torch.ops.aten.add.Tensor(mean_1, _tensor_constant18);  mean_1 = _tensor_constant18 = None
+        rsqrt_1: "f32[28, 1, 1]cpu" = torch.ops.aten.rsqrt.default(add_9);  add_9 = None
+        alias_7: "f32[28, 1, 1]cpu" = torch.ops.aten.alias.default(rsqrt_1);  alias_7 = None
+        mul_10: "f32[28, 1, 64]cpu" = torch.ops.aten.mul.Tensor(view_5, rsqrt_1);  view_5 = rsqrt_1 = None
+        _param_constant11: "f32[1, 64]cpu" = self._param_constant11
+        unsqueeze_27: "f32[1, 1, 64]cpu" = torch.ops.aten.unsqueeze.default(_param_constant11, 0);  _param_constant11 = None
+        mul_11: "f32[28, 1, 64]cpu" = torch.ops.aten.mul.Tensor(mul_10, unsqueeze_27);  mul_10 = unsqueeze_27 = None
+        unsqueeze_28: "f32[28, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(mul_11, 3);  mul_11 = None
+        permute_62: "f32[28, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_28, [0, 1, 3, 2]);  unsqueeze_28 = None
+        _param_constant12: "f32[64, 1, 1]cpu" = self._param_constant12
+        unsqueeze_29: "f32[64, 1, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(_param_constant12, 3);  _param_constant12 = None
+        permute_63: "f32[1, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_29, [3, 1, 2, 0]);  unsqueeze_29 = None
+        permute_64: "f32[28, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_62, [0, 3, 1, 2]);  permute_62 = None
+        view_84: "f32[1, 28, 64]cpu" = torch.ops.aten.view.default(permute_64, [1, 28, 64]);  permute_64 = None
+        permute_65: "f32[64, 1, 1, 1]cpu" = torch.ops.aten.permute.default(permute_63, [3, 1, 2, 0]);  permute_63 = None
+        view_85: "f32[1, 64, 1]cpu" = torch.ops.aten.view.default(permute_65, [1, 64, 1]);  permute_65 = None
+        bmm_14: "f32[1, 28, 1]cpu" = torch.ops.aten.bmm.default(view_84, view_85);  view_84 = view_85 = None
+        view_86: "f32[28, 1, 1, 1]cpu" = torch.ops.aten.view.default(bmm_14, [28, 1, 1, 1]);  bmm_14 = None
+        permute_66: "f32[28, 1, 1, 1]cpu" = torch.ops.aten.permute.default(view_86, [0, 2, 3, 1]);  view_86 = None
+        view_87: "f32[28, 1, 1]cpu" = torch.ops.aten.view.default(permute_66, [28, 1, 1]);  permute_66 = None
+        sigmoid_3: "f32[28, 1, 1]cpu" = torch.ops.aten.sigmoid.default(view_87);  view_87 = None
+        alias_8: "f32[28, 1, 1]cpu" = torch.ops.aten.alias.default(sigmoid_3);  alias_8 = None
+        view_88: "f32[92, 16, 1, 64]cpu" = torch.ops.aten.view.default(mul_4, [92, 16, 1, 64]);  mul_4 = None
+        view_89: "f32[92, 16, 1, 1, 64]cpu" = torch.ops.aten.view.default(view_88, [92, 16, 1, 1, 64]);  view_88 = None
+        view_90: "f32[92, 1, 1, 1, 1]cpu" = torch.ops.aten.view.default(view_83, [92, 1, 1, 1, 1]);  view_83 = None
+        mul_12: "f32[92, 16, 1, 1, 64]cpu" = torch.ops.aten.mul.Tensor(view_89, view_90);  view_89 = view_90 = None
+        zeros_1: "f32[28, 16, 1, 1, 64]cpu" = torch.ops.aten.zeros.default([28, 16, 1, 1, 64], dtype = torch.float32, device = device(type='cpu'), pin_memory = False)
+        _tensor_constant16_4: "i64[92]cpu" = self._tensor_constant16
+        index_add_: "f32[28, 16, 1, 1, 64]cpu" = torch.ops.aten.index_add_.default(zeros_1, 0, _tensor_constant16_4, mul_12);  zeros_1 = _tensor_constant16_4 = mul_12 = None
+        view_91: "f32[28, 1, 1, 1, 1]cpu" = torch.ops.aten.view.default(sigmoid_3, [28, 1, 1, 1, 1]);  sigmoid_3 = None
+        mul_13: "f32[28, 16, 1, 1, 64]cpu" = torch.ops.aten.mul.Tensor(index_add_, view_91);  index_add_ = view_91 = None
+        view_92: "f32[28, 16, 1, 64]cpu" = torch.ops.aten.view.default(mul_13, [28, 16, 1, 64]);  mul_13 = None
+        view_93: "f32[28, 16, 64]cpu" = torch.ops.aten.view.default(view_92, [28, 16, 64]);  view_92 = None
+        view_94: "f32[28, 16, 1, 64]cpu" = torch.ops.aten.view.default(view_93, [28, 16, 1, 64])
+        view_95: "f32[28, 16, 1, 64]cpu" = torch.ops.aten.view.default(squeeze, [28, 16, 1, 64]);  squeeze = None
+        select_6: "f32[28, 1, 64]cpu" = torch.ops.aten.select.int(view_94, 1, 0)
+        select_7: "f32[28, 1, 64]cpu" = torch.ops.aten.select.int(view_95, 1, 0)
+        cat: "f32[28, 1, 128]cpu" = torch.ops.aten.cat.default([select_6, select_7], -1);  select_6 = select_7 = None
+        _param_constant13: "f32[4, 64, 192]cpu" = self._param_constant13
+        _tensor_constant19: "i64[16]cpu" = self._tensor_constant19
+        index_select_10: "f32[16, 64, 192]cpu" = torch.ops.aten.index_select.default(_param_constant13, 0, _tensor_constant19);  _param_constant13 = _tensor_constant19 = None
+        unsqueeze_30: "f32[28, 16, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(view_94, 4);  view_94 = None
+        permute_67: "f32[28, 16, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_30, [0, 1, 2, 4, 3]);  unsqueeze_30 = None
+        unsqueeze_31: "f32[16, 64, 192, 1]cpu" = torch.ops.aten.unsqueeze.default(index_select_10, 3);  index_select_10 = None
+        unsqueeze_32: "f32[16, 64, 192, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_31, 4);  unsqueeze_31 = None
+        permute_68: "f32[1, 16, 1, 192, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_32, [3, 0, 4, 2, 1]);  unsqueeze_32 = None
+        permute_69: "f32[16, 28, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_67, [1, 0, 4, 2, 3]);  permute_67 = None
+        view_96: "f32[16, 28, 64]cpu" = torch.ops.aten.view.default(permute_69, [16, 28, 64]);  permute_69 = None
+        permute_70: "f32[16, 64, 1, 192, 1]cpu" = torch.ops.aten.permute.default(permute_68, [1, 4, 2, 3, 0]);  permute_68 = None
+        view_97: "f32[16, 64, 192]cpu" = torch.ops.aten.view.default(permute_70, [16, 64, 192]);  permute_70 = None
+        bmm_15: "f32[16, 28, 192]cpu" = torch.ops.aten.bmm.default(view_96, view_97);  view_96 = view_97 = None
+        view_98: "f32[16, 28, 1, 1, 192]cpu" = torch.ops.aten.view.default(bmm_15, [16, 28, 1, 1, 192]);  bmm_15 = None
+        permute_71: "f32[28, 16, 1, 192, 1]cpu" = torch.ops.aten.permute.default(view_98, [1, 0, 3, 4, 2]);  view_98 = None
+        view_99: "f32[28, 16, 1, 192]cpu" = torch.ops.aten.view.default(permute_71, [28, 16, 1, 192]);  permute_71 = None
+        _param_constant13_1: "f32[4, 64, 192]cpu" = self._param_constant13
+        _tensor_constant19_1: "i64[16]cpu" = self._tensor_constant19
+        index_select_11: "f32[16, 64, 192]cpu" = torch.ops.aten.index_select.default(_param_constant13_1, 0, _tensor_constant19_1);  _param_constant13_1 = _tensor_constant19_1 = None
+        unsqueeze_33: "f32[28, 16, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(view_95, 4);  view_95 = None
+        permute_72: "f32[28, 16, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_33, [0, 1, 2, 4, 3]);  unsqueeze_33 = None
+        unsqueeze_34: "f32[16, 64, 192, 1]cpu" = torch.ops.aten.unsqueeze.default(index_select_11, 3);  index_select_11 = None
+        unsqueeze_35: "f32[16, 64, 192, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_34, 4);  unsqueeze_34 = None
+        permute_73: "f32[1, 16, 1, 192, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_35, [3, 0, 4, 2, 1]);  unsqueeze_35 = None
+        permute_74: "f32[16, 28, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_72, [1, 0, 4, 2, 3]);  permute_72 = None
+        view_100: "f32[16, 28, 64]cpu" = torch.ops.aten.view.default(permute_74, [16, 28, 64]);  permute_74 = None
+        permute_75: "f32[16, 64, 1, 192, 1]cpu" = torch.ops.aten.permute.default(permute_73, [1, 4, 2, 3, 0]);  permute_73 = None
+        view_101: "f32[16, 64, 192]cpu" = torch.ops.aten.view.default(permute_75, [16, 64, 192]);  permute_75 = None
+        bmm_16: "f32[16, 28, 192]cpu" = torch.ops.aten.bmm.default(view_100, view_101);  view_100 = view_101 = None
+        view_102: "f32[16, 28, 1, 1, 192]cpu" = torch.ops.aten.view.default(bmm_16, [16, 28, 1, 1, 192]);  bmm_16 = None
+        permute_76: "f32[28, 16, 1, 192, 1]cpu" = torch.ops.aten.permute.default(view_102, [1, 0, 3, 4, 2]);  view_102 = None
+        view_103: "f32[28, 16, 1, 192]cpu" = torch.ops.aten.view.default(permute_76, [28, 16, 1, 192]);  permute_76 = None
+        view_104: "f32[28, 16, 1, 3, 64]cpu" = torch.ops.aten.view.default(view_99, [28, 16, 1, 3, 64]);  view_99 = None
+        _tensor_constant20: "f32[152, 48]cpu" = self._tensor_constant20
+        view_105: "f32[152, 16, 3]cpu" = torch.ops.aten.view.default(_tensor_constant20, [152, 16, 3]);  _tensor_constant20 = None
+        unsqueeze_36: "f32[152, 16, 3, 1]cpu" = torch.ops.aten.unsqueeze.default(view_105, 3);  view_105 = None
+        unsqueeze_37: "f32[152, 16, 3, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_36, 4);  unsqueeze_36 = None
+        unsqueeze_38: "f32[152, 16, 3, 1, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_37, 5);  unsqueeze_37 = None
+        permute_77: "f32[1, 152, 1, 1, 16, 3]cpu" = torch.ops.aten.permute.default(unsqueeze_38, [3, 0, 4, 5, 1, 2]);  unsqueeze_38 = None
+        unsqueeze_39: "f32[28, 16, 1, 3, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(view_104, 5);  view_104 = None
+        permute_78: "f32[28, 1, 1, 64, 16, 3]cpu" = torch.ops.aten.permute.default(unsqueeze_39, [0, 5, 2, 4, 1, 3]);  unsqueeze_39 = None
+        permute_79: "f32[152, 16, 3, 1, 1, 1]cpu" = torch.ops.aten.permute.default(permute_77, [1, 4, 5, 0, 2, 3]);  permute_77 = None
+        view_106: "f32[1, 152, 48]cpu" = torch.ops.aten.view.default(permute_79, [1, 152, 48]);  permute_79 = None
+        permute_80: "f32[16, 3, 28, 1, 64, 1]cpu" = torch.ops.aten.permute.default(permute_78, [4, 5, 0, 2, 3, 1]);  permute_78 = None
+        clone_1: "f32[16, 3, 28, 1, 64, 1]cpu" = torch.ops.aten.clone.default(permute_80, memory_format = torch.contiguous_format);  permute_80 = None
+        _unsafe_view: "f32[1, 48, 1792]cpu" = torch.ops.aten._unsafe_view.default(clone_1, [1, 48, 1792]);  clone_1 = None
+        bmm_17: "f32[1, 152, 1792]cpu" = torch.ops.aten.bmm.default(view_106, _unsafe_view);  view_106 = _unsafe_view = None
+        view_107: "f32[152, 1, 1, 28, 1, 64]cpu" = torch.ops.aten.view.default(bmm_17, [152, 1, 1, 28, 1, 64]);  bmm_17 = None
+        permute_81: "f32[28, 152, 1, 64, 1, 1]cpu" = torch.ops.aten.permute.default(view_107, [3, 0, 4, 5, 1, 2]);  view_107 = None
+        view_108: "f32[28, 152, 1, 64]cpu" = torch.ops.aten.view.default(permute_81, [28, 152, 1, 64]);  permute_81 = None
+        view_109: "f32[28, 16, 1, 3, 64]cpu" = torch.ops.aten.view.default(view_103, [28, 16, 1, 3, 64]);  view_103 = None
+        _tensor_constant20_1: "f32[152, 48]cpu" = self._tensor_constant20
+        view_110: "f32[152, 16, 3]cpu" = torch.ops.aten.view.default(_tensor_constant20_1, [152, 16, 3]);  _tensor_constant20_1 = None
+        unsqueeze_40: "f32[152, 16, 3, 1]cpu" = torch.ops.aten.unsqueeze.default(view_110, 3);  view_110 = None
+        unsqueeze_41: "f32[152, 16, 3, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_40, 4);  unsqueeze_40 = None
+        unsqueeze_42: "f32[152, 16, 3, 1, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_41, 5);  unsqueeze_41 = None
+        permute_82: "f32[1, 152, 1, 1, 16, 3]cpu" = torch.ops.aten.permute.default(unsqueeze_42, [3, 0, 4, 5, 1, 2]);  unsqueeze_42 = None
+        unsqueeze_43: "f32[28, 16, 1, 3, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(view_109, 5);  view_109 = None
+        permute_83: "f32[28, 1, 1, 64, 16, 3]cpu" = torch.ops.aten.permute.default(unsqueeze_43, [0, 5, 2, 4, 1, 3]);  unsqueeze_43 = None
+        permute_84: "f32[152, 16, 3, 1, 1, 1]cpu" = torch.ops.aten.permute.default(permute_82, [1, 4, 5, 0, 2, 3]);  permute_82 = None
+        view_111: "f32[1, 152, 48]cpu" = torch.ops.aten.view.default(permute_84, [1, 152, 48]);  permute_84 = None
+        permute_85: "f32[16, 3, 28, 1, 64, 1]cpu" = torch.ops.aten.permute.default(permute_83, [4, 5, 0, 2, 3, 1]);  permute_83 = None
+        clone_2: "f32[16, 3, 28, 1, 64, 1]cpu" = torch.ops.aten.clone.default(permute_85, memory_format = torch.contiguous_format);  permute_85 = None
+        _unsafe_view_1: "f32[1, 48, 1792]cpu" = torch.ops.aten._unsafe_view.default(clone_2, [1, 48, 1792]);  clone_2 = None
+        bmm_18: "f32[1, 152, 1792]cpu" = torch.ops.aten.bmm.default(view_111, _unsafe_view_1);  view_111 = _unsafe_view_1 = None
+        view_112: "f32[152, 1, 1, 28, 1, 64]cpu" = torch.ops.aten.view.default(bmm_18, [152, 1, 1, 28, 1, 64]);  bmm_18 = None
+        permute_86: "f32[28, 152, 1, 64, 1, 1]cpu" = torch.ops.aten.permute.default(view_112, [3, 0, 4, 5, 1, 2]);  view_112 = None
+        view_113: "f32[28, 152, 1, 64]cpu" = torch.ops.aten.view.default(permute_86, [28, 152, 1, 64]);  permute_86 = None
+        mul_14: "f32[28, 152, 1, 64]cpu" = torch.ops.aten.mul.Tensor(view_108, view_113);  view_108 = view_113 = None
+        _tensor_constant21: "f32[48, 152]cpu" = self._tensor_constant21
+        view_114: "f32[16, 3, 152]cpu" = torch.ops.aten.view.default(_tensor_constant21, [16, 3, 152]);  _tensor_constant21 = None
+        unsqueeze_44: "f32[16, 3, 152, 1]cpu" = torch.ops.aten.unsqueeze.default(view_114, 3);  view_114 = None
+        unsqueeze_45: "f32[16, 3, 152, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_44, 4);  unsqueeze_44 = None
+        unsqueeze_46: "f32[16, 3, 152, 1, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_45, 5);  unsqueeze_45 = None
+        permute_87: "f32[1, 16, 1, 3, 1, 152]cpu" = torch.ops.aten.permute.default(unsqueeze_46, [3, 0, 4, 1, 5, 2]);  unsqueeze_46 = None
+        unsqueeze_47: "f32[28, 152, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(mul_14, 4);  mul_14 = None
+        unsqueeze_48: "f32[28, 152, 1, 64, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_47, 5);  unsqueeze_47 = None
+        permute_88: "f32[28, 1, 1, 1, 64, 152]cpu" = torch.ops.aten.permute.default(unsqueeze_48, [0, 4, 2, 5, 3, 1]);  unsqueeze_48 = None
+        permute_89: "f32[16, 3, 152, 1, 1, 1]cpu" = torch.ops.aten.permute.default(permute_87, [1, 3, 5, 0, 2, 4]);  permute_87 = None
+        view_115: "f32[1, 48, 152]cpu" = torch.ops.aten.view.default(permute_89, [1, 48, 152]);  permute_89 = None
+        permute_90: "f32[152, 28, 1, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_88, [5, 0, 2, 4, 1, 3]);  permute_88 = None
+        view_116: "f32[1, 152, 1792]cpu" = torch.ops.aten.view.default(permute_90, [1, 152, 1792]);  permute_90 = None
+        bmm_19: "f32[1, 48, 1792]cpu" = torch.ops.aten.bmm.default(view_115, view_116);  view_115 = view_116 = None
+        view_117: "f32[16, 3, 1, 28, 1, 64]cpu" = torch.ops.aten.view.default(bmm_19, [16, 3, 1, 28, 1, 64]);  bmm_19 = None
+        permute_91: "f32[28, 16, 1, 3, 64, 1]cpu" = torch.ops.aten.permute.default(view_117, [3, 0, 4, 1, 5, 2]);  view_117 = None
+        view_118: "f32[28, 16, 1, 3, 64]cpu" = torch.ops.aten.view.default(permute_91, [28, 16, 1, 3, 64]);  permute_91 = None
+        clone_3: "f32[28, 16, 1, 3, 64]cpu" = torch.ops.aten.clone.default(view_118, memory_format = torch.contiguous_format);  view_118 = None
+        _unsafe_view_2: "f32[28, 16, 1, 192]cpu" = torch.ops.aten._unsafe_view.default(clone_3, [28, 16, 1, 192]);  clone_3 = None
+        split = torch.ops.aten.split.Tensor(cat, 64, -1)
+        getitem: "f32[28, 1, 64]cpu" = split[0]
+        getitem_1: "f32[28, 1, 64]cpu" = split[1];  split = None
+        sigmoid_4: "f32[28, 1, 64]cpu" = torch.ops.aten.sigmoid.default(getitem)
+        alias_9: "f32[28, 1, 64]cpu" = torch.ops.aten.alias.default(sigmoid_4);  alias_9 = None
+        mul_15: "f32[28, 1, 64]cpu" = torch.ops.aten.mul.Tensor(getitem, sigmoid_4);  getitem = sigmoid_4 = None
+        mul_16: "f32[28, 1, 64]cpu" = torch.ops.aten.mul.Tensor(mul_15, getitem_1);  mul_15 = getitem_1 = None
+        _param_constant14: "f32[128, 64]cpu" = self._param_constant14
+        view_119: "f32[128, 1, 64]cpu" = torch.ops.aten.view.default(_param_constant14, [128, 1, 64]);  _param_constant14 = None
+        unsqueeze_49: "f32[28, 1, 128, 1]cpu" = torch.ops.aten.unsqueeze.default(cat, 3);  cat = None
+        permute_92: "f32[28, 1, 1, 128]cpu" = torch.ops.aten.permute.default(unsqueeze_49, [0, 1, 3, 2]);  unsqueeze_49 = None
+        unsqueeze_50: "f32[128, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(view_119, 3);  view_119 = None
+        permute_93: "f32[1, 1, 64, 128]cpu" = torch.ops.aten.permute.default(unsqueeze_50, [3, 1, 2, 0]);  unsqueeze_50 = None
+        permute_94: "f32[28, 128, 1, 1]cpu" = torch.ops.aten.permute.default(permute_92, [0, 3, 1, 2]);  permute_92 = None
+        view_120: "f32[1, 28, 128]cpu" = torch.ops.aten.view.default(permute_94, [1, 28, 128]);  permute_94 = None
+        permute_95: "f32[128, 1, 64, 1]cpu" = torch.ops.aten.permute.default(permute_93, [3, 1, 2, 0]);  permute_93 = None
+        view_121: "f32[1, 128, 64]cpu" = torch.ops.aten.view.default(permute_95, [1, 128, 64]);  permute_95 = None
+        bmm_20: "f32[1, 28, 64]cpu" = torch.ops.aten.bmm.default(view_120, view_121);  view_120 = view_121 = None
+        view_122: "f32[28, 1, 1, 64]cpu" = torch.ops.aten.view.default(bmm_20, [28, 1, 1, 64]);  bmm_20 = None
+        permute_96: "f32[28, 1, 64, 1]cpu" = torch.ops.aten.permute.default(view_122, [0, 2, 3, 1]);  view_122 = None
+        view_123: "f32[28, 1, 64]cpu" = torch.ops.aten.view.default(permute_96, [28, 1, 64]);  permute_96 = None
+        sigmoid_5: "f32[28, 1, 64]cpu" = torch.ops.aten.sigmoid.default(view_123);  view_123 = None
+        alias_10: "f32[28, 1, 64]cpu" = torch.ops.aten.alias.default(sigmoid_5);  alias_10 = None
+        view_124: "f32[28, 16, 1, 3, 64]cpu" = torch.ops.aten.view.default(_unsafe_view_2, [28, 16, 1, 3, 64]);  _unsafe_view_2 = None
+        unsqueeze_51: "f32[28, 1, 1, 64]cpu" = torch.ops.aten.unsqueeze.default(sigmoid_5, 1);  sigmoid_5 = None
+        unsqueeze_52: "f32[28, 1, 1, 1, 64]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_51, 3);  unsqueeze_51 = None
+        mul_17: "f32[28, 16, 1, 3, 64]cpu" = torch.ops.aten.mul.Tensor(view_124, unsqueeze_52);  view_124 = unsqueeze_52 = None
+        select_8: "f32[28, 1, 3, 64]cpu" = torch.ops.aten.select.int(mul_17, 1, 0)
+        select_9: "f32[28, 1, 64]cpu" = torch.ops.aten.select.int(select_8, 2, 0);  select_8 = None
+        add_: "f32[28, 1, 64]cpu" = torch.ops.aten.add_.Tensor(select_9, mul_16);  select_9 = mul_16 = add_ = None
+        view_125: "f32[28, 16, 1, 192]cpu" = torch.ops.aten.view.default(mul_17, [28, 16, 1, 192]);  mul_17 = None
+        _param_constant15: "f32[4, 192, 64]cpu" = self._param_constant15
+        _tensor_constant22: "i64[16]cpu" = self._tensor_constant22
+        index_select_12: "f32[16, 192, 64]cpu" = torch.ops.aten.index_select.default(_param_constant15, 0, _tensor_constant22);  _param_constant15 = _tensor_constant22 = None
+        unsqueeze_53: "f32[28, 16, 1, 192, 1]cpu" = torch.ops.aten.unsqueeze.default(view_125, 4);  view_125 = None
+        permute_97: "f32[28, 16, 1, 1, 192]cpu" = torch.ops.aten.permute.default(unsqueeze_53, [0, 1, 2, 4, 3]);  unsqueeze_53 = None
+        unsqueeze_54: "f32[16, 192, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(index_select_12, 3);  index_select_12 = None
+        unsqueeze_55: "f32[16, 192, 64, 1, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_54, 4);  unsqueeze_54 = None
+        permute_98: "f32[1, 16, 1, 64, 192]cpu" = torch.ops.aten.permute.default(unsqueeze_55, [3, 0, 4, 2, 1]);  unsqueeze_55 = None
+        permute_99: "f32[16, 28, 192, 1, 1]cpu" = torch.ops.aten.permute.default(permute_97, [1, 0, 4, 2, 3]);  permute_97 = None
+        view_126: "f32[16, 28, 192]cpu" = torch.ops.aten.view.default(permute_99, [16, 28, 192]);  permute_99 = None
+        permute_100: "f32[16, 192, 1, 64, 1]cpu" = torch.ops.aten.permute.default(permute_98, [1, 4, 2, 3, 0]);  permute_98 = None
+        view_127: "f32[16, 192, 64]cpu" = torch.ops.aten.view.default(permute_100, [16, 192, 64]);  permute_100 = None
+        bmm_21: "f32[16, 28, 64]cpu" = torch.ops.aten.bmm.default(view_126, view_127);  view_126 = view_127 = None
+        view_128: "f32[16, 28, 1, 1, 64]cpu" = torch.ops.aten.view.default(bmm_21, [16, 28, 1, 1, 64]);  bmm_21 = None
+        permute_101: "f32[28, 16, 1, 64, 1]cpu" = torch.ops.aten.permute.default(view_128, [1, 0, 3, 4, 2]);  view_128 = None
+        view_129: "f32[28, 16, 1, 64]cpu" = torch.ops.aten.view.default(permute_101, [28, 16, 1, 64]);  permute_101 = None
+        _param_constant16: "f32[1, 64]cpu" = self._param_constant16
+        view_130: "f32[1, 1, 1, 64]cpu" = torch.ops.aten.view.default(_param_constant16, [1, 1, 1, 64]);  _param_constant16 = None
+        mul_18: "f32[28, 16, 1, 64]cpu" = torch.ops.aten.mul.Tensor(view_129, view_130);  view_129 = view_130 = None
+        view_131: "f32[28, 16, 64]cpu" = torch.ops.aten.view.default(mul_18, [28, 16, 64]);  mul_18 = None
+        add_10: "f32[28, 16, 64]cpu" = torch.ops.aten.add.Tensor(view_93, view_131);  view_93 = view_131 = None
+        unsqueeze_56: "f32[28, 16, 1, 64]cpu" = torch.ops.aten.unsqueeze.default(add_10, 2);  add_10 = None
+        _param_constant17: "f32[4, 64, 64]cpu" = self._param_constant17
+        view_132: "f32[4, 64, 1, 64]cpu" = torch.ops.aten.view.default(_param_constant17, [4, 64, 1, 64]);  _param_constant17 = None
+        _tensor_constant23: "i64[16]cpu" = self._tensor_constant23
+        index_select_13: "f32[16, 64, 1, 64]cpu" = torch.ops.aten.index_select.default(view_132, 0, _tensor_constant23);  view_132 = _tensor_constant23 = None
+        unsqueeze_57: "f32[28, 16, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(unsqueeze_56, 4);  unsqueeze_56 = None
+        permute_102: "f32[28, 16, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_57, [0, 1, 2, 4, 3]);  unsqueeze_57 = None
+        unsqueeze_58: "f32[16, 64, 1, 64, 1]cpu" = torch.ops.aten.unsqueeze.default(index_select_13, 4);  index_select_13 = None
+        permute_103: "f32[1, 16, 1, 64, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_58, [4, 0, 2, 3, 1]);  unsqueeze_58 = None
+        permute_104: "f32[16, 28, 64, 1, 1]cpu" = torch.ops.aten.permute.default(permute_102, [1, 0, 4, 2, 3]);  permute_102 = None
+        view_133: "f32[16, 28, 64]cpu" = torch.ops.aten.view.default(permute_104, [16, 28, 64]);  permute_104 = None
+        permute_105: "f32[16, 64, 1, 64, 1]cpu" = torch.ops.aten.permute.default(permute_103, [1, 4, 2, 3, 0]);  permute_103 = None
+        view_134: "f32[16, 64, 64]cpu" = torch.ops.aten.view.default(permute_105, [16, 64, 64]);  permute_105 = None
+        bmm_22: "f32[16, 28, 64]cpu" = torch.ops.aten.bmm.default(view_133, view_134);  view_133 = view_134 = None
+        view_135: "f32[16, 28, 1, 1, 64]cpu" = torch.ops.aten.view.default(bmm_22, [16, 28, 1, 1, 64]);  bmm_22 = None
+        permute_106: "f32[28, 16, 1, 64, 1]cpu" = torch.ops.aten.permute.default(view_135, [1, 0, 3, 4, 2]);  view_135 = None
+        view_136: "f32[28, 16, 1, 64]cpu" = torch.ops.aten.view.default(permute_106, [28, 16, 1, 64]);  permute_106 = None
+        squeeze_1: "f32[28, 16, 64]cpu" = torch.ops.aten.squeeze.dim(view_136, 2);  view_136 = None
+        return squeeze_1
 
-
-
-def forward(self, x_1, radial_feat_1):
-    unsqueeze = torch.ops.aten.unsqueeze.default(x_1, 2);  x_1 = None
-    _param_constant0 = self._param_constant0
-    view = torch.ops.aten.view.default(_param_constant0, [4, 64, 1, 64]);  _param_constant0 = None
-    _tensor_constant0 = self._tensor_constant0
-    index_select = torch.ops.aten.index_select.default(view, 0, _tensor_constant0);  view = _tensor_constant0 = None
-    unsqueeze_1 = torch.ops.aten.unsqueeze.default(unsqueeze, 4);  unsqueeze = None
-    permute = torch.ops.aten.permute.default(unsqueeze_1, [0, 1, 2, 4, 3]);  unsqueeze_1 = None
-    unsqueeze_2 = torch.ops.aten.unsqueeze.default(index_select, 4);  index_select = None
-    permute_1 = torch.ops.aten.permute.default(unsqueeze_2, [4, 0, 2, 3, 1]);  unsqueeze_2 = None
-    permute_2 = torch.ops.aten.permute.default(permute, [1, 0, 4, 2, 3]);  permute = None
-    view_1 = torch.ops.aten.view.default(permute_2, [16, 28, 64]);  permute_2 = None
-    permute_3 = torch.ops.aten.permute.default(permute_1, [1, 4, 2, 3, 0]);  permute_1 = None
-    view_2 = torch.ops.aten.view.default(permute_3, [16, 64, 64]);  permute_3 = None
-    bmm = torch.ops.aten.bmm.default(view_1, view_2);  view_1 = view_2 = None
-    view_3 = torch.ops.aten.view.default(bmm, [16, 28, 1, 1, 64]);  bmm = None
-    permute_4 = torch.ops.aten.permute.default(view_3, [1, 0, 3, 4, 2]);  view_3 = None
-    view_4 = torch.ops.aten.view.default(permute_4, [28, 16, 1, 64]);  permute_4 = None
-    squeeze = torch.ops.aten.squeeze.dim(view_4, 2);  view_4 = None
-    select = torch.ops.aten.select.int(squeeze, 1, 0)
-    view_5 = torch.ops.aten.view.default(select, [28, 1, 64]);  select = None
-    _tensor_constant1 = self._tensor_constant1
-    index_select_1 = torch.ops.aten.index_select.default(squeeze, 0, _tensor_constant1);  _tensor_constant1 = None
-    _tensor_constant2 = self._tensor_constant2
-    bmm_1 = torch.ops.aten.bmm.default(_tensor_constant2, index_select_1);  _tensor_constant2 = index_select_1 = None
-    _tensor_constant3 = self._tensor_constant3
-    index = torch.ops.aten.index.Tensor(radial_feat_1, [None, _tensor_constant3]);  radial_feat_1 = _tensor_constant3 = None
-    slice_1 = torch.ops.aten.slice.Tensor(index, 1, 0, 4)
-    view_6 = torch.ops.aten.view.default(slice_1, [92, 256]);  slice_1 = None
-    _param_constant1 = self._param_constant1
-    mm = torch.ops.aten.mm.default(view_6, _param_constant1);  view_6 = _param_constant1 = None
-    view_7 = torch.ops.aten.view.default(mm, [92, 25, 1]);  mm = None
-    new_zeros = torch.ops.aten.new_zeros.default(view_7, [92, 100, 1], pin_memory = False)
-    _tensor_constant4 = self._tensor_constant4
-    index_select_2 = torch.ops.aten.index_select.default(view_7, 1, _tensor_constant4);  view_7 = _tensor_constant4 = None
-    _tensor_constant5 = self._tensor_constant5
-    index_copy_ = torch.ops.aten.index_copy_.default(new_zeros, 1, _tensor_constant5, index_select_2);  new_zeros = _tensor_constant5 = index_select_2 = None
-    view_8 = torch.ops.aten.view.default(index_copy_, [92, 10, 10, 1]);  index_copy_ = None
-    unsqueeze_3 = torch.ops.aten.unsqueeze.default(view_8, 4);  view_8 = None
-    permute_5 = torch.ops.aten.permute.default(unsqueeze_3, [0, 1, 3, 4, 2]);  unsqueeze_3 = None
-    unsqueeze_4 = torch.ops.aten.unsqueeze.default(bmm_1, 3);  bmm_1 = None
-    unsqueeze_5 = torch.ops.aten.unsqueeze.default(unsqueeze_4, 4);  unsqueeze_4 = None
-    permute_6 = torch.ops.aten.permute.default(unsqueeze_5, [0, 3, 4, 2, 1]);  unsqueeze_5 = None
-    permute_7 = torch.ops.aten.permute.default(permute_5, [0, 1, 4, 2, 3]);  permute_5 = None
-    view_9 = torch.ops.aten.view.default(permute_7, [92, 10, 10]);  permute_7 = None
-    permute_8 = torch.ops.aten.permute.default(permute_6, [0, 4, 2, 3, 1]);  permute_6 = None
-    view_10 = torch.ops.aten.view.default(permute_8, [92, 10, 64]);  permute_8 = None
-    bmm_2 = torch.ops.aten.bmm.default(view_9, view_10);  view_9 = view_10 = None
-    view_11 = torch.ops.aten.view.default(bmm_2, [92, 10, 1, 1, 64]);  bmm_2 = None
-    permute_9 = torch.ops.aten.permute.default(view_11, [0, 1, 3, 4, 2]);  view_11 = None
-    view_12 = torch.ops.aten.view.default(permute_9, [92, 10, 1, 64]);  permute_9 = None
-    _param_constant2 = self._param_constant2
-    view_13 = torch.ops.aten.view.default(_param_constant2, [1, 1, 1, 64]);  _param_constant2 = None
-    mul = torch.ops.aten.mul.Tensor(view_12, view_13);  view_12 = view_13 = None
-    sum_1 = torch.ops.aten.sum.dim_IntList(mul, [2]);  mul = None
-    select_1 = torch.ops.aten.select.int(index, 1, 0)
-    view_14 = torch.ops.aten.view.default(select_1, [92, 1, 64]);  select_1 = view_14 = None
-    view_15 = torch.ops.aten.view.default(sum_1, [92, 10, 1, 64]);  sum_1 = None
-    permute_10 = torch.ops.aten.permute.default(view_15, [2, 0, 1, 3]);  view_15 = None
-    view_16 = torch.ops.aten.view.default(permute_10, [1, 92, 640])
-    unsqueeze_6 = torch.ops.aten.unsqueeze.default(view_16, 3);  view_16 = None
-    permute_11 = torch.ops.aten.permute.default(unsqueeze_6, [0, 1, 3, 2]);  unsqueeze_6 = None
-    _tensor_constant6 = self._tensor_constant6
-    unsqueeze_7 = torch.ops.aten.unsqueeze.default(_tensor_constant6, 3);  _tensor_constant6 = None
-    permute_12 = torch.ops.aten.permute.default(unsqueeze_7, [1, 3, 2, 0]);  unsqueeze_7 = None
-    permute_13 = torch.ops.aten.permute.default(permute_11, [1, 3, 0, 2]);  permute_11 = None
-    view_17 = torch.ops.aten.view.default(permute_13, [1, 92, 640]);  permute_13 = None
-    permute_14 = torch.ops.aten.permute.default(permute_12, [3, 0, 2, 1]);  permute_12 = None
-    view_18 = torch.ops.aten.view.default(permute_14, [1, 640, 640]);  permute_14 = None
-    bmm_3 = torch.ops.aten.bmm.default(view_17, view_18);  view_17 = view_18 = None
-    view_19 = torch.ops.aten.view.default(bmm_3, [92, 1, 1, 640]);  bmm_3 = None
-    permute_15 = torch.ops.aten.permute.default(view_19, [2, 0, 3, 1]);  view_19 = None
-    view_20 = torch.ops.aten.view.default(permute_15, [1, 92, 640]);  permute_15 = None
-    view_21 = torch.ops.aten.view.default(view_20, [1, 92, 10, 64]);  view_20 = None
-    select_2 = torch.ops.aten.select.int(view_21, 2, 0)
-    slice_2 = torch.ops.aten.slice.Tensor(view_21, 2, 0, 1)
-    silu = torch.ops.aten.silu.default(slice_2);  slice_2 = None
-    transpose = torch.ops.aten.transpose.int(select_2, 0, 1);  select_2 = None
-    _param_constant3 = self._param_constant3
-    view_22 = torch.ops.aten.view.default(_param_constant3, [64, 1, 192]);  _param_constant3 = None
-    unsqueeze_8 = torch.ops.aten.unsqueeze.default(transpose, 3);  transpose = None
-    permute_16 = torch.ops.aten.permute.default(unsqueeze_8, [0, 1, 3, 2]);  unsqueeze_8 = None
-    unsqueeze_9 = torch.ops.aten.unsqueeze.default(view_22, 3);  view_22 = None
-    permute_17 = torch.ops.aten.permute.default(unsqueeze_9, [3, 1, 2, 0]);  unsqueeze_9 = None
-    permute_18 = torch.ops.aten.permute.default(permute_16, [0, 3, 1, 2]);  permute_16 = None
-    view_23 = torch.ops.aten.view.default(permute_18, [1, 92, 64]);  permute_18 = None
-    permute_19 = torch.ops.aten.permute.default(permute_17, [3, 1, 2, 0]);  permute_17 = None
-    view_24 = torch.ops.aten.view.default(permute_19, [1, 64, 192]);  permute_19 = None
-    bmm_4 = torch.ops.aten.bmm.default(view_23, view_24);  view_23 = view_24 = None
-    view_25 = torch.ops.aten.view.default(bmm_4, [92, 1, 1, 192]);  bmm_4 = None
-    permute_20 = torch.ops.aten.permute.default(view_25, [0, 2, 3, 1]);  view_25 = None
-    view_26 = torch.ops.aten.view.default(permute_20, [92, 1, 192]);  permute_20 = None
-    transpose_1 = torch.ops.aten.transpose.int(view_26, 0, 1);  view_26 = None
-    sigmoid = torch.ops.aten.sigmoid.default(transpose_1);  transpose_1 = None
-    alias = torch.ops.aten.alias.default(sigmoid);  alias = None
-    view_27 = torch.ops.aten.view.default(sigmoid, [1, 92, 3, 64]);  sigmoid = None
-    _tensor_constant7 = self._tensor_constant7
-    index_select_3 = torch.ops.aten.index_select.default(view_27, 2, _tensor_constant7);  view_27 = _tensor_constant7 = None
-    new_empty = torch.ops.aten.new_empty.default(view_21, [1, 92, 10, 64], pin_memory = False)
-    slice_3 = torch.ops.aten.slice.Tensor(new_empty, 2, 0, 1)
-    copy_ = torch.ops.aten.copy_.default(slice_3, silu);  slice_3 = silu = copy_ = None
-    slice_4 = torch.ops.aten.slice.Tensor(new_empty, 2, 1, 10)
-    slice_5 = torch.ops.aten.slice.Tensor(view_21, 2, 1, 10);  view_21 = None
-    mul_1 = torch.ops.aten.mul.Tensor(slice_5, index_select_3);  slice_5 = index_select_3 = None
-    copy__1 = torch.ops.aten.copy_.default(slice_4, mul_1);  slice_4 = mul_1 = copy__1 = None
-    add = torch.ops.aten.add.Tensor(permute_10, new_empty);  permute_10 = new_empty = None
-    view_28 = torch.ops.aten.view.default(add, [1, 92, 640])
-    unsqueeze_10 = torch.ops.aten.unsqueeze.default(view_28, 3);  view_28 = None
-    permute_21 = torch.ops.aten.permute.default(unsqueeze_10, [0, 1, 3, 2]);  unsqueeze_10 = None
-    _tensor_constant8 = self._tensor_constant8
-    unsqueeze_11 = torch.ops.aten.unsqueeze.default(_tensor_constant8, 3);  _tensor_constant8 = None
-    permute_22 = torch.ops.aten.permute.default(unsqueeze_11, [1, 3, 2, 0]);  unsqueeze_11 = None
-    permute_23 = torch.ops.aten.permute.default(permute_21, [1, 3, 0, 2]);  permute_21 = None
-    view_29 = torch.ops.aten.view.default(permute_23, [1, 92, 640]);  permute_23 = None
-    permute_24 = torch.ops.aten.permute.default(permute_22, [3, 0, 2, 1]);  permute_22 = None
-    view_30 = torch.ops.aten.view.default(permute_24, [1, 640, 640]);  permute_24 = None
-    bmm_5 = torch.ops.aten.bmm.default(view_29, view_30);  view_29 = view_30 = None
-    view_31 = torch.ops.aten.view.default(bmm_5, [92, 1, 1, 640]);  bmm_5 = None
-    permute_25 = torch.ops.aten.permute.default(view_31, [2, 0, 3, 1]);  view_31 = None
-    view_32 = torch.ops.aten.view.default(permute_25, [1, 92, 640]);  permute_25 = None
-    view_33 = torch.ops.aten.view.default(view_32, [1, 92, 10, 64]);  view_32 = None
-    select_3 = torch.ops.aten.select.int(view_33, 2, 0)
-    slice_6 = torch.ops.aten.slice.Tensor(view_33, 2, 0, 1)
-    silu_1 = torch.ops.aten.silu.default(slice_6);  slice_6 = None
-    transpose_2 = torch.ops.aten.transpose.int(select_3, 0, 1);  select_3 = None
-    _param_constant4 = self._param_constant4
-    view_34 = torch.ops.aten.view.default(_param_constant4, [64, 1, 192]);  _param_constant4 = None
-    unsqueeze_12 = torch.ops.aten.unsqueeze.default(transpose_2, 3);  transpose_2 = None
-    permute_26 = torch.ops.aten.permute.default(unsqueeze_12, [0, 1, 3, 2]);  unsqueeze_12 = None
-    unsqueeze_13 = torch.ops.aten.unsqueeze.default(view_34, 3);  view_34 = None
-    permute_27 = torch.ops.aten.permute.default(unsqueeze_13, [3, 1, 2, 0]);  unsqueeze_13 = None
-    permute_28 = torch.ops.aten.permute.default(permute_26, [0, 3, 1, 2]);  permute_26 = None
-    view_35 = torch.ops.aten.view.default(permute_28, [1, 92, 64]);  permute_28 = None
-    permute_29 = torch.ops.aten.permute.default(permute_27, [3, 1, 2, 0]);  permute_27 = None
-    view_36 = torch.ops.aten.view.default(permute_29, [1, 64, 192]);  permute_29 = None
-    bmm_6 = torch.ops.aten.bmm.default(view_35, view_36);  view_35 = view_36 = None
-    view_37 = torch.ops.aten.view.default(bmm_6, [92, 1, 1, 192]);  bmm_6 = None
-    permute_30 = torch.ops.aten.permute.default(view_37, [0, 2, 3, 1]);  view_37 = None
-    view_38 = torch.ops.aten.view.default(permute_30, [92, 1, 192]);  permute_30 = None
-    transpose_3 = torch.ops.aten.transpose.int(view_38, 0, 1);  view_38 = None
-    sigmoid_1 = torch.ops.aten.sigmoid.default(transpose_3);  transpose_3 = None
-    alias_1 = torch.ops.aten.alias.default(sigmoid_1);  alias_1 = None
-    view_39 = torch.ops.aten.view.default(sigmoid_1, [1, 92, 3, 64]);  sigmoid_1 = None
-    _tensor_constant9 = self._tensor_constant9
-    index_select_4 = torch.ops.aten.index_select.default(view_39, 2, _tensor_constant9);  view_39 = _tensor_constant9 = None
-    new_empty_1 = torch.ops.aten.new_empty.default(view_33, [1, 92, 10, 64], pin_memory = False)
-    slice_7 = torch.ops.aten.slice.Tensor(new_empty_1, 2, 0, 1)
-    copy__2 = torch.ops.aten.copy_.default(slice_7, silu_1);  slice_7 = silu_1 = copy__2 = None
-    slice_8 = torch.ops.aten.slice.Tensor(new_empty_1, 2, 1, 10)
-    slice_9 = torch.ops.aten.slice.Tensor(view_33, 2, 1, 10);  view_33 = None
-    mul_2 = torch.ops.aten.mul.Tensor(slice_9, index_select_4);  slice_9 = index_select_4 = None
-    copy__3 = torch.ops.aten.copy_.default(slice_8, mul_2);  slice_8 = mul_2 = copy__3 = None
-    add_1 = torch.ops.aten.add.Tensor(add, new_empty_1);  add = new_empty_1 = None
-    view_40 = torch.ops.aten.view.default(add_1, [1, 92, 640])
-    unsqueeze_14 = torch.ops.aten.unsqueeze.default(view_40, 3);  view_40 = None
-    permute_31 = torch.ops.aten.permute.default(unsqueeze_14, [0, 1, 3, 2]);  unsqueeze_14 = None
-    _tensor_constant10 = self._tensor_constant10
-    unsqueeze_15 = torch.ops.aten.unsqueeze.default(_tensor_constant10, 3);  _tensor_constant10 = None
-    permute_32 = torch.ops.aten.permute.default(unsqueeze_15, [1, 3, 2, 0]);  unsqueeze_15 = None
-    permute_33 = torch.ops.aten.permute.default(permute_31, [1, 3, 0, 2]);  permute_31 = None
-    view_41 = torch.ops.aten.view.default(permute_33, [1, 92, 640]);  permute_33 = None
-    permute_34 = torch.ops.aten.permute.default(permute_32, [3, 0, 2, 1]);  permute_32 = None
-    view_42 = torch.ops.aten.view.default(permute_34, [1, 640, 640]);  permute_34 = None
-    bmm_7 = torch.ops.aten.bmm.default(view_41, view_42);  view_41 = view_42 = None
-    view_43 = torch.ops.aten.view.default(bmm_7, [92, 1, 1, 640]);  bmm_7 = None
-    permute_35 = torch.ops.aten.permute.default(view_43, [2, 0, 3, 1]);  view_43 = None
-    view_44 = torch.ops.aten.view.default(permute_35, [1, 92, 640]);  permute_35 = None
-    view_45 = torch.ops.aten.view.default(view_44, [1, 92, 10, 64]);  view_44 = None
-    select_4 = torch.ops.aten.select.int(view_45, 2, 0)
-    slice_10 = torch.ops.aten.slice.Tensor(view_45, 2, 0, 1)
-    silu_2 = torch.ops.aten.silu.default(slice_10);  slice_10 = None
-    transpose_4 = torch.ops.aten.transpose.int(select_4, 0, 1);  select_4 = None
-    _param_constant5 = self._param_constant5
-    view_46 = torch.ops.aten.view.default(_param_constant5, [64, 1, 192]);  _param_constant5 = None
-    unsqueeze_16 = torch.ops.aten.unsqueeze.default(transpose_4, 3);  transpose_4 = None
-    permute_36 = torch.ops.aten.permute.default(unsqueeze_16, [0, 1, 3, 2]);  unsqueeze_16 = None
-    unsqueeze_17 = torch.ops.aten.unsqueeze.default(view_46, 3);  view_46 = None
-    permute_37 = torch.ops.aten.permute.default(unsqueeze_17, [3, 1, 2, 0]);  unsqueeze_17 = None
-    permute_38 = torch.ops.aten.permute.default(permute_36, [0, 3, 1, 2]);  permute_36 = None
-    view_47 = torch.ops.aten.view.default(permute_38, [1, 92, 64]);  permute_38 = None
-    permute_39 = torch.ops.aten.permute.default(permute_37, [3, 1, 2, 0]);  permute_37 = None
-    view_48 = torch.ops.aten.view.default(permute_39, [1, 64, 192]);  permute_39 = None
-    bmm_8 = torch.ops.aten.bmm.default(view_47, view_48);  view_47 = view_48 = None
-    view_49 = torch.ops.aten.view.default(bmm_8, [92, 1, 1, 192]);  bmm_8 = None
-    permute_40 = torch.ops.aten.permute.default(view_49, [0, 2, 3, 1]);  view_49 = None
-    view_50 = torch.ops.aten.view.default(permute_40, [92, 1, 192]);  permute_40 = None
-    transpose_5 = torch.ops.aten.transpose.int(view_50, 0, 1);  view_50 = None
-    sigmoid_2 = torch.ops.aten.sigmoid.default(transpose_5);  transpose_5 = None
-    alias_2 = torch.ops.aten.alias.default(sigmoid_2);  alias_2 = None
-    view_51 = torch.ops.aten.view.default(sigmoid_2, [1, 92, 3, 64]);  sigmoid_2 = None
-    _tensor_constant11 = self._tensor_constant11
-    index_select_5 = torch.ops.aten.index_select.default(view_51, 2, _tensor_constant11);  view_51 = _tensor_constant11 = None
-    new_empty_2 = torch.ops.aten.new_empty.default(view_45, [1, 92, 10, 64], pin_memory = False)
-    slice_11 = torch.ops.aten.slice.Tensor(new_empty_2, 2, 0, 1)
-    copy__4 = torch.ops.aten.copy_.default(slice_11, silu_2);  slice_11 = silu_2 = copy__4 = None
-    slice_12 = torch.ops.aten.slice.Tensor(new_empty_2, 2, 1, 10)
-    slice_13 = torch.ops.aten.slice.Tensor(view_45, 2, 1, 10);  view_45 = None
-    mul_3 = torch.ops.aten.mul.Tensor(slice_13, index_select_5);  slice_13 = index_select_5 = None
-    copy__5 = torch.ops.aten.copy_.default(slice_12, mul_3);  slice_12 = mul_3 = copy__5 = None
-    add_2 = torch.ops.aten.add.Tensor(add_1, new_empty_2);  add_1 = new_empty_2 = None
-    view_52 = torch.ops.aten.view.default(add_2, [1, 92, 640])
-    unsqueeze_18 = torch.ops.aten.unsqueeze.default(view_52, 3);  view_52 = None
-    permute_41 = torch.ops.aten.permute.default(unsqueeze_18, [0, 1, 3, 2]);  unsqueeze_18 = None
-    _tensor_constant12 = self._tensor_constant12
-    unsqueeze_19 = torch.ops.aten.unsqueeze.default(_tensor_constant12, 3);  _tensor_constant12 = None
-    permute_42 = torch.ops.aten.permute.default(unsqueeze_19, [1, 3, 2, 0]);  unsqueeze_19 = None
-    permute_43 = torch.ops.aten.permute.default(permute_41, [1, 3, 0, 2]);  permute_41 = None
-    view_53 = torch.ops.aten.view.default(permute_43, [1, 92, 640]);  permute_43 = None
-    permute_44 = torch.ops.aten.permute.default(permute_42, [3, 0, 2, 1]);  permute_42 = None
-    view_54 = torch.ops.aten.view.default(permute_44, [1, 640, 640]);  permute_44 = None
-    bmm_9 = torch.ops.aten.bmm.default(view_53, view_54);  view_53 = view_54 = None
-    view_55 = torch.ops.aten.view.default(bmm_9, [92, 1, 1, 640]);  bmm_9 = None
-    permute_45 = torch.ops.aten.permute.default(view_55, [2, 0, 3, 1]);  view_55 = None
-    view_56 = torch.ops.aten.view.default(permute_45, [1, 92, 640]);  permute_45 = None
-    view_57 = torch.ops.aten.view.default(view_56, [1, 92, 10, 64]);  view_56 = None
-    add_3 = torch.ops.aten.add.Tensor(add_2, view_57);  add_2 = view_57 = None
-    permute_46 = torch.ops.aten.permute.default(add_3, [1, 0, 2, 3]);  add_3 = None
-    transpose_6 = torch.ops.aten.transpose.int(permute_46, 1, 2);  permute_46 = None
-    view_58 = torch.ops.aten.view.default(transpose_6, [92, 10, 64]);  transpose_6 = None
-    _tensor_constant13 = self._tensor_constant13
-    bmm_10 = torch.ops.aten.bmm.default(_tensor_constant13, view_58);  _tensor_constant13 = view_58 = None
-    _tensor_constant14 = self._tensor_constant14
-    view_59 = torch.ops.aten.view.default(_tensor_constant14, [1, -1, 1]);  _tensor_constant14 = None
-    mul_4 = torch.ops.aten.mul.Tensor(bmm_10, view_59);  bmm_10 = view_59 = None
-    pow_1 = torch.ops.aten.pow.Tensor_Scalar(view_5, 2)
-    mean = torch.ops.aten.mean.dim(pow_1, [-1], True);  pow_1 = None
-    _tensor_constant15 = self._tensor_constant15
-    add_4 = torch.ops.aten.add.Tensor(mean, _tensor_constant15);  mean = _tensor_constant15 = None
-    rsqrt = torch.ops.aten.rsqrt.default(add_4);  add_4 = None
-    alias_3 = torch.ops.aten.alias.default(rsqrt);  alias_3 = None
-    mul_5 = torch.ops.aten.mul.Tensor(view_5, rsqrt);  rsqrt = None
-    _param_constant6 = self._param_constant6
-    unsqueeze_20 = torch.ops.aten.unsqueeze.default(_param_constant6, 0);  _param_constant6 = None
-    mul_6 = torch.ops.aten.mul.Tensor(mul_5, unsqueeze_20);  mul_5 = unsqueeze_20 = None
-    _param_constant7 = self._param_constant7
-    view_60 = torch.ops.aten.view.default(_param_constant7, [64, 1, 64]);  _param_constant7 = None
-    unsqueeze_21 = torch.ops.aten.unsqueeze.default(mul_6, 3)
-    permute_47 = torch.ops.aten.permute.default(unsqueeze_21, [0, 1, 3, 2]);  unsqueeze_21 = None
-    unsqueeze_22 = torch.ops.aten.unsqueeze.default(view_60, 3);  view_60 = None
-    permute_48 = torch.ops.aten.permute.default(unsqueeze_22, [3, 1, 2, 0]);  unsqueeze_22 = None
-    permute_49 = torch.ops.aten.permute.default(permute_47, [0, 3, 1, 2]);  permute_47 = None
-    view_61 = torch.ops.aten.view.default(permute_49, [1, 28, 64]);  permute_49 = None
-    permute_50 = torch.ops.aten.permute.default(permute_48, [3, 1, 2, 0]);  permute_48 = None
-    view_62 = torch.ops.aten.view.default(permute_50, [1, 64, 64]);  permute_50 = None
-    bmm_11 = torch.ops.aten.bmm.default(view_61, view_62);  view_61 = view_62 = None
-    view_63 = torch.ops.aten.view.default(bmm_11, [28, 1, 1, 64]);  bmm_11 = None
-    permute_51 = torch.ops.aten.permute.default(view_63, [0, 2, 3, 1]);  view_63 = None
-    view_64 = torch.ops.aten.view.default(permute_51, [28, 1, 64]);  permute_51 = None
-    _param_constant8 = self._param_constant8
-    view_65 = torch.ops.aten.view.default(_param_constant8, [64, 1, 64]);  _param_constant8 = None
-    unsqueeze_23 = torch.ops.aten.unsqueeze.default(mul_6, 3);  mul_6 = None
-    permute_52 = torch.ops.aten.permute.default(unsqueeze_23, [0, 1, 3, 2]);  unsqueeze_23 = None
-    unsqueeze_24 = torch.ops.aten.unsqueeze.default(view_65, 3);  view_65 = None
-    permute_53 = torch.ops.aten.permute.default(unsqueeze_24, [3, 1, 2, 0]);  unsqueeze_24 = None
-    permute_54 = torch.ops.aten.permute.default(permute_52, [0, 3, 1, 2]);  permute_52 = None
-    view_66 = torch.ops.aten.view.default(permute_54, [1, 28, 64]);  permute_54 = None
-    permute_55 = torch.ops.aten.permute.default(permute_53, [3, 1, 2, 0]);  permute_53 = None
-    view_67 = torch.ops.aten.view.default(permute_55, [1, 64, 64]);  permute_55 = None
-    bmm_12 = torch.ops.aten.bmm.default(view_66, view_67);  view_66 = view_67 = None
-    view_68 = torch.ops.aten.view.default(bmm_12, [28, 1, 1, 64]);  bmm_12 = None
-    permute_56 = torch.ops.aten.permute.default(view_68, [0, 2, 3, 1]);  view_68 = None
-    view_69 = torch.ops.aten.view.default(permute_56, [28, 1, 64]);  permute_56 = None
-    _tensor_constant16 = self._tensor_constant16
-    index_select_6 = torch.ops.aten.index_select.default(view_64, 0, _tensor_constant16);  view_64 = _tensor_constant16 = None
-    view_70 = torch.ops.aten.view.default(index_select_6, [92, 1, 1, 64]);  index_select_6 = None
-    _tensor_constant1_1 = self._tensor_constant1
-    index_select_7 = torch.ops.aten.index_select.default(view_69, 0, _tensor_constant1_1);  view_69 = _tensor_constant1_1 = None
-    view_71 = torch.ops.aten.view.default(index_select_7, [92, 1, 1, 64]);  index_select_7 = None
-    mul_7 = torch.ops.aten.mul.Tensor(view_70, view_71);  view_70 = view_71 = None
-    sum_2 = torch.ops.aten.sum.dim_IntList(mul_7, [-1]);  mul_7 = None
-    mul_8 = torch.ops.aten.mul.Tensor(sum_2, 0.125);  sum_2 = None
-    select_5 = torch.ops.aten.select.int(index, 1, 0);  index = None
-    view_72 = torch.ops.aten.view.default(select_5, [92, 1, 64]);  select_5 = None
-    unsqueeze_25 = torch.ops.aten.unsqueeze.default(view_72, 3);  view_72 = None
-    permute_57 = torch.ops.aten.permute.default(unsqueeze_25, [0, 1, 3, 2]);  unsqueeze_25 = None
-    _param_constant9 = self._param_constant9
-    unsqueeze_26 = torch.ops.aten.unsqueeze.default(_param_constant9, 3);  _param_constant9 = None
-    permute_58 = torch.ops.aten.permute.default(unsqueeze_26, [3, 1, 2, 0]);  unsqueeze_26 = None
-    permute_59 = torch.ops.aten.permute.default(permute_57, [0, 3, 1, 2]);  permute_57 = None
-    view_73 = torch.ops.aten.view.default(permute_59, [1, 92, 64]);  permute_59 = None
-    permute_60 = torch.ops.aten.permute.default(permute_58, [3, 1, 2, 0]);  permute_58 = None
-    view_74 = torch.ops.aten.view.default(permute_60, [1, 64, 1]);  permute_60 = None
-    bmm_13 = torch.ops.aten.bmm.default(view_73, view_74);  view_73 = view_74 = None
-    view_75 = torch.ops.aten.view.default(bmm_13, [92, 1, 1, 1]);  bmm_13 = None
-    permute_61 = torch.ops.aten.permute.default(view_75, [0, 2, 3, 1]);  view_75 = None
-    view_76 = torch.ops.aten.view.default(permute_61, [92, 1, 1]);  permute_61 = None
-    add_5 = torch.ops.aten.add.Tensor(mul_8, view_76);  mul_8 = view_76 = None
-    view_77 = torch.ops.aten.view.default(add_5, [92, 1]);  add_5 = None
-    _tensor_constant17 = self._tensor_constant17
-    view_78 = torch.ops.aten.view.default(_tensor_constant17, [92]);  _tensor_constant17 = None
-    gt = torch.ops.aten.gt.Scalar(view_78, 0.0)
-    ones_like = torch.ops.aten.ones_like.default(view_78, pin_memory = False)
-    where = torch.ops.aten.where.self(gt, view_78, ones_like);  view_78 = ones_like = None
-    log = torch.ops.aten.log.default(where);  where = None
-    mul_9 = torch.ops.aten.mul.Tensor(log, 2.0);  log = None
-    view_79 = torch.ops.aten.view.default(gt, [92, 1]);  gt = None
-    view_80 = torch.ops.aten.view.default(mul_9, [92, 1]);  mul_9 = None
-    add_6 = torch.ops.aten.add.Tensor(view_77, view_80);  view_80 = None
-    full_like = torch.ops.aten.full_like.default(view_77, -inf, pin_memory = False);  view_77 = None
-    where_1 = torch.ops.aten.where.self(view_79, add_6, full_like);  view_79 = add_6 = full_like = None
-    _param_constant10 = self._param_constant10
-    softplus = torch.ops.aten.softplus.default(_param_constant10);  _param_constant10 = None
-    add_7 = torch.ops.aten.add.Tensor(softplus, 1e-07);  softplus = None
-    view_81 = torch.ops.aten.view.default(add_7, [1, 1]);  add_7 = None
-    log_1 = torch.ops.aten.log.default(view_81);  view_81 = None
-    _tensor_constant16_1 = self._tensor_constant16
-    view_82 = torch.ops.aten.view.default(_tensor_constant16_1, [92, 1]);  _tensor_constant16_1 = None
-    expand = torch.ops.aten.expand.default(view_82, [92, 1]);  view_82 = None
-    expand_1 = torch.ops.aten.expand.default(log_1, [28, 1])
-    clone = torch.ops.aten.clone.default(expand_1);  expand_1 = None
-    scatter_reduce = torch.ops.aten.scatter_reduce.two(clone, 0, expand, where_1, 'amax');  clone = None
-    alias_4 = torch.ops.aten.alias.default(scatter_reduce);  alias_4 = None
-    _tensor_constant16_2 = self._tensor_constant16
-    index_select_8 = torch.ops.aten.index_select.default(scatter_reduce, 0, _tensor_constant16_2);  _tensor_constant16_2 = None
-    sub = torch.ops.aten.sub.Tensor(where_1, index_select_8);  where_1 = index_select_8 = None
-    exp = torch.ops.aten.exp.default(sub);  sub = None
-    alias_5 = torch.ops.aten.alias.default(exp);  alias_5 = None
-    zeros = torch.ops.aten.zeros.default([28, 1], dtype = torch.float32, device = device(type='cpu'), pin_memory = False)
-    scatter_add = torch.ops.aten.scatter_add.default(zeros, 0, expand, exp);  zeros = expand = None
-    sub_1 = torch.ops.aten.sub.Tensor(log_1, scatter_reduce);  log_1 = scatter_reduce = None
-    exp_1 = torch.ops.aten.exp.default(sub_1);  sub_1 = None
-    alias_6 = torch.ops.aten.alias.default(exp_1);  alias_6 = None
-    add_8 = torch.ops.aten.add.Tensor(scatter_add, exp_1);  scatter_add = exp_1 = None
-    _tensor_constant16_3 = self._tensor_constant16
-    index_select_9 = torch.ops.aten.index_select.default(add_8, 0, _tensor_constant16_3);  add_8 = _tensor_constant16_3 = None
-    div = torch.ops.aten.div.Tensor(exp, index_select_9);  exp = index_select_9 = None
-    view_83 = torch.ops.aten.view.default(div, [92, 1, 1]);  div = None
-    pow_2 = torch.ops.aten.pow.Tensor_Scalar(view_5, 2)
-    mean_1 = torch.ops.aten.mean.dim(pow_2, [-1], True);  pow_2 = None
-    _tensor_constant18 = self._tensor_constant18
-    add_9 = torch.ops.aten.add.Tensor(mean_1, _tensor_constant18);  mean_1 = _tensor_constant18 = None
-    rsqrt_1 = torch.ops.aten.rsqrt.default(add_9);  add_9 = None
-    alias_7 = torch.ops.aten.alias.default(rsqrt_1);  alias_7 = None
-    mul_10 = torch.ops.aten.mul.Tensor(view_5, rsqrt_1);  view_5 = rsqrt_1 = None
-    _param_constant11 = self._param_constant11
-    unsqueeze_27 = torch.ops.aten.unsqueeze.default(_param_constant11, 0);  _param_constant11 = None
-    mul_11 = torch.ops.aten.mul.Tensor(mul_10, unsqueeze_27);  mul_10 = unsqueeze_27 = None
-    unsqueeze_28 = torch.ops.aten.unsqueeze.default(mul_11, 3);  mul_11 = None
-    permute_62 = torch.ops.aten.permute.default(unsqueeze_28, [0, 1, 3, 2]);  unsqueeze_28 = None
-    _param_constant12 = self._param_constant12
-    unsqueeze_29 = torch.ops.aten.unsqueeze.default(_param_constant12, 3);  _param_constant12 = None
-    permute_63 = torch.ops.aten.permute.default(unsqueeze_29, [3, 1, 2, 0]);  unsqueeze_29 = None
-    permute_64 = torch.ops.aten.permute.default(permute_62, [0, 3, 1, 2]);  permute_62 = None
-    view_84 = torch.ops.aten.view.default(permute_64, [1, 28, 64]);  permute_64 = None
-    permute_65 = torch.ops.aten.permute.default(permute_63, [3, 1, 2, 0]);  permute_63 = None
-    view_85 = torch.ops.aten.view.default(permute_65, [1, 64, 1]);  permute_65 = None
-    bmm_14 = torch.ops.aten.bmm.default(view_84, view_85);  view_84 = view_85 = None
-    view_86 = torch.ops.aten.view.default(bmm_14, [28, 1, 1, 1]);  bmm_14 = None
-    permute_66 = torch.ops.aten.permute.default(view_86, [0, 2, 3, 1]);  view_86 = None
-    view_87 = torch.ops.aten.view.default(permute_66, [28, 1, 1]);  permute_66 = None
-    sigmoid_3 = torch.ops.aten.sigmoid.default(view_87);  view_87 = None
-    alias_8 = torch.ops.aten.alias.default(sigmoid_3);  alias_8 = None
-    view_88 = torch.ops.aten.view.default(mul_4, [92, 16, 1, 64]);  mul_4 = None
-    view_89 = torch.ops.aten.view.default(view_88, [92, 16, 1, 1, 64]);  view_88 = None
-    view_90 = torch.ops.aten.view.default(view_83, [92, 1, 1, 1, 1]);  view_83 = None
-    mul_12 = torch.ops.aten.mul.Tensor(view_89, view_90);  view_89 = view_90 = None
-    zeros_1 = torch.ops.aten.zeros.default([28, 16, 1, 1, 64], dtype = torch.float32, device = device(type='cpu'), pin_memory = False)
-    _tensor_constant16_4 = self._tensor_constant16
-    index_add_ = torch.ops.aten.index_add_.default(zeros_1, 0, _tensor_constant16_4, mul_12);  zeros_1 = _tensor_constant16_4 = mul_12 = None
-    view_91 = torch.ops.aten.view.default(sigmoid_3, [28, 1, 1, 1, 1]);  sigmoid_3 = None
-    mul_13 = torch.ops.aten.mul.Tensor(index_add_, view_91);  index_add_ = view_91 = None
-    view_92 = torch.ops.aten.view.default(mul_13, [28, 16, 1, 64]);  mul_13 = None
-    view_93 = torch.ops.aten.view.default(view_92, [28, 16, 64]);  view_92 = None
-    view_94 = torch.ops.aten.view.default(view_93, [28, 16, 1, 64])
-    view_95 = torch.ops.aten.view.default(squeeze, [28, 16, 1, 64]);  squeeze = None
-    select_6 = torch.ops.aten.select.int(view_94, 1, 0)
-    select_7 = torch.ops.aten.select.int(view_95, 1, 0)
-    cat = torch.ops.aten.cat.default([select_6, select_7], -1);  select_6 = select_7 = None
-    _param_constant13 = self._param_constant13
-    _tensor_constant19 = self._tensor_constant19
-    index_select_10 = torch.ops.aten.index_select.default(_param_constant13, 0, _tensor_constant19);  _param_constant13 = _tensor_constant19 = None
-    unsqueeze_30 = torch.ops.aten.unsqueeze.default(view_94, 4);  view_94 = None
-    permute_67 = torch.ops.aten.permute.default(unsqueeze_30, [0, 1, 2, 4, 3]);  unsqueeze_30 = None
-    unsqueeze_31 = torch.ops.aten.unsqueeze.default(index_select_10, 3);  index_select_10 = None
-    unsqueeze_32 = torch.ops.aten.unsqueeze.default(unsqueeze_31, 4);  unsqueeze_31 = None
-    permute_68 = torch.ops.aten.permute.default(unsqueeze_32, [3, 0, 4, 2, 1]);  unsqueeze_32 = None
-    permute_69 = torch.ops.aten.permute.default(permute_67, [1, 0, 4, 2, 3]);  permute_67 = None
-    view_96 = torch.ops.aten.view.default(permute_69, [16, 28, 64]);  permute_69 = None
-    permute_70 = torch.ops.aten.permute.default(permute_68, [1, 4, 2, 3, 0]);  permute_68 = None
-    view_97 = torch.ops.aten.view.default(permute_70, [16, 64, 192]);  permute_70 = None
-    bmm_15 = torch.ops.aten.bmm.default(view_96, view_97);  view_96 = view_97 = None
-    view_98 = torch.ops.aten.view.default(bmm_15, [16, 28, 1, 1, 192]);  bmm_15 = None
-    permute_71 = torch.ops.aten.permute.default(view_98, [1, 0, 3, 4, 2]);  view_98 = None
-    view_99 = torch.ops.aten.view.default(permute_71, [28, 16, 1, 192]);  permute_71 = None
-    _param_constant13_1 = self._param_constant13
-    _tensor_constant19_1 = self._tensor_constant19
-    index_select_11 = torch.ops.aten.index_select.default(_param_constant13_1, 0, _tensor_constant19_1);  _param_constant13_1 = _tensor_constant19_1 = None
-    unsqueeze_33 = torch.ops.aten.unsqueeze.default(view_95, 4);  view_95 = None
-    permute_72 = torch.ops.aten.permute.default(unsqueeze_33, [0, 1, 2, 4, 3]);  unsqueeze_33 = None
-    unsqueeze_34 = torch.ops.aten.unsqueeze.default(index_select_11, 3);  index_select_11 = None
-    unsqueeze_35 = torch.ops.aten.unsqueeze.default(unsqueeze_34, 4);  unsqueeze_34 = None
-    permute_73 = torch.ops.aten.permute.default(unsqueeze_35, [3, 0, 4, 2, 1]);  unsqueeze_35 = None
-    permute_74 = torch.ops.aten.permute.default(permute_72, [1, 0, 4, 2, 3]);  permute_72 = None
-    view_100 = torch.ops.aten.view.default(permute_74, [16, 28, 64]);  permute_74 = None
-    permute_75 = torch.ops.aten.permute.default(permute_73, [1, 4, 2, 3, 0]);  permute_73 = None
-    view_101 = torch.ops.aten.view.default(permute_75, [16, 64, 192]);  permute_75 = None
-    bmm_16 = torch.ops.aten.bmm.default(view_100, view_101);  view_100 = view_101 = None
-    view_102 = torch.ops.aten.view.default(bmm_16, [16, 28, 1, 1, 192]);  bmm_16 = None
-    permute_76 = torch.ops.aten.permute.default(view_102, [1, 0, 3, 4, 2]);  view_102 = None
-    view_103 = torch.ops.aten.view.default(permute_76, [28, 16, 1, 192]);  permute_76 = None
-    view_104 = torch.ops.aten.view.default(view_99, [28, 16, 1, 3, 64]);  view_99 = None
-    _tensor_constant20 = self._tensor_constant20
-    view_105 = torch.ops.aten.view.default(_tensor_constant20, [152, 16, 3]);  _tensor_constant20 = None
-    unsqueeze_36 = torch.ops.aten.unsqueeze.default(view_105, 3);  view_105 = None
-    unsqueeze_37 = torch.ops.aten.unsqueeze.default(unsqueeze_36, 4);  unsqueeze_36 = None
-    unsqueeze_38 = torch.ops.aten.unsqueeze.default(unsqueeze_37, 5);  unsqueeze_37 = None
-    permute_77 = torch.ops.aten.permute.default(unsqueeze_38, [3, 0, 4, 5, 1, 2]);  unsqueeze_38 = None
-    unsqueeze_39 = torch.ops.aten.unsqueeze.default(view_104, 5);  view_104 = None
-    permute_78 = torch.ops.aten.permute.default(unsqueeze_39, [0, 5, 2, 4, 1, 3]);  unsqueeze_39 = None
-    permute_79 = torch.ops.aten.permute.default(permute_77, [1, 4, 5, 0, 2, 3]);  permute_77 = None
-    view_106 = torch.ops.aten.view.default(permute_79, [1, 152, 48]);  permute_79 = None
-    permute_80 = torch.ops.aten.permute.default(permute_78, [4, 5, 0, 2, 3, 1]);  permute_78 = None
-    clone_1 = torch.ops.aten.clone.default(permute_80, memory_format = torch.contiguous_format);  permute_80 = None
-    _unsafe_view = torch.ops.aten._unsafe_view.default(clone_1, [1, 48, 1792]);  clone_1 = None
-    bmm_17 = torch.ops.aten.bmm.default(view_106, _unsafe_view);  view_106 = _unsafe_view = None
-    view_107 = torch.ops.aten.view.default(bmm_17, [152, 1, 1, 28, 1, 64]);  bmm_17 = None
-    permute_81 = torch.ops.aten.permute.default(view_107, [3, 0, 4, 5, 1, 2]);  view_107 = None
-    view_108 = torch.ops.aten.view.default(permute_81, [28, 152, 1, 64]);  permute_81 = None
-    view_109 = torch.ops.aten.view.default(view_103, [28, 16, 1, 3, 64]);  view_103 = None
-    _tensor_constant20_1 = self._tensor_constant20
-    view_110 = torch.ops.aten.view.default(_tensor_constant20_1, [152, 16, 3]);  _tensor_constant20_1 = None
-    unsqueeze_40 = torch.ops.aten.unsqueeze.default(view_110, 3);  view_110 = None
-    unsqueeze_41 = torch.ops.aten.unsqueeze.default(unsqueeze_40, 4);  unsqueeze_40 = None
-    unsqueeze_42 = torch.ops.aten.unsqueeze.default(unsqueeze_41, 5);  unsqueeze_41 = None
-    permute_82 = torch.ops.aten.permute.default(unsqueeze_42, [3, 0, 4, 5, 1, 2]);  unsqueeze_42 = None
-    unsqueeze_43 = torch.ops.aten.unsqueeze.default(view_109, 5);  view_109 = None
-    permute_83 = torch.ops.aten.permute.default(unsqueeze_43, [0, 5, 2, 4, 1, 3]);  unsqueeze_43 = None
-    permute_84 = torch.ops.aten.permute.default(permute_82, [1, 4, 5, 0, 2, 3]);  permute_82 = None
-    view_111 = torch.ops.aten.view.default(permute_84, [1, 152, 48]);  permute_84 = None
-    permute_85 = torch.ops.aten.permute.default(permute_83, [4, 5, 0, 2, 3, 1]);  permute_83 = None
-    clone_2 = torch.ops.aten.clone.default(permute_85, memory_format = torch.contiguous_format);  permute_85 = None
-    _unsafe_view_1 = torch.ops.aten._unsafe_view.default(clone_2, [1, 48, 1792]);  clone_2 = None
-    bmm_18 = torch.ops.aten.bmm.default(view_111, _unsafe_view_1);  view_111 = _unsafe_view_1 = None
-    view_112 = torch.ops.aten.view.default(bmm_18, [152, 1, 1, 28, 1, 64]);  bmm_18 = None
-    permute_86 = torch.ops.aten.permute.default(view_112, [3, 0, 4, 5, 1, 2]);  view_112 = None
-    view_113 = torch.ops.aten.view.default(permute_86, [28, 152, 1, 64]);  permute_86 = None
-    mul_14 = torch.ops.aten.mul.Tensor(view_108, view_113);  view_108 = view_113 = None
-    _tensor_constant21 = self._tensor_constant21
-    view_114 = torch.ops.aten.view.default(_tensor_constant21, [16, 3, 152]);  _tensor_constant21 = None
-    unsqueeze_44 = torch.ops.aten.unsqueeze.default(view_114, 3);  view_114 = None
-    unsqueeze_45 = torch.ops.aten.unsqueeze.default(unsqueeze_44, 4);  unsqueeze_44 = None
-    unsqueeze_46 = torch.ops.aten.unsqueeze.default(unsqueeze_45, 5);  unsqueeze_45 = None
-    permute_87 = torch.ops.aten.permute.default(unsqueeze_46, [3, 0, 4, 1, 5, 2]);  unsqueeze_46 = None
-    unsqueeze_47 = torch.ops.aten.unsqueeze.default(mul_14, 4);  mul_14 = None
-    unsqueeze_48 = torch.ops.aten.unsqueeze.default(unsqueeze_47, 5);  unsqueeze_47 = None
-    permute_88 = torch.ops.aten.permute.default(unsqueeze_48, [0, 4, 2, 5, 3, 1]);  unsqueeze_48 = None
-    permute_89 = torch.ops.aten.permute.default(permute_87, [1, 3, 5, 0, 2, 4]);  permute_87 = None
-    view_115 = torch.ops.aten.view.default(permute_89, [1, 48, 152]);  permute_89 = None
-    permute_90 = torch.ops.aten.permute.default(permute_88, [5, 0, 2, 4, 1, 3]);  permute_88 = None
-    view_116 = torch.ops.aten.view.default(permute_90, [1, 152, 1792]);  permute_90 = None
-    bmm_19 = torch.ops.aten.bmm.default(view_115, view_116);  view_115 = view_116 = None
-    view_117 = torch.ops.aten.view.default(bmm_19, [16, 3, 1, 28, 1, 64]);  bmm_19 = None
-    permute_91 = torch.ops.aten.permute.default(view_117, [3, 0, 4, 1, 5, 2]);  view_117 = None
-    view_118 = torch.ops.aten.view.default(permute_91, [28, 16, 1, 3, 64]);  permute_91 = None
-    clone_3 = torch.ops.aten.clone.default(view_118, memory_format = torch.contiguous_format);  view_118 = None
-    _unsafe_view_2 = torch.ops.aten._unsafe_view.default(clone_3, [28, 16, 1, 192]);  clone_3 = None
-    split = torch.ops.aten.split.Tensor(cat, 64, -1)
-    getitem = split[0]
-    getitem_1 = split[1];  split = None
-    sigmoid_4 = torch.ops.aten.sigmoid.default(getitem)
-    alias_9 = torch.ops.aten.alias.default(sigmoid_4);  alias_9 = None
-    mul_15 = torch.ops.aten.mul.Tensor(getitem, sigmoid_4);  getitem = sigmoid_4 = None
-    mul_16 = torch.ops.aten.mul.Tensor(mul_15, getitem_1);  mul_15 = getitem_1 = None
-    _param_constant14 = self._param_constant14
-    view_119 = torch.ops.aten.view.default(_param_constant14, [128, 1, 64]);  _param_constant14 = None
-    unsqueeze_49 = torch.ops.aten.unsqueeze.default(cat, 3);  cat = None
-    permute_92 = torch.ops.aten.permute.default(unsqueeze_49, [0, 1, 3, 2]);  unsqueeze_49 = None
-    unsqueeze_50 = torch.ops.aten.unsqueeze.default(view_119, 3);  view_119 = None
-    permute_93 = torch.ops.aten.permute.default(unsqueeze_50, [3, 1, 2, 0]);  unsqueeze_50 = None
-    permute_94 = torch.ops.aten.permute.default(permute_92, [0, 3, 1, 2]);  permute_92 = None
-    view_120 = torch.ops.aten.view.default(permute_94, [1, 28, 128]);  permute_94 = None
-    permute_95 = torch.ops.aten.permute.default(permute_93, [3, 1, 2, 0]);  permute_93 = None
-    view_121 = torch.ops.aten.view.default(permute_95, [1, 128, 64]);  permute_95 = None
-    bmm_20 = torch.ops.aten.bmm.default(view_120, view_121);  view_120 = view_121 = None
-    view_122 = torch.ops.aten.view.default(bmm_20, [28, 1, 1, 64]);  bmm_20 = None
-    permute_96 = torch.ops.aten.permute.default(view_122, [0, 2, 3, 1]);  view_122 = None
-    view_123 = torch.ops.aten.view.default(permute_96, [28, 1, 64]);  permute_96 = None
-    sigmoid_5 = torch.ops.aten.sigmoid.default(view_123);  view_123 = None
-    alias_10 = torch.ops.aten.alias.default(sigmoid_5);  alias_10 = None
-    view_124 = torch.ops.aten.view.default(_unsafe_view_2, [28, 16, 1, 3, 64]);  _unsafe_view_2 = None
-    unsqueeze_51 = torch.ops.aten.unsqueeze.default(sigmoid_5, 1);  sigmoid_5 = None
-    unsqueeze_52 = torch.ops.aten.unsqueeze.default(unsqueeze_51, 3);  unsqueeze_51 = None
-    mul_17 = torch.ops.aten.mul.Tensor(view_124, unsqueeze_52);  view_124 = unsqueeze_52 = None
-    select_8 = torch.ops.aten.select.int(mul_17, 1, 0)
-    select_9 = torch.ops.aten.select.int(select_8, 2, 0);  select_8 = None
-    add_ = torch.ops.aten.add_.Tensor(select_9, mul_16);  select_9 = mul_16 = add_ = None
-    view_125 = torch.ops.aten.view.default(mul_17, [28, 16, 1, 192]);  mul_17 = None
-    _param_constant15 = self._param_constant15
-    _tensor_constant22 = self._tensor_constant22
-    index_select_12 = torch.ops.aten.index_select.default(_param_constant15, 0, _tensor_constant22);  _param_constant15 = _tensor_constant22 = None
-    unsqueeze_53 = torch.ops.aten.unsqueeze.default(view_125, 4);  view_125 = None
-    permute_97 = torch.ops.aten.permute.default(unsqueeze_53, [0, 1, 2, 4, 3]);  unsqueeze_53 = None
-    unsqueeze_54 = torch.ops.aten.unsqueeze.default(index_select_12, 3);  index_select_12 = None
-    unsqueeze_55 = torch.ops.aten.unsqueeze.default(unsqueeze_54, 4);  unsqueeze_54 = None
-    permute_98 = torch.ops.aten.permute.default(unsqueeze_55, [3, 0, 4, 2, 1]);  unsqueeze_55 = None
-    permute_99 = torch.ops.aten.permute.default(permute_97, [1, 0, 4, 2, 3]);  permute_97 = None
-    view_126 = torch.ops.aten.view.default(permute_99, [16, 28, 192]);  permute_99 = None
-    permute_100 = torch.ops.aten.permute.default(permute_98, [1, 4, 2, 3, 0]);  permute_98 = None
-    view_127 = torch.ops.aten.view.default(permute_100, [16, 192, 64]);  permute_100 = None
-    bmm_21 = torch.ops.aten.bmm.default(view_126, view_127);  view_126 = view_127 = None
-    view_128 = torch.ops.aten.view.default(bmm_21, [16, 28, 1, 1, 64]);  bmm_21 = None
-    permute_101 = torch.ops.aten.permute.default(view_128, [1, 0, 3, 4, 2]);  view_128 = None
-    view_129 = torch.ops.aten.view.default(permute_101, [28, 16, 1, 64]);  permute_101 = None
-    _param_constant16 = self._param_constant16
-    view_130 = torch.ops.aten.view.default(_param_constant16, [1, 1, 1, 64]);  _param_constant16 = None
-    mul_18 = torch.ops.aten.mul.Tensor(view_129, view_130);  view_129 = view_130 = None
-    view_131 = torch.ops.aten.view.default(mul_18, [28, 16, 64]);  mul_18 = None
-    add_10 = torch.ops.aten.add.Tensor(view_93, view_131);  view_93 = view_131 = None
-    unsqueeze_56 = torch.ops.aten.unsqueeze.default(add_10, 2);  add_10 = None
-    _param_constant17 = self._param_constant17
-    view_132 = torch.ops.aten.view.default(_param_constant17, [4, 64, 1, 64]);  _param_constant17 = None
-    _tensor_constant23 = self._tensor_constant23
-    index_select_13 = torch.ops.aten.index_select.default(view_132, 0, _tensor_constant23);  view_132 = _tensor_constant23 = None
-    unsqueeze_57 = torch.ops.aten.unsqueeze.default(unsqueeze_56, 4);  unsqueeze_56 = None
-    permute_102 = torch.ops.aten.permute.default(unsqueeze_57, [0, 1, 2, 4, 3]);  unsqueeze_57 = None
-    unsqueeze_58 = torch.ops.aten.unsqueeze.default(index_select_13, 4);  index_select_13 = None
-    permute_103 = torch.ops.aten.permute.default(unsqueeze_58, [4, 0, 2, 3, 1]);  unsqueeze_58 = None
-    permute_104 = torch.ops.aten.permute.default(permute_102, [1, 0, 4, 2, 3]);  permute_102 = None
-    view_133 = torch.ops.aten.view.default(permute_104, [16, 28, 64]);  permute_104 = None
-    permute_105 = torch.ops.aten.permute.default(permute_103, [1, 4, 2, 3, 0]);  permute_103 = None
-    view_134 = torch.ops.aten.view.default(permute_105, [16, 64, 64]);  permute_105 = None
-    bmm_22 = torch.ops.aten.bmm.default(view_133, view_134);  view_133 = view_134 = None
-    view_135 = torch.ops.aten.view.default(bmm_22, [16, 28, 1, 1, 64]);  bmm_22 = None
-    permute_106 = torch.ops.aten.permute.default(view_135, [1, 0, 3, 4, 2]);  view_135 = None
-    view_136 = torch.ops.aten.view.default(permute_106, [28, 16, 1, 64]);  permute_106 = None
-    squeeze_1 = torch.ops.aten.squeeze.dim(view_136, 2);  view_136 = None
-    return squeeze_1
-    
-# To see more debug info, please use `graph_module.print_readable()`

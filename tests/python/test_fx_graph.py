@@ -90,20 +90,24 @@ class GraphReadingTests(unittest.TestCase):
 
     def test_counts_cover_every_operation_and_bucket_them(self) -> None:
         module = _module()
-        opts = type("Opts", (), {"format": "code"})()
+        opts = type("Opts", (), {"format": "readable"})()
         ops, families, text = module._describe(self._toy(), opts)
         self.assertEqual(sum(ops.values()), sum(families.values()))
         for expected in ("gemm", "elementwise", "reduce"):
             self.assertIn(expected, families)
         self.assertTrue(text)
 
-    def test_the_default_format_is_the_graph_module_print_interface(self) -> None:
+    def test_the_default_format_is_print_readable(self) -> None:
+        # print_readable annotates each node with its shape, which plain
+        # `str(graph_module)` does not, so the two must not be the same text.
         module = _module()
         traced = self._toy()
-        opts = type("Opts", (), {"format": "code"})()
-        _, _, text = module._describe(traced, opts)
-        self.assertIn("def forward", text)
-        self.assertEqual(text, str(traced))
+        readable = module._describe(traced, type("Opts", (), {"format": "readable"})())[2]
+        code = module._describe(traced, type("Opts", (), {"format": "code"})())[2]
+        self.assertIn("def forward", readable)
+        self.assertEqual(code, str(traced))
+        self.assertNotEqual(readable, code)
+        self.assertIn("#", readable)  # shape annotations are comments
 
     def test_ssa_and_shapes_formats_differ_from_code(self) -> None:
         module = _module()

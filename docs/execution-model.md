@@ -136,19 +136,24 @@ permute → permute → view → permute → view → bmm → view → permute �
 这就是 `blockdiag_gemm`（C7b「按存储原样吃权重、免连续化」）要消掉的 9 个节点/GEMM；
 也是 C6（逐元素链融合）拿不到链的图级原因——布局算子已经把张量拆成了两跳。
 
-图文本（GraphModule 自身的打印接口，纯文本）：[`artifacts/dpa4_air_cpu.fx.txt`](artifacts/dpa4_air_cpu.fx.txt)（整模型 3748 行）、[`artifacts/dpa4_air_so2_conv.fx.txt`](artifacts/dpa4_air_so2_conv.fx.txt)（卷积 533 行）。形如：
+图文本用 `GraphModule.print_readable()` 生成（每个节点带 dtype/形状/设备标注）：
+[`artifacts/dpa4_air_cpu.fx.txt`](artifacts/dpa4_air_cpu.fx.txt)（整模型 3744 行）、
+[`artifacts/dpa4_air_so2_conv.fx.txt`](artifacts/dpa4_air_so2_conv.fx.txt)（卷积 529 行）。形如：
 
 ```python
-lower_fn()
-def forward(self, coord_1, atype_1, edge_index_1, edge_vec_1, edge_scatter_index_1,
-             edge_mask_1, spin_1, charge_spin_1):
-    sym_size_int_2 = torch.ops.aten.sym_size.int(atype_1, 0)
-    ge = torch.ops.aten.ge.Scalar(atype_1, 0)
-    ...
+class call(torch.nn.Module):
+    def forward(self, x_1: "f32[28, 16, 64]cpu", radial_feat_1: "f32[92, 4, 64]cpu"):
+        unsqueeze: "f32[28, 16, 1, 64]cpu" = torch.ops.aten.unsqueeze.default(x_1, 2)
+        permute: "f32[28, 16, 1, 1, 64]cpu" = torch.ops.aten.permute.default(unsqueeze_1, [0, 1, 2, 4, 3])
+        bmm: "f32[16, 28, 64]cpu" = torch.ops.aten.bmm.default(view_2, view_3)
+        ...
 ```
 
-想看带输出形状的一行一节点表就 `--format shapes`，想看 `call_function[target=...]` 的 SSA 就
-`--format ssa`。
+整模型是符号追踪，形状显示成 `f32[s75, s96, 3]`（`s75` = 原子数 × 帧数）；卷积是真实追踪，
+显示真实形状与设备。
+
+其他三种视图：`--format code`（`str(graph_module)`，无标注）、`--format ssa`
+（`call_function[target=...]`）、`--format shapes`（一行一节点，便于 `grep`）。
 
 ## 5. 建议的推进顺序
 
