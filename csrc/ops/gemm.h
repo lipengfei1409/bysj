@@ -1,12 +1,12 @@
 #pragma once
 
-#include "tensor.h"
-#include "copy.h"
-#include "dtype.h"
-#include "dumma.h"
-#include "op.h"
-#include "state.h"
-#include "tile.h"
+#include "ops/tensor.h"
+#include "ops/copy.h"
+#include "ops/dtype.h"
+#include "ops/dumma.h"
+#include "ops/op.h"
+#include "dmk/state.h"
+#include "ops/tile.h"
 
 #include <type_traits>
 

@@ -1,6 +1,34 @@
-# SO(2) 卷积的 megakernel 算子（`csrc/so2_conv_dmk/so2_conv_op.h`）
+# SO(2) 卷积：megakernel 算子 + 普通算子两个入口
 
-手写的 HIP 版本，按 `csrc/dmk/op.h` 的 `BaseOp` 模板写：一个 instruction 就是**一次算子调用**
+## 目录：`ops/` 是工厂，`dmk/` 是持久化运行时
+
+| 目录 | 放什么 | 依赖方向 |
+| --- | --- | --- |
+| `csrc/ops/` | **算子模板与工厂**：`op.h`（`BaseOp` + `make_op`）、`config.h`（页/波/LDS 契约）、`lds.h`、`copy.h`、`tensor.h`、`tile.h`、`gemm.h`、`dumma.h`、`attention.h`、`embedding.h`、`noop.h`、`demo_op.h`、`so2_conv_op.h`、`so2_conv_math.h` | 可以 include `dmk/state.h`（钩子的参数类型），**不许** include `dmk/megakernel.h` / `dmk/controller.h` |
+| `csrc/dmk/` | **持久化调度**：`megakernel.h/.cpp`（VM 与 launch）、`state.h`（每波状态、页、信号量）、`controller.h` | 可以 include `ops/`（它是驱动方） |
+
+这条方向由 `tests/python/test_ops_dmk_layout.py` 钉住（谁都不许裸 `#include "op.h"`，跨目录必须写全路径）。
+
+## 同一份算术，两个入口
+
+```
+csrc/ops/so2_conv_math.h        ← 唯一的算术（rotate / gated layer / rotate back）
+        ├── csrc/ops/so2_conv_op.h     持久化接入：BaseOp 子类，进 op pack，由 VM 驱动
+        └── csrc/so2_conv_dmk.cpp      普通接入：一次 launch，和 csrc/ 里其它 kernel 一样
+```
+
+普通入口已接进构建（`setup.py` 的 `sources`、`csrc/ops.h` 声明、`bindings.cpp` 的
+`so2_conv_dmk`）与 Python（`kernels.so2_conv_dmk`），所以
+`tests/csrc/accuracy/test_so2_conv_dmk_accuracy.py` **接上卡就能跑**，不必等 megakernel 接线。
+
+```bash
+# 普通算子（CPU 上只会 skip；DCU 上真跑）
+PYTHONPATH=python python3 -m unittest discover -s tests/csrc/accuracy -p 'test_so2_conv_dmk*' -v
+```
+
+## 持久化算子（`ops/so2_conv_op.h`）
+
+手写的 HIP 版本，按 `BaseOp` 模板写：一个 instruction 就是**一次算子调用**
 （一段边 × 一层 SO(2) 卷积，前向），`run()` 自己拥有 `instruction` 内的 tile 循环。
 
 ## 为什么重写而不是继续改 hipified 版
@@ -65,7 +93,7 @@ msg[e][d]   = alpha[e] · y[d]                          包络/注意力权重
 ## 接入需要三步（都在另一侧，本文件不改别人的代码）
 
 1. `Globals` 加一个成员：`So2ConvTensorPack so2;`；
-2. kernel 的 op pack 里加 `mk::So2ConvOp<Globals>`；
+2. kernel 的 op pack 里加 `mk::So2ConvOp<Globals>`（`dmk/megakernel.cpp` 的 `mk_internal<...>` 列表）；
 3. 发射端用 `mk::encode_so2_conv_instruction(words, begin, end, dim, red, layers, channels)`
    填 instruction，并先调用 `mk::so2_conv_tables_fit(dim, red, layers)` 校验页预算。
 

@@ -17,8 +17,8 @@
 // in local storage for the previous and current instruction and calls the
 // virtual hooks directly; no op-type switch appears here.
 
-#include "state.h"
-#include "tensor.h"
+#include "dmk/state.h"
+#include "ops/tensor.h"
 
 #include <cassert>
 

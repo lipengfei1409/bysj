@@ -13,8 +13,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-OP = ROOT / "csrc" / "so2_conv_dmk" / "so2_conv_op.h"
-TEMPLATE = ROOT / "csrc" / "dmk" / "op.h"
+OP = ROOT / "csrc" / "ops" / "so2_conv_op.h"
+TEMPLATE = ROOT / "csrc" / "ops" / "op.h"
 
 
 class TemplateConformanceTests(unittest.TestCase):
@@ -47,7 +47,7 @@ class TemplateConformanceTests(unittest.TestCase):
         self.assertIn("explicit So2ConvOp(const int* instruction)", self.text)
 
     def test_opcode_does_not_collide_with_the_reference_op(self) -> None:
-        demo = (ROOT / "csrc" / "dmk" / "demo_op.h").read_text()
+        demo = (ROOT / "csrc" / "ops" / "demo_op.h").read_text()
         demo_opcode = int(re.search(r"opcode = (\d+)", demo).group(1))
         ours = int(re.search(r"kSo2ConvOpcode = (\d+)", self.text).group(1))
         self.assertNotEqual(demo_opcode, ours)

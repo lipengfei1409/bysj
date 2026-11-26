@@ -62,9 +62,10 @@
 //     existing dpa4_wigner_runs op, so this op consumes a dense per-edge matrix
 //     instead of re-deriving the block-diagonal algebra.
 
-#include "copy.h"
-#include "op.h"
-#include "state.h"
+#include "ops/copy.h"
+#include "ops/so2_conv_math.h"
+#include "ops/op.h"
+#include "dmk/state.h"
 
 #include <cstddef>
 
@@ -226,58 +227,32 @@ public:
 
             if (active) {
                 // Node features of the edge's source atom: one 256 B row per
-                // depth, fully coalesced across the wave.
+                // depth, fully coalesced across the wave. The arithmetic itself
+                // is ops/so2_conv_math.h, shared with the ordinary kernel so the
+                // two entry points cannot drift.
                 const long src = pack.src[edge];
                 const float* xrow = pack.x + static_cast<size_t>(src) *
                                                 inst.dim * inst.channels;
-                float x[32];
+                float x[so2::kMaxDim];
                 for (int d = 0; d < inst.dim; ++d)
                     x[d] = xrow[static_cast<size_t>(d) * inst.channels + channel];
 
-                // Rotate into the local frame.
-                float xl[32];
-                for (int r = 0; r < inst.red; ++r) {
-                    float acc = 0.0f;
-                    for (int d = 0; d < inst.dim; ++d)
-                        acc = fmaf(rot[r * inst.dim + d], x[d], acc);
-                    xl[r] = acc;
-                }
-
-                // Gated mixing stack: content and gate kernels per layer, then
-                // silu(content) * sigmoid(gate) added back as a residual.
-                const int block = inst.red * inst.red;
+                float xl[so2::kMaxRed];
+                so2::rotate_to_local(rot, x, xl, inst.dim, inst.red);
+                const long block = static_cast<long>(inst.red) * inst.red;
                 for (int layer = 0; layer < inst.layers; ++layer) {
-                    const float* content = kc + static_cast<size_t>(layer) * 2 * block;
-                    const float* gate = content + block;
-                    float z[32];
-                    float gateg[32];
-                    for (int r = 0; r < inst.red; ++r) {
-                        float a = 0.0f;
-                        float b = 0.0f;
-                        for (int c = 0; c < inst.red; ++c) {
-                            const float v = xl[c];
-                            a = fmaf(content[r * inst.red + c], v, a);
-                            b = fmaf(gate[r * inst.red + c], v, b);
-                        }
-                        z[r] = a;
-                        gateg[r] = b;
-                    }
-                    for (int r = 0; r < inst.red; ++r) {
-                        const float silu = z[r] / (1.0f + __expf(-z[r]));
-                        const float sig = 1.0f / (1.0f + __expf(-gateg[r]));
-                        xl[r] = xl[r] + silu * sig;
-                    }
+                    const float* content = kc + 2 * block * layer;
+                    so2::gated_layer(content, content + block, xl, inst.red);
                 }
 
-                // Rotate back and apply the envelope/attention weight.
+                // Rotate back and apply the envelope/attention weight here, so
+                // the weight's placement stays visible at this call site.
                 float* out = pack.msg + static_cast<size_t>(edge) *
                                             inst.dim * inst.channels;
-                for (int d = 0; d < inst.dim; ++d) {
-                    float acc = 0.0f;
-                    for (int r = 0; r < inst.red; ++r)
-                        acc = fmaf(rot_t[d * inst.red + r], xl[r], acc);
-                    out[static_cast<size_t>(d) * inst.channels + channel] = alpha * acc;
-                }
+                float y[so2::kMaxDim];
+                so2::rotate_back(rot_t, xl, y, inst.dim, inst.red);
+                for (int d = 0; d < inst.dim; ++d)
+                    out[static_cast<size_t>(d) * inst.channels + channel] = alpha * y[d];
             }
 
             lds::wave_barrier();

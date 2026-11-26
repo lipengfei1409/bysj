@@ -35,12 +35,12 @@
 // row would not fit a 16 x 128 float tile in one page), so the S-tile column
 // reads still pay the bank conflicts the standalone kernel had.
 
-#include "config.h"
-#include "dtype.h"
-#include "op.h"
-#include "state.h"
-#include "tile.h"
-#include "tensor.h"
+#include "ops/config.h"
+#include "ops/dtype.h"
+#include "ops/op.h"
+#include "dmk/state.h"
+#include "ops/tile.h"
+#include "ops/tensor.h"
 
 #include <cmath>
 

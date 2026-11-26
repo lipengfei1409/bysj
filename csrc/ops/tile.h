@@ -26,8 +26,8 @@
 //     neighbouring workers touch neighbouring addresses for row-major,
 //     column-major and rank-3 views alike.
 
-#include "copy.h"
-#include "tensor.h"
+#include "ops/copy.h"
+#include "ops/tensor.h"
 
 #include <cstddef>
 #include <type_traits>

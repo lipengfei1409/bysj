@@ -12,10 +12,10 @@
 // input and one output. A real model adds weight/activation pointers to Globals
 // and adds ops to the kernel's op pack.
 
-#include "config.h"
-#include "controller.h"
-#include "state.h"
-#include "tensor.h"
+#include "ops/config.h"
+#include "dmk/controller.h"
+#include "dmk/state.h"
+#include "ops/tensor.h"
 
 namespace dmk::mk {
 

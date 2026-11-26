@@ -74,3 +74,9 @@ Tensor monomial_runs_backward_hip(Tensor grad_runs, Tensor q, Tensor dexp,
 Tensor blockdiag_gemm_hip(Tensor x, Tensor weights, Tensor offsets);
 
 Tensor blockdiag_gemm_backward_hip(Tensor grad_out, Tensor weights, Tensor offsets);
+
+// --- C8: the SO(2) convolution, ordinary entry point ------------------------
+//
+// The same span as `ops/so2_conv_op.h` (which runs under the persistent VM).
+Tensor so2_conv_dmk_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
+                        Tensor kc, Tensor alpha);

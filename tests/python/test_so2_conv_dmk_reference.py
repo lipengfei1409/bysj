@@ -22,7 +22,11 @@ from reference.so2_conv_dmk import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-OP_HEADER = ROOT / "csrc" / "so2_conv_dmk" / "so2_conv_op.h"
+# The op lives with the rest of the op templates; its math is in
+# ops/so2_conv_math.h and the ordinary entry point in csrc/so2_conv_dmk.cpp.
+OP_HEADER = ROOT / "csrc" / "ops" / "so2_conv_op.h"
+MATH_HEADER = ROOT / "csrc" / "ops" / "so2_conv_math.h"
+ORDINARY_KERNEL = ROOT / "csrc" / "so2_conv_dmk.cpp"
 
 
 def _orthonormal(edges: int, dim: int, red: int) -> tuple[torch.Tensor, torch.Tensor]:

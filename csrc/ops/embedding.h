@@ -26,9 +26,9 @@
 //   Tensor<const float, 2, HBM> embedding_table;
 //   Tensor<float, 2, HBM>       embedding_output;
 
-#include "copy.h"
-#include "op.h"
-#include "state.h"
+#include "ops/copy.h"
+#include "ops/op.h"
+#include "dmk/state.h"
 
 namespace dmk::mk {
 

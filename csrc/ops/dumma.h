@@ -1,6 +1,6 @@
 #pragma once
 
-#include "utils.h"
+#include "ops/utils.h"
 
 namespace dmk::dumma {
 

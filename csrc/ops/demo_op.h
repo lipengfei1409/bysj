@@ -28,9 +28,9 @@
 // the tile is a contiguous page, so lane i takes the i-th 16 B chunk, and the
 // partial-tile tail is handled right here.
 
-#include "copy.h"
-#include "op.h"
-#include "state.h"
+#include "ops/copy.h"
+#include "ops/op.h"
+#include "dmk/state.h"
 
 namespace dmk::mk {
 

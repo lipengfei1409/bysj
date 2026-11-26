@@ -14,6 +14,7 @@ from .monomial import (
 )
 from .rmsnorm import rmsnorm, rmsnorm_available
 from .slot import slot_available, slot_pack_scale, slot_reduce
+from .so2_conv_dmk import so2_conv_dmk, so2_conv_dmk_available
 from .segment import (
     force_assembly,
     group_by_source,
@@ -45,5 +46,7 @@ __all__ = [
     "slot_available",
     "slot_pack_scale",
     "slot_reduce",
+    "so2_conv_dmk",
+    "so2_conv_dmk_available",
     "zonal_scatter",
 ]

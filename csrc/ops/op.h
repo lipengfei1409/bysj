@@ -56,8 +56,8 @@
 // shape, alignment and tail behaviour are op-specific, so the copy loops live
 // there and only the 16-byte load/store primitives come from copy.h.
 
-#include "config.h"
-#include "utils.h"
+#include "ops/config.h"
+#include "ops/utils.h"
 
 #include <new>
 #include <type_traits>

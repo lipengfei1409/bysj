@@ -6,7 +6,7 @@
 // 手册, 表 3.1); every operator keeps its arithmetic in float and converts at
 // the load/store boundary, so the kernels only need these two directions.
 
-#include "utils.h"
+#include "ops/utils.h"
 
 #include <hip/hip_bf16.h>
 #include <hip/hip_fp16.h>

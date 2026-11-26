@@ -1,9 +1,9 @@
-#include "megakernel.h"
+#include "dmk/megakernel.h"
 
-#include "demo_op.h"
-#include "embedding.h"
-#include "gemm.h"
-#include "noop.h"
+#include "ops/demo_op.h"
+#include "ops/embedding.h"
+#include "ops/gemm.h"
+#include "ops/noop.h"
 
 #include <cstdint>
 #include <cstdio>

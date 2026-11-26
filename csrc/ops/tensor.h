@@ -1,6 +1,6 @@
 #pragma once
 
-#include "utils.h"
+#include "ops/utils.h"
 
 namespace dmk::tensor {
 enum class MemorySpace { HBM, Shmem, Register };

@@ -7,8 +7,8 @@
 // instruction; this is what lets the next instruction reuse a page. It must be
 // present in every kernel's op pack because opcode 0 is used as padding.
 
-#include "op.h"
-#include "state.h"
+#include "ops/op.h"
+#include "dmk/state.h"
 
 namespace dmk::mk {
 

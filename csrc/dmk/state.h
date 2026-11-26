@@ -11,8 +11,8 @@
 // page id (pid) by the controller's per-instruction pid_order permutation. All
 // role code goes through pid(lid); nothing else indexes the page array.
 
-#include "config.h"
-#include "op.h"
+#include "ops/config.h"
+#include "ops/op.h"
 
 #include <cstdint>
 

@@ -25,7 +25,7 @@
 // static_asserts below; the launch path also checks the runtime device limit
 // before every launch.
 
-#include "lds.h"
+#include "ops/lds.h"
 
 #include <cstddef>
 
