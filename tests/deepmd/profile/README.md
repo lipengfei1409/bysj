@@ -145,6 +145,9 @@ python3 tests/deepmd/profile/op_time_share.py \
 - `print_fx_graph.py` 把整个 DPA4/SeZM 模型打成 FX 图：复用 DeepMD 自己的 AOTInductor 冻结路径
   （`forward_common_lower_exportable`，`make_fx` 会把内层 `autograd.grad` 展开成普通 ATen 节点）。
   追踪固定在 CPU，`--device cuda` 只切换目标侧的 kernel 分支。
+- `extract_fx_subgraph.py` 从整图里切出单个模块的图；`--select conv` 用前向钩子抓
+  `SO2Convolution` 的真实输入再单独 trace（整图 trace 不带 `nn_module_stack`，按锚点切会
+  吞掉整条前缀）。
 - `ab_report.py` 读一组端到端 A/B 的收益：设备时间、相对基线的 delta、conv 自身耗时、以及路由是否真的开启；
   判据见 [docs/so2-conv-hip.md](../../../docs/so2-conv-hip.md) §6.4。
 - `verify_fused.py` 把融合算子的验证阶梯串成一条命令（`host → build → acc → lat → par → e2e`），
