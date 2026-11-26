@@ -4,12 +4,12 @@
 //
 //   * the persistent operator (`ops/so2_conv_op.h`, running under the
 //     megakernel VM), and
-//   * the ordinary kernel (`csrc/so2_conv_dmk.cpp`, launched like every other
+//   * the ordinary kernel (`csrc/so2_conv_span.cpp`, launched like every other
 //     kernel in this tree).
 //
 // One copy of the arithmetic means the two paths cannot drift: a change in the
 // gate, the residual placement or the rotation order shows up in both, and the
-// accuracy test compares both against `reference/so2_conv_dmk.py`.
+// accuracy test compares both against `reference/so2_conv_span.py`.
 //
 // Layouts (row-major, all float32):
 //   rot    (red, dim)   local-frame rotation R

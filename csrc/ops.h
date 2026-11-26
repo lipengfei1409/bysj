@@ -77,8 +77,8 @@ Tensor blockdiag_gemm_backward_hip(Tensor grad_out, Tensor weights, Tensor offse
 
 // --- C8: the SO(2) convolution, ordinary entry point ------------------------
 //
-// `csrc/so2_conv_dmk.cpp`. The persistent op that mirrors it
+// `csrc/so2_conv_span.cpp`. The persistent op that mirrors it
 // (`ops/so2_conv_op.h`) is source-only for now, so this is the only way to
 // reach ops/so2_conv_math.h from Python.
-Tensor so2_conv_dmk_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
+Tensor so2_conv_span_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
                         Tensor kc, Tensor alpha);

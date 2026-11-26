@@ -16,17 +16,17 @@ from pathlib import Path
 
 import torch
 
-from reference.so2_conv_dmk import (
-    so2_conv_dmk_kernel_order,
-    so2_conv_dmk_reference,
+from reference.so2_conv_span import (
+    so2_conv_span_kernel_order,
+    so2_conv_span_reference,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 # The op lives with the rest of the op templates; its math is in
-# ops/so2_conv_math.h and the ordinary entry point in csrc/so2_conv_dmk.cpp.
+# ops/so2_conv_math.h and the ordinary entry point in csrc/so2_conv_span.cpp.
 OP_HEADER = ROOT / "csrc" / "ops" / "so2_conv_op.h"
 MATH_HEADER = ROOT / "csrc" / "ops" / "so2_conv_math.h"
-ORDINARY_KERNEL = ROOT / "csrc" / "so2_conv_dmk.cpp"
+ORDINARY_KERNEL = ROOT / "csrc" / "so2_conv_span.cpp"
 
 
 def _orthonormal(edges: int, dim: int, red: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -49,8 +49,8 @@ def _problem(edges=6, dim=4, red=4, layers=2, channels=3, nodes=5, seed=0):
 class AgreementTests(unittest.TestCase):
     def test_the_loop_and_the_batched_form_agree(self) -> None:
         problem = _problem()
-        loop = so2_conv_dmk_kernel_order(*problem)
-        batched = so2_conv_dmk_reference(*problem)
+        loop = so2_conv_span_kernel_order(*problem)
+        batched = so2_conv_span_reference(*problem)
         torch.testing.assert_close(loop, batched, rtol=1e-9, atol=1e-9)
 
     def test_a_wider_profiled_shape_also_agrees(self) -> None:
@@ -63,8 +63,8 @@ class AgreementTests(unittest.TestCase):
         rot_t = torch.randn(edges, dim, red) * 0.3
         kc = torch.randn(edges, 4, 2, red, red) * 0.1
         alpha = torch.rand(edges) + 0.5
-        loop = so2_conv_dmk_kernel_order(x, src, rot, rot_t, kc, alpha)
-        batched = so2_conv_dmk_reference(x, src, rot, rot_t, kc, alpha)
+        loop = so2_conv_span_kernel_order(x, src, rot, rot_t, kc, alpha)
+        batched = so2_conv_span_reference(x, src, rot, rot_t, kc, alpha)
         torch.testing.assert_close(loop, batched, rtol=1e-9, atol=1e-9)
 
 
@@ -79,7 +79,7 @@ class PropertyTests(unittest.TestCase):
         rot, rot_t = _orthonormal(edges, dim, dim)
         kc = torch.zeros(edges, 2, 2, dim, dim)
         alpha = torch.rand(edges) + 0.5
-        out = so2_conv_dmk_reference(x, src, rot, rot_t, kc, alpha)
+        out = so2_conv_span_reference(x, src, rot, rot_t, kc, alpha)
         expected = x[src].to(torch.float64) * alpha.to(torch.float64).view(-1, 1, 1)
         torch.testing.assert_close(out, expected, rtol=1e-6, atol=1e-6)
 
@@ -90,7 +90,7 @@ class PropertyTests(unittest.TestCase):
         kc = problem[4].clone()
         kc[:, :, 0, :, :] = 0.0  # content kernel; the gate stays random
         problem[4] = kc
-        out = so2_conv_dmk_reference(*problem)
+        out = so2_conv_span_reference(*problem)
         x, src, rot, rot_t, _, alpha = problem
         identity = x[src].to(torch.float64) * alpha.to(torch.float64).view(-1, 1, 1)
         torch.testing.assert_close(out, identity, rtol=1e-5, atol=1e-5)
@@ -98,23 +98,23 @@ class PropertyTests(unittest.TestCase):
     def test_swapping_content_and_gate_changes_the_result(self) -> None:
         # Pins the order of the two kernels: a port that swaps them must fail.
         x, src, rot, rot_t, kc, alpha = _problem()
-        plain = so2_conv_dmk_reference(x, src, rot, rot_t, kc, alpha)
-        swapped = so2_conv_dmk_reference(
+        plain = so2_conv_span_reference(x, src, rot, rot_t, kc, alpha)
+        swapped = so2_conv_span_reference(
             x, src, rot, rot_t, kc.flip(2), alpha
         )
         self.assertFalse(torch.allclose(plain, swapped))
 
     def test_the_envelope_weight_is_applied_last(self) -> None:
         x, src, rot, rot_t, kc, alpha = _problem()
-        full = so2_conv_dmk_reference(x, src, rot, rot_t, kc, alpha)
-        ones = so2_conv_dmk_reference(x, src, rot, rot_t, kc, torch.ones_like(alpha))
+        full = so2_conv_span_reference(x, src, rot, rot_t, kc, alpha)
+        ones = so2_conv_span_reference(x, src, rot, rot_t, kc, torch.ones_like(alpha))
         torch.testing.assert_close(
             full, ones * alpha.to(torch.float64).view(-1, 1, 1), rtol=1e-12, atol=1e-12
         )
 
     def test_the_output_shape_is_per_edge(self) -> None:
         x, src, rot, rot_t, kc, alpha = _problem(edges=7)
-        out = so2_conv_dmk_reference(x, src, rot, rot_t, kc, alpha)
+        out = so2_conv_span_reference(x, src, rot, rot_t, kc, alpha)
         self.assertEqual(tuple(out.shape), (7, x.shape[1], x.shape[2]))
         self.assertEqual(out.dtype, torch.float64)  # the oracle works in float64
 

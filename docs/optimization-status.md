@@ -105,7 +105,7 @@
 | 2026-11-19 | C1 落地为 `slot_pack_scale`、C2 修正归因后拆为 C2′（`slot_reduce`，已实现）+ 10 槽小矩阵乘（并入 C7）。原 C2 把 `bmm [E,10,10]` 归给 attention 是错的：它来自 `so2.py:848` 的 `einsum("eoic,eic->eoc")`，属 SO(2) mixing；attention 的 logits 是 `(q_edge*k_edge).sum(-1)`，本来就是 elementwise |
 | 2026-11-19 | C1 接线完成：`deepmd_patch(pack=True)` 替换 `GatedActivation.forward`（只接管 `fndc` 布局），`fused=("pack",)` 可单独开关；主机侧用 `fndc` 假模块与 stock 方法逐位对照（3 个用例），另有 layout 不匹配与非 fp32 的回退用例 |
 | 2026-11-19 | 用 launch→region 归因钉死两个真实站点：C1 的 `index_select`+`mul`+`copy_` 全在 **`GatedActivation.forward`**（`activation.py:213`，映射 `gates = gating_scalars.index_select(2, expand_index)`），不是 `so2_message`；C2′ 的 `sum [E,10,1,64]` 在 **`SO2Linear.forward`**（`so2.py:812`）的 `(mixed * channel_basis).sum(dim=2)`，权重依赖输出槽 → `slot_reduce` 不匹配。C1 估算由 −45…−55 下调到 −20…−25，C2′ 收益归零并并入 C7 |
-| 2026-11-27 | `csrc/dmk` 拆成 `csrc/ops`（算子模板与工厂）与 `csrc/dmk`（持久化调度）；SO(2) 卷积同时提供两个入口，共用 `ops/so2_conv_math.h`；**只接普通入口**：`csrc/so2_conv_dmk.cpp` 已进顶层构建/binding（`kernels.so2_conv_dmk`），持久化算子仍是纯源码 |
+| 2026-11-27 | `csrc/dmk` 拆成 `csrc/ops`（算子模板与工厂）与 `csrc/dmk`（持久化调度）；SO(2) 卷积同时提供两个入口，共用 `ops/so2_conv_math.h`；**只接普通入口**：`csrc/so2_conv_span.cpp` 已进顶层构建/binding（`kernels.so2_conv_span`），持久化算子仍是纯源码 |
 | 2026-11-26 | C8：按 megakernel `BaseOp` 模板手写 SO(2) 卷积（64-lane，lane=channel，页存表），前向完整、反向与目标归约留给后续；契约测试 10 项通过 |
 | 2026-11-24 | C7 拆为 C7a（`monomial_runs`，幂表/设计矩阵/`cumprod` 扫描 → 一趟寄存器展开 + 收缩）与 C7b（`blockdiag_gemm`，逐块 `bmm` + 补齐浪费 → 按存储吃的块对角 GEMM）；两者算子完成、带精度与延迟测试，但**尚未接进 DeepMD** |
 | 2026-11-24 | C6 审计：新增 `chain_runs.py`，实测同形逐元素 run 合计 100.7 ms（≥3 长度仅 16.2 ms）、`fill_→accumulate` 配对 0 → **C6 按原设计判负**，−180…−220 ms 估算作废；替代路线 C1b（35.3 ms）/ `fill_` 审计（75.4 ms）/ C5（55.4 ms） |
