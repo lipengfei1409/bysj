@@ -136,7 +136,19 @@ permute → permute → view → permute → view → bmm → view → permute �
 这就是 `blockdiag_gemm`（C7b「按存储原样吃权重、免连续化」）要消掉的 9 个节点/GEMM；
 也是 C6（逐元素链融合）拿不到链的图级原因——布局算子已经把张量拆成了两跳。
 
-图文本（纯文本，直接可读）：[`artifacts/dpa4_air_cpu.fx.txt`](artifacts/dpa4_air_cpu.fx.txt)（整模型 3470 行）、[`artifacts/dpa4_air_so2_conv.fx.txt`](artifacts/dpa4_air_so2_conv.fx.txt)（卷积 477 行）。
+图文本（GraphModule 自身的打印接口，纯文本）：[`artifacts/dpa4_air_cpu.fx.txt`](artifacts/dpa4_air_cpu.fx.txt)（整模型 3748 行）、[`artifacts/dpa4_air_so2_conv.fx.txt`](artifacts/dpa4_air_so2_conv.fx.txt)（卷积 533 行）。形如：
+
+```python
+lower_fn()
+def forward(self, coord_1, atype_1, edge_index_1, edge_vec_1, edge_scatter_index_1,
+             edge_mask_1, spin_1, charge_spin_1):
+    sym_size_int_2 = torch.ops.aten.sym_size.int(atype_1, 0)
+    ge = torch.ops.aten.ge.Scalar(atype_1, 0)
+    ...
+```
+
+想看带输出形状的一行一节点表就 `--format shapes`，想看 `call_function[target=...]` 的 SSA 就
+`--format ssa`。
 
 ## 5. 建议的推进顺序
 

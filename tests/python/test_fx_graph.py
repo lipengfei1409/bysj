@@ -80,21 +80,43 @@ class GraphReadingTests(unittest.TestCase):
         self.assertIn("aten.relu", text)
         self.assertIn("(2, 3)", text)
 
-    def test_counts_cover_every_operation_and_bucket_them(self) -> None:
-        module = _module()
-
+    def _toy(self):
         class Toy(torch.nn.Module):
             def forward(self, x):
                 weight = torch.ones(1, 4, 4)
                 return torch.sum(torch.bmm(x, weight) * 2.0, dim=1)
 
-        traced = torch.fx.symbolic_trace(Toy())
-        node = type("Opts", (), {"raw": False})()
-        ops, families, text = module._describe(traced.graph, node)
+        return torch.fx.symbolic_trace(Toy())
+
+    def test_counts_cover_every_operation_and_bucket_them(self) -> None:
+        module = _module()
+        opts = type("Opts", (), {"format": "code"})()
+        ops, families, text = module._describe(self._toy(), opts)
         self.assertEqual(sum(ops.values()), sum(families.values()))
         for expected in ("gemm", "elementwise", "reduce"):
             self.assertIn(expected, families)
         self.assertTrue(text)
+
+    def test_the_default_format_is_the_graph_module_print_interface(self) -> None:
+        module = _module()
+        traced = self._toy()
+        opts = type("Opts", (), {"format": "code"})()
+        _, _, text = module._describe(traced, opts)
+        self.assertIn("def forward", text)
+        self.assertEqual(text, str(traced))
+
+    def test_ssa_and_shapes_formats_differ_from_code(self) -> None:
+        module = _module()
+        traced = self._toy()
+        code = module._describe(traced, type("Opts", (), {"format": "code"})())[2]
+        ssa = module._describe(traced, type("Opts", (), {"format": "ssa"})())[2]
+        shapes = module._describe(traced, type("Opts", (), {"format": "shapes"})())[2]
+        self.assertNotEqual(code, ssa)
+        self.assertNotEqual(code, shapes)
+        self.assertIn("call_function", ssa)
+        # A symbolic_trace graph names plain callables (``torch.bmm``); the
+        # shape listing keeps whatever ``op_name`` resolves, so match the op.
+        self.assertIn("bmm", shapes)
 
 
 class StubTests(unittest.TestCase):

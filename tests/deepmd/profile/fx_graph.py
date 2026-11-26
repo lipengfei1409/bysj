@@ -151,7 +151,7 @@ def render(nodes: list) -> str:
     lines = []
     for node in nodes:
         shape = shape_of(node)
-        target = str(node.target).replace("torch.ops.", "")
+        target = op_name(node.target)
         args = ", ".join((a.name if hasattr(a, "name") else repr(a)) for a in node.args)
         suffix = f"  {shape}" if shape else ""
         lines.append(f"%{node.name:28s} {target:38s} ({args}){suffix}")
@@ -275,10 +275,12 @@ def trace_conv(model, sample, index: int = 0) -> tuple:
     edge_cache = args[1]
     tensor_args = [arg for arg in args if isinstance(arg, torch.Tensor)]
 
-    def call(tensors):
-        return module(tensors[0], edge_cache, tensors[-1])
+    def call(x, radial_feat):
+        return module(x, edge_cache, radial_feat)
 
-    traced = make_fx(call, tracing_mode="real")(tensor_args)
+    # Two positional tensors, not a list: a list argument makes make_fx wrap the
+    # signature in ``tree_flatten_spec``, which buries the real inputs.
+    traced = make_fx(call, tracing_mode="real")(tensor_args[0], tensor_args[-1])
     note = (
         f"{len(calls)} SO2Convolution instances; traced #{index} "
         f"(lmax={getattr(module, 'lmax', '?')}, channels={getattr(module, 'channels', '?')}) "
@@ -292,14 +294,12 @@ def _model_graph(model, sample, traced, options) -> tuple:
         f"forward_common_lower under make_fx(symbolic), mode={options.mode}, "
         f"nloc={options.nloc}, target={options.device}, traced on {options.trace_device}"
     )
-    return traced.graph, note
+    return traced, note
 
 
 def _so2_conv_graph(model, sample, traced, options) -> tuple:
-    import torch  # noqa: F401 - imported for the captured eager pass
-
     conv_graph, note, _ = trace_conv(model, sample, index=options.index)
-    return conv_graph.graph, note
+    return conv_graph, note
 
 
 #: target name -> (one-line description, builder)
@@ -342,16 +342,23 @@ def _observed_device(graph) -> str:
     return "unknown (no tensor metadata)"
 
 
-def _describe(graph, options) -> tuple:
+def _describe(module, options) -> tuple:
     # Only real operations are counted; ``get_attr`` nodes are parameters and
     # constants, and show up as arguments in the listing anyway.
+    graph = module.graph
     nodes = [n for n in graph.nodes if n.op in ("call_function", "call_module")]
     ops: collections.Counter = collections.Counter()
     families: collections.Counter = collections.Counter()
     for node in nodes:
         ops[op_name(node.target)] += 1
         families[family_of(node.target)] += 1
-    text = str(graph) if options.raw else render(nodes)
+    if options.format == "ssa":
+        text = str(graph)
+    elif options.format == "shapes":
+        text = render(nodes)
+    else:
+        # The GraphModule's own print interface.
+        text = str(module)
     return ops, families, text
 
 
@@ -373,8 +380,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="so2_conv target: which instance to print (0-based)")
     parser.add_argument("--stub-lib", action="store_true",
                         help="satisfy deepmd.lib from the source tree (no compiled extension)")
-    parser.add_argument("--raw", action="store_true",
-                        help="print the SSA text, not the shape table")
+    parser.add_argument("--format", default="code", choices=("code", "ssa", "shapes"),
+                        help="code: GraphModule's print interface (default); "
+                             "ssa: str(graph); shapes: one line per node with its shape")
     parser.add_argument("--summary", action="store_true", help="skip the node listing")
     parser.add_argument("--max-nodes", type=int, default=0)
     parser.add_argument("--out", type=Path, default=None)
@@ -398,14 +406,14 @@ def main(argv: list[str] | None = None) -> int:
         trace_device=args.trace_device,
     )
     builder = TARGETS[args.target][1]
-    graph, note = builder(model, sample, traced, args)
+    module, note = builder(model, sample, traced, args)
 
-    ops, families, text = _describe(graph, args)
+    ops, families, text = _describe(module, args)
     total = sum(families.values())
     print(f"checkpoint : {args.model_file}")
     print(f"target     : {args.target}  ({TARGETS[args.target][0]})")
     print(f"mode       : {args.mode if args.target == 'model' else 'atomic (eager capture)'}")
-    print(f"traced on  : {args.trace_device}  (observed: {_observed_device(graph)})")
+    print(f"traced on  : {args.trace_device}  (observed: {_observed_device(module.graph)})")
     print(f"note       : {note}")
     print(f"nodes      : {total} call nodes, {len(ops)} distinct ops")
 
