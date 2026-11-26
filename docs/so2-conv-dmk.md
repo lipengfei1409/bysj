@@ -4,7 +4,7 @@
 
 | 目录 | 放什么 | 命名空间 | 依赖方向 |
 | --- | --- | --- | --- |
-| `csrc/ops/` | **算子模板与工厂**：`op.h`（`BaseOp` + `make_op`）、`config.h`（页/波/LDS 契约）、`lds.h`、`copy.h`、`tensor.h`、`tile.h`、`gemm.h`、`dumma.h`、`attention.h`、`embedding.h`、`noop.h`、`elementwise.h`、`so2_conv_op.h`、`so2_conv_math.h` | **`ops::`**（`ops::BaseOp`、`ops::config`、`ops::lds`、`ops::tile`、`ops::so2`…） | 可以 include `dmk/state.h`（钩子的参数类型），**不许** include `dmk/megakernel.h` / `dmk/controller.h` |
+| `csrc/ops/` | **算子模板与工厂**：`op.h`（`BaseOp` + `make_op`）、`config.h`（页/波/LDS 契约）、`lds.h`、`copy.h`、`tensor.h`、`tile.h`、`gemm.h`、`dumma.h`、`attention.h`、`embedding.h`、`noop.h`、`elementwise.h`、`so2_conv_op.h`、`so2_conv_math.h` | **`ops::`**（`ops::BaseOp`、`ops::config`、`ops::lds`、`ops::tile`、`ops::so2`…；SO(2) 卷积自己的辅助函数收在 `ops::so2_conv`） | 可以 include `dmk/state.h`（钩子的参数类型），**不许** include `dmk/megakernel.h` / `dmk/controller.h` |
 | `csrc/dmk/` | **持久化调度**：`megakernel.h/.cpp`（VM 与 launch）、`state.h`（每波状态、页、信号量）、`controller.h` | `dmk::mk`（用 `namespace config = ops::config;` 这类别名引用 ops） | 可以 include `ops/`（它是驱动方） |
 
 唯一的例外：`ops/op.h` 里有一处 `namespace dmk::mk { struct State; }`——每波状态属于运行时，

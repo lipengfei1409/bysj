@@ -69,7 +69,12 @@
 
 #include <cstddef>
 
-namespace ops {
+namespace ops::so2_conv {
+
+// The interface lives one level up, in `ops`; this operator keeps its own
+// namespace so its helpers (table budget, instruction encoder) do not widen the
+// op library's surface.
+using ops::BaseOp;
 
 //: Host-side pointers this op reads. The kernel's Globals must carry one.
 //

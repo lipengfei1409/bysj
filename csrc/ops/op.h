@@ -63,9 +63,12 @@
 #include <type_traits>
 
 namespace dmk::mk {
-// The per-wave state a hook receives lives with the runtime (dmk/state.h);
-// ops only name it.
+
+// The per-wave state a hook receives lives with the runtime (dmk/state.h); ops
+// only name it.  A forward declaration is required and sufficient: state.h
+// includes this header, so includes cannot go the other way.
 struct State;
+
 }  // namespace dmk::mk
 
 namespace ops {
