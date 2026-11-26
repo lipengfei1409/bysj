@@ -4,8 +4,8 @@
 // (ops/so2_conv_op.h, run under the persistent VM in dmk/). This file is the
 // second way to reach it: one launch, no pages, no semaphores, the shape of
 // every other kernel in csrc/. Both call ops/so2_conv_math.h, so the two paths
-// cannot drift, and tests/csrc/accuracy/test_so2_conv_span_accuracy.py drives
-// this entry point against reference/so2_conv_span.py.
+// cannot drift, and tests/csrc/accuracy/test_so2_conv_accuracy.py drives
+// this entry point against reference/so2_conv.py.
 //
 //   msg[e, d, c] = alpha[e] * sum_r R^T[e][d][r] * xl[r]
 //   xl           = stack of layers: xl += silu(K_l xl) * sigmoid(G_l xl),
@@ -35,7 +35,7 @@ namespace {
 constexpr int kEdgeWaves = 4;
 constexpr int kBlockThreads = kEdgeWaves * 64;
 
-__global__ void so2_conv_span_kernel(
+__global__ void so2_conv_kernel(
     const float* __restrict__ x, const long* __restrict__ src,
     const float* __restrict__ rot, const float* __restrict__ rot_t,
     const float* __restrict__ kc, const float* __restrict__ alpha,
@@ -83,7 +83,7 @@ __global__ void so2_conv_span_kernel(
 
 }  // namespace
 
-Tensor so2_conv_span_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
+Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
                         Tensor kc, Tensor alpha) {
   f32(x);
   f32(rot);
@@ -122,7 +122,7 @@ Tensor so2_conv_span_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
 
   const long blocks_needed = (edges + kEdgeWaves - 1) / kEdgeWaves;
   const unsigned blocks = static_cast<unsigned>(blocks_needed);
-  so2_conv_span_kernel<<<blocks, kBlockThreads, 0, at::cuda::getCurrentCUDAStream()>>>(
+  so2_conv_kernel<<<blocks, kBlockThreads, 0, at::cuda::getCurrentCUDAStream()>>>(
       x.data_ptr<float>(), src.data_ptr<long>(), rot.data_ptr<float>(),
       rot_t.data_ptr<float>(), kc.data_ptr<float>(), alpha.data_ptr<float>(),
       msg.data_ptr<float>(), edges, dim, red, layers, channels);

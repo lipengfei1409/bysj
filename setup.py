@@ -25,7 +25,7 @@ sources = [
     "csrc/edge_combine.cpp",
     "csrc/monomial.cpp",
     "csrc/blockdiag.cpp",
-    "csrc/so2_conv_span.cpp",
+    "csrc/so2_conv.cpp",
 ]
 ext_modules = [CUDAExtension(
     "kernels._C",

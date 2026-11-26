@@ -14,17 +14,17 @@
 ```
 csrc/ops/so2_conv_math.h        ← 唯一的算术（rotate / gated layer / rotate back）
         ├── csrc/ops/so2_conv_op.h     持久化接入：BaseOp 子类，进 op pack，由 VM 驱动
-        └── csrc/dmk/so2_conv_span.cpp  普通接入：一次 launch（**只在 dmk 子树里构建**）
+        └── csrc/dmk/so2_conv.cpp  普通接入：一次 launch（**只在 dmk 子树里构建**）
 ```
 
 **当前只接普通入口。** 也就是说：
 
 | 位置 | 现状 |
 | --- | --- |
-| `csrc/so2_conv_span.cpp` | **在顶层 `csrc/`**，和 `rmsnorm.cpp`、`segment_sum.cpp` 一样编译 |
-| 顶层 `setup.py` 的 `sources` / `include_dirs` | 含 `csrc/so2_conv_span.cpp`，`include_dirs=["csrc"]`（`ops/...` 的包含路径） |
-| `csrc/ops.h` / `csrc/bindings.cpp` | `so2_conv_span_hip` 声明 + `m.def("so2_conv_span", ...)` |
-| `python/kernels/so2_conv_span.py` | `kernels.so2_conv_span` 公开导出 |
+| `csrc/so2_conv.cpp` | **在顶层 `csrc/`**，和 `rmsnorm.cpp`、`segment_sum.cpp` 一样编译 |
+| 顶层 `setup.py` 的 `sources` / `include_dirs` | 含 `csrc/so2_conv.cpp`，`include_dirs=["csrc"]`（`ops/...` 的包含路径） |
+| `csrc/ops.h` / `csrc/bindings.cpp` | `so2_conv_hip` 声明 + `m.def("so2_conv", ...)` |
+| `python/kernels/so2_conv.py` | `kernels.so2_conv` 公开导出 |
 | **持久化算子** `ops/so2_conv_op.h` | **只有源码**：没有 launch 路径、不进任何构建 |
 | `csrc/dmk/setup.py`、`python/kernels/dmk/` | **不存在** |
 
@@ -33,7 +33,7 @@ csrc/ops/so2_conv_math.h        ← 唯一的算术（rotate / gated layer / rot
 MAX_JOBS=4 python3 setup.py build_ext --inplace
 
 # 数值（DCU 上跑，CPU 上 skip）
-PYTHONPATH=python python3 -m unittest discover -s tests/csrc/accuracy -p 'test_so2_conv_span*' -v
+PYTHONPATH=python python3 -m unittest discover -s tests/csrc/accuracy -p 'test_so2_conv*' -v
 ```
 
 现在这样就够用的理由：普通入口**不需要** VM 就能把 `ops/so2_conv_math.h` 的算术语义验证掉，
@@ -118,9 +118,9 @@ msg[e][d]   = alpha[e] · y[d]                          包络/注意力权重
 
 | 文件 | 在哪跑 | 钉住什么 |
 | --- | --- | --- |
-| [`tests/python/test_so2_conv_span_op.py`](../tests/python/test_so2_conv_span_op.py) | 本机 | **模板合规**：五个钩子齐备、无析构（必须 trivially destructible）、构造函数吃指令字、opcode 不撞 `demo_op`；页预算 `(16,10,4)=1121 floats`、指令字 0–6 与编码器一致、信号量计数、`channel = lane` 的 lane 映射、缺失项已声明 |
-| [`tests/python/test_so2_conv_span_reference.py`](../tests/python/test_so2_conv_span_reference.py) | 本机 | **数学**：`kernel_order`（逐边逐通道的直译循环）与 `reference`（批量 einsum）互相吻合；正交旋转 + 零核 → 恒等；零 content 核 → 残差项消失；**content/gate 互换必须改变结果**（钉住两个核的顺序）；包络权重在回旋转之后乘；头文件里的阶段顺序与 oracle 一致 |
-| [`tests/csrc/accuracy/test_so2_conv_span_accuracy.py`](../tests/csrc/accuracy/test_so2_conv_span_accuracy.py) | DCU（待接入） | 与 oracle 对拍：生产形状 `(16,10,4,C=64)`、窄通道 `C=5`（空闲 lane 不许写）、边数 `1/3/5/7`（覆盖 `kConsumerWaves=4` 的每种尾部相位）、单层小形状、确定性 |
+| [`tests/python/test_so2_conv_op.py`](../tests/python/test_so2_conv_op.py) | 本机 | **模板合规**：五个钩子齐备、无析构（必须 trivially destructible）、构造函数吃指令字、opcode 不撞 `demo_op`；页预算 `(16,10,4)=1121 floats`、指令字 0–6 与编码器一致、信号量计数、`channel = lane` 的 lane 映射、缺失项已声明 |
+| [`tests/python/test_so2_conv_reference.py`](../tests/python/test_so2_conv_reference.py) | 本机 | **数学**：`kernel_order`（逐边逐通道的直译循环）与 `reference`（批量 einsum）互相吻合；正交旋转 + 零核 → 恒等；零 content 核 → 残差项消失；**content/gate 互换必须改变结果**（钉住两个核的顺序）；包络权重在回旋转之后乘；头文件里的阶段顺序与 oracle 一致 |
+| [`tests/csrc/accuracy/test_so2_conv_accuracy.py`](../tests/csrc/accuracy/test_so2_conv_accuracy.py) | DCU（待接入） | 与 oracle 对拍：生产形状 `(16,10,4,C=64)`、窄通道 `C=5`（空闲 lane 不许写）、边数 `1/3/5/7`（覆盖 `kConsumerWaves=4` 的每种尾部相位）、单层小形状、确定性 |
 
 两个 oracle 不是冗余：写测试时正是**批量 einsum 把 `err,erc->erc` 写成了取对角**（torch 对重复下标按对角处理），
 逐边循环立刻以 0.67 的误差报了出来。这类错误在单个 oracle 下会静默通过。
@@ -129,7 +129,7 @@ msg[e][d]   = alpha[e] · y[d]                          包络/注意力权重
 
 ```bash
 # 1. 结构/契约（本机即可）
-PYTHONPATH=python python3 -m unittest tests.python.test_so2_conv_span_op -v
+PYTHONPATH=python python3 -m unittest tests.python.test_so2_conv_op -v
 
 # 2. 数值：接进 megakernel 后，与稠密参考对拍（DCU）
 #    参考：python/reference/*（dense 路径），容差 rtol=2e-5 / atol=2e-6

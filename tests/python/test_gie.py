@@ -64,7 +64,7 @@ class GIEBuildConfigurationTests(unittest.TestCase):
                 "csrc/edge_combine.cpp",
     "csrc/monomial.cpp",
     "csrc/blockdiag.cpp",
-    "csrc/so2_conv_span.cpp",
+    "csrc/so2_conv.cpp",
             ],
         )
         self.assertEqual(extension_args["define_macros"], [])

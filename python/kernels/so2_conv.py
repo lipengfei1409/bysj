@@ -3,7 +3,7 @@
 The same per-edge span also exists as a megakernel operator
 (``csrc/ops/so2_conv_op.h``, run under the persistent VM in ``csrc/dmk/``), but
 that one is source-only for now.  This wrapper reaches the launch-a-kernel
-version in ``csrc/so2_conv_span.cpp`` -- wired like every other operator here --
+version in ``csrc/so2_conv.cpp`` -- wired like every other operator here --
 so the shared arithmetic in ``csrc/ops/so2_conv_math.h`` can be validated on a
 DCU without waiting for the runtime.
 
@@ -20,14 +20,14 @@ import torch
 from .native import _extension, require_dcu
 
 
-def so2_conv_span_available() -> bool:
+def so2_conv_available() -> bool:
     """Return whether this process can load the ordinary SO(2) conv entry point."""
     try:
         require_dcu()
-        extension = _extension("so2_conv_span")
+        extension = _extension("so2_conv")
     except (ImportError, OSError, RuntimeError):
         return False
-    return hasattr(extension, "so2_conv_span")
+    return hasattr(extension, "so2_conv")
 
 
 def _validate(x, src, rot, rot_t, kc, alpha) -> None:
@@ -56,10 +56,10 @@ def _validate(x, src, rot, rot_t, kc, alpha) -> None:
             raise ValueError(f"{name} must be contiguous")
 
 
-def so2_conv_span(x: torch.Tensor, src: torch.Tensor, rot: torch.Tensor,
+def so2_conv(x: torch.Tensor, src: torch.Tensor, rot: torch.Tensor,
                  rot_t: torch.Tensor, kc: torch.Tensor,
                  alpha: torch.Tensor) -> torch.Tensor:
     """Per-edge SO(2) message, ``(E, dim, channels)``."""
     _validate(x, src, rot, rot_t, kc, alpha)
     require_dcu(x)
-    return _extension("so2_conv_span").so2_conv_span(x, src, rot, rot_t, kc, alpha)
+    return _extension("so2_conv").so2_conv(x, src, rot, rot_t, kc, alpha)

@@ -2,14 +2,14 @@
 
 Two implementations of the same formula, deliberately:
 
-``so2_conv_span_kernel_order``
+``so2_conv_kernel_order``
     A literal transcription of the operator's per-edge loop, in the same index
     order and with the same fma chain, in float64.  It is the oracle the DCU
     test compares against, so if the kernel is changed the oracle changes with
     it -- and if the kernel's *math* is wrong, this one is wrong in exactly the
     same way, which is why the second implementation exists.
 
-``so2_conv_span_reference``
+``so2_conv_reference``
     The same math written as batched matmuls over the whole edge array.  It
     shares no code with the loop, so a bug in the transcription shows up as a
     disagreement between the two rather than as a silent pass.
@@ -35,7 +35,7 @@ import math
 import torch
 
 
-def so2_conv_span_kernel_order(
+def so2_conv_kernel_order(
     x: torch.Tensor,
     src: torch.Tensor,
     rot: torch.Tensor,
@@ -113,7 +113,7 @@ def so2_conv_span_kernel_order(
     return out
 
 
-def so2_conv_span_reference(
+def so2_conv_reference(
     x: torch.Tensor,
     src: torch.Tensor,
     rot: torch.Tensor,

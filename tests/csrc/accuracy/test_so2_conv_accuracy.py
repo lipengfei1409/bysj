@@ -3,10 +3,10 @@
 Skipped until the operator is wired, and the skip names the two missing steps so
 a later reader does not mistake "no tests ran" for "the operator is fine".
 
-Once it is wired, ``kernels.so2_conv_span.so2_conv_span`` is expected to have the
+Once it is wired, ``kernels.so2_conv.so2_conv`` is expected to have the
 same signature as the reference:
 
-    so2_conv_span(x, src, rot, rot_t, kc, alpha) -> msg   (E, dim, C)
+    so2_conv(x, src, rot, rot_t, kc, alpha) -> msg   (E, dim, C)
 
 with ``x``/``src``/``kc`` as the operator reads them (see
 ``docs/so2-conv-dmk.md`` -- the manifest and the page layout).
@@ -15,13 +15,13 @@ import unittest
 
 import torch
 
-from reference.so2_conv_span import so2_conv_span_reference
+from reference.so2_conv import so2_conv_reference
 
-from kernels.so2_conv_span import so2_conv_span, so2_conv_span_available
+from kernels.so2_conv import so2_conv, so2_conv_available
 
 
 _SKIP = (
-    "requires the built ordinary SO(2) conv entry point (csrc/so2_conv_span.cpp) "
+    "requires the built ordinary SO(2) conv entry point (csrc/so2_conv.cpp) "
     "and a supported DCU"
 )
 
@@ -38,13 +38,13 @@ def _problem(edges, dim, red, layers, channels, nodes=8, seed=0):
 
 
 @unittest.skipUnless(
-    so2_conv_span_available() and torch.cuda.is_available(), _SKIP
+    so2_conv_available() and torch.cuda.is_available(), _SKIP
 )
 class So2ConvDmkAccuracyTests(unittest.TestCase):
     def _check(self, **shape):
         problem = _problem(**shape)
-        actual = so2_conv_span(*problem)
-        expected = so2_conv_span_reference(*problem)
+        actual = so2_conv(*problem)
+        expected = so2_conv_reference(*problem)
         torch.testing.assert_close(actual.double(), expected, rtol=2e-5, atol=2e-6)
 
     def test_the_profiled_shape_matches_the_reference(self) -> None:
@@ -67,8 +67,8 @@ class So2ConvDmkAccuracyTests(unittest.TestCase):
 
     def test_the_result_is_deterministic(self) -> None:
         problem = _problem(edges=8, dim=16, red=10, layers=4, channels=64)
-        first = so2_conv_span(*problem)
-        second = so2_conv_span(*problem)
+        first = so2_conv(*problem)
+        second = so2_conv(*problem)
         torch.testing.assert_close(first, second, rtol=0, atol=0)
 
 

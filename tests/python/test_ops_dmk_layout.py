@@ -61,14 +61,14 @@ class LayoutTests(unittest.TestCase):
                         self.assertTrue((OPS.parent / target).is_file(), f"{path.name}: {target}")
 
 
-ORDINARY = ROOT / "csrc" / "so2_conv_span.cpp"
+ORDINARY = ROOT / "csrc" / "so2_conv.cpp"
 
 
 class TwoEntryPointTests(unittest.TestCase):
     def test_both_entries_share_one_math_header(self) -> None:
         op = (OPS / "so2_conv_op.h").read_text()
         kernel = ORDINARY.read_text()
-        for text, name in ((op, "so2_conv_op.h"), (kernel, "so2_conv_span.cpp")):
+        for text, name in ((op, "so2_conv_op.h"), (kernel, "so2_conv.cpp")):
             self.assertIn('#include "ops/so2_conv_math.h"', text, name)
 
     def test_neither_entry_reimplements_the_span(self) -> None:
@@ -77,7 +77,7 @@ class TwoEntryPointTests(unittest.TestCase):
         self.assertIn("sigmoid_content", math)
         for text, name in (
             ((OPS / "so2_conv_op.h").read_text(), "so2_conv_op.h"),
-            (ORDINARY.read_text(), "so2_conv_span.cpp"),
+            (ORDINARY.read_text(), "so2_conv.cpp"),
         ):
             self.assertNotIn("__expf", text, name)
 
@@ -86,13 +86,13 @@ class TwoEntryPointTests(unittest.TestCase):
         # persistent op stays source-only until the runtime is wired.
         self.assertTrue(ORDINARY.is_file())
         top = (ROOT / "setup.py").read_text()
-        self.assertIn('"csrc/so2_conv_span.cpp"', top)
+        self.assertIn('"csrc/so2_conv.cpp"', top)
         self.assertIn('include_dirs=["csrc"]', top)
 
-        self.assertIn("so2_conv_span_hip", (ROOT / "csrc" / "ops.h").read_text())
-        self.assertIn('m.def("so2_conv_span"', (ROOT / "csrc" / "bindings.cpp").read_text())
-        self.assertIn("so2_conv_span", (ROOT / "python" / "kernels" / "__init__.py").read_text())
-        self.assertTrue((ROOT / "python" / "kernels" / "so2_conv_span.py").is_file())
+        self.assertIn("so2_conv_hip", (ROOT / "csrc" / "ops.h").read_text())
+        self.assertIn('m.def("so2_conv"', (ROOT / "csrc" / "bindings.cpp").read_text())
+        self.assertIn("so2_conv", (ROOT / "python" / "kernels" / "__init__.py").read_text())
+        self.assertTrue((ROOT / "python" / "kernels" / "so2_conv.py").is_file())
 
     def test_the_persistent_op_is_not_built(self) -> None:
         # So2ConvOp has no launch path yet, so nothing should compile it and no

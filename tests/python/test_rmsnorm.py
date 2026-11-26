@@ -55,7 +55,7 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
                 "csrc/edge_combine.cpp",
     "csrc/monomial.cpp",
     "csrc/blockdiag.cpp",
-    "csrc/so2_conv_span.cpp",
+    "csrc/so2_conv.cpp",
             ],
         )
         self.assertEqual(extension["define_macros"], [])
