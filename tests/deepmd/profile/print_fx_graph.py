@@ -248,7 +248,7 @@ def install_stub_lib() -> str:
 
 
 def build_graph(model_file: str, *, nloc: int, target_device: str,
-                mode: str = "atomic") -> tuple:
+                mode: str = "atomic", trace_device: str = "cpu") -> tuple:
     """Load the checkpoint, trace the lower graph on CPU, return (graph, inputs)."""
     import torch
     from torch.fx.experimental.proxy_tensor import make_fx
@@ -267,12 +267,17 @@ def build_graph(model_file: str, *, nloc: int, target_device: str,
     model = get_model(params)
     ModelWrapper(model).load_state_dict(state_dict)
     model.eval()
-    model.to(torch.device(target_device))
+    # ``trace_device`` is where the graph is traced; ``target_device`` only
+    # selects which device-dependent branches the checkpoint resolves for.
+    # They differ when a CPU-readable artifact is wanted from a CUDA build.
+    model.to(torch.device(trace_device))
     model.fold_vacuum_reference()
-    model.to("cpu")
+    model.to(torch.device(trace_device))
 
     has_spin = bool(getattr(model, "has_spin", False))
-    _, sample = _resolve_nframes(model, nloc=nloc, device=torch.device("cpu"), has_spin=has_spin)
+    _, sample = _resolve_nframes(
+        model, nloc=nloc, device=torch.device(trace_device), has_spin=has_spin
+    )
     flags = {}
     if mode == "atomic":
         flags["atomic_output_only"] = True
@@ -299,8 +304,11 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model-file", required=True)
     parser.add_argument("--device", default="cpu", choices=("cpu", "cuda"),
-                        help="target the checkpoint's kernel levels resolve for; "
-                             "tracing is always CPU")
+                        help="target the checkpoint's kernel levels resolve for")
+    parser.add_argument("--trace-device", default="cpu", choices=("cpu", "cuda"),
+                        help="device the graph is actually traced on; needs a DCU for "
+                             "cuda, and is what makes device-only branches and custom "
+                             "operators appear in the graph")
     parser.add_argument("--nloc", type=int, default=7)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--stub-lib", action="store_true",
@@ -315,8 +323,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.stub_lib:
         print(f"deepmd.lib : stubbed at {install_stub_lib()}")
     traced, sample, model = build_graph(
-        args.model_file, nloc=args.nloc, target_device=args.device, mode=args.mode
+        args.model_file, nloc=args.nloc, target_device=args.device,
+        mode=args.mode, trace_device=args.trace_device,
     )
+    print(f"traced on  : {args.trace_device}")
     graph = traced.graph
     report = summarise(graph)
 

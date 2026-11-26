@@ -53,7 +53,7 @@ def _model_graph(model, sample, traced, options) -> tuple:
     """The graph DeepMD compiles: ``forward_common_lower`` under make_fx."""
     note = (
         f"forward_common_lower under make_fx(symbolic), mode={options.mode}, "
-        f"nloc={options.nloc}, target={options.device}"
+        f"nloc={options.nloc}, target={options.device}, traced on {options.trace_device}"
     )
     return traced.graph, note
 
@@ -76,6 +76,22 @@ def print_targets() -> None:
     width = max(len(name) for name in TARGETS)
     for name, (description, _) in TARGETS.items():
         print(f"  {name:{width}s}  {description}")
+
+
+def _observed_device(graph) -> str:
+    """Device the traced tensors actually live on -- the trace's own evidence."""
+    for node in graph.nodes:
+        if node.op != "call_function":
+            continue
+        meta = (node.meta or {}).get("tensor_meta")
+        device = getattr(meta, "device", None)
+        if device is not None:
+            return str(device)
+        if isinstance(meta, (tuple, list)) and meta:
+            device = getattr(meta[0], "device", None)
+            if device is not None:
+                return str(device)
+    return "unknown"
 
 
 def _describe(graph, options, printer, extractor) -> tuple[collections.Counter, collections.Counter, str]:
@@ -102,8 +118,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-file")
     parser.add_argument("--target", default="model", choices=sorted(TARGETS))
     parser.add_argument("--device", default="cpu", choices=("cpu", "cuda"),
-                        help="target the checkpoint's kernel levels resolve for; "
-                             "tracing is always CPU")
+                        help="target the checkpoint's kernel levels resolve for")
+    parser.add_argument("--trace-device", default="cpu", choices=("cpu", "cuda"),
+                        help="device the graph is traced on (needs a DCU for cuda)")
     parser.add_argument("--mode", default="atomic", choices=("atomic", "embedding"),
                         help="model target only: energy path or descriptor only")
     parser.add_argument("--nloc", type=int, default=7)
@@ -135,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         nloc=args.nloc,
         target_device=args.device,
         mode=args.mode if args.target == "model" else "atomic",
+        trace_device=args.trace_device,
     )
     graph, note = builder(model, sample, traced, args)
 
@@ -143,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"checkpoint : {args.model_file}")
     print(f"target     : {args.target}  ({TARGETS[args.target][0]})")
     print(f"{'mode':11s}: {args.mode if args.target == 'model' else 'atomic (eager capture)'}")
+    print(f"traced on   : {args.trace_device}  (observed: {_observed_device(graph)})")
     print(f"note       : {note}")
     print(f"nodes      : {total} call nodes, {len(ops)} distinct ops")
 

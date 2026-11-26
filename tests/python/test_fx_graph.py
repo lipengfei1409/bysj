@@ -48,6 +48,33 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("model", text)
         self.assertIn("so2_conv", text)
 
+    def test_trace_device_defaults_to_cpu_and_accepts_cuda(self) -> None:
+        # The default must stay CPU: the artifact is readable anywhere, and a
+        # DCU trace is an opt-in because it needs the device.
+        module = _module()
+        parser = None
+        captured = {}
+        real_parse = module.argparse.ArgumentParser.parse_args
+
+        def spy(self, args=None, namespace=None):
+            result = real_parse(self, args, namespace)
+            captured["trace_device"] = getattr(result, "trace_device", "<missing>")
+            captured["device"] = getattr(result, "device", "<missing>")
+            raise SystemExit(0)
+
+        module.argparse.ArgumentParser.parse_args = spy
+        try:
+            for argv, expected in (
+                (["--model-file", "x.pt"], "cpu"),
+                (["--model-file", "x.pt", "--trace-device", "cuda"], "cuda"),
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        module.main(argv)
+                self.assertEqual(captured["trace_device"], expected)
+        finally:
+            module.argparse.ArgumentParser.parse_args = real_parse
+
     def test_a_missing_model_file_is_a_usage_error(self) -> None:
         module = _module()
         with self.assertRaises(SystemExit):
