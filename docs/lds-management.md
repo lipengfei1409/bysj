@@ -26,7 +26,7 @@
 | `kittens::semaphore`（mbarrier） | `lds::Semaphore`（LDS 上的 parity 计数） | `csrc/dmk/lds.h` |
 | `__syncwarp()` / `kittens::warp::sync()` | `lds::wave_barrier()`（`__builtin_amdgcn_wave_barrier`） | `csrc/dmk/lds.h` |
 | `NoOp<config>` | `NoOp<Globals>` | `csrc/dmk/noop.h` |
-| Llama 的 matvec/attention op | `ElementwiseOp` / `GemmOp` / `EmbeddingOp` 作为具体实现 | `csrc/dmk/demo_op.h`、`gemm.h`、`embedding.h` |
+| Llama 的 matvec/attention op | `ElementwiseOp` / `GemmOp` / `EmbeddingOp` 作为具体实现 | `csrc/ops/elementwise.h`、`gemm.h`、`embedding.h` |
 | `get_smid()` 选择指令行 | `blockIdx.x` 选择指令行 | `csrc/dmk/controller.h` |
 | TMA load/store、`cp.async.bulk` timings | 普通 HBM 读写；timings 默认关闭 | `gemm.h`、`embedding.h`、`config.h` |
 | `setmaxnreg` / cluster / Blackwell tensor allocator | 不适用，未实现 | — |
@@ -403,7 +403,7 @@ op 内部用 `s.pid(lid)`、`s.wait_page_ready`、`s.finish_page`、`s.semaphore
 
 ### 5.4 参考 op：`ElementwiseOp`
 
-`ElementwiseOp`（`csrc/dmk/demo_op.h`）用 1 个 page 做 `y = scale*x + bias`：
+`ElementwiseOp`（`csrc/ops/elementwise.h`）用 1 个 page 做 `y = scale*x + bias`：
 
 - 指令字：`[1]=tile`、`[2]=scale bits`、`[3]=bias bits`、`[4]=有效元素数`；
 - lid 0：`load()` 从 HBM 搬入并清零尾部，4 个 consumer wave 在 `run()` 里
@@ -429,7 +429,7 @@ op 内部用 `s.pid(lid)`、`s.wait_page_ready`、`s.finish_page`、`s.semaphore
 - **`EmbeddingOp`**（`csrc/dmk/embedding.h`，opcode 3）：一条指令把 table 的
   一行 gather 到 output 的一行；page 0 做中转，`run()` 为空，后续可加
   positional/scale。
-- **`ElementwiseOp`**（`csrc/dmk/demo_op.h`，opcode 1）：`y = scale*x + bias`，
+- **`ElementwiseOp`**（`csrc/ops/elementwise.h`，opcode 1）：`y = scale*x + bias`，
   用来验证数据通路和 4 个 consumer wave 的分工。
 - **`NoOp`**（opcode 0）：page 释放与指令流填充。
 
@@ -580,7 +580,7 @@ instructions = stream.tensor()                    # (3, 2, 32) int32，短的 bl
 | `csrc/dmk/state.h` | `Page`、`State`、`Role`、`worker_loop`、`remap_page_order` |
 | `csrc/dmk/controller.h` | `prepare_instruction`、`main_loop`（op 通过 `BaseOp*` 直接调用） |
 | `csrc/dmk/noop.h` | `NoOp<Globals>` |
-| `csrc/dmk/demo_op.h` | `ElementwiseOp<Globals>` |
+| `csrc/ops/elementwise.h` | `ElementwiseOp<Globals>` |
 | `csrc/dmk/gemm.h` | 低层 `GemmWave`/`run_gemm_wave` + 页面版 `GemmOp` |
 | `csrc/dmk/embedding.h` | `EmbeddingOp<Globals>` |
 | `csrc/dmk/attention.h` | `AttentionGlobalsT<T>`、`AttentionOp<Globals>`（page 版 flash attention，opcode 5） |
