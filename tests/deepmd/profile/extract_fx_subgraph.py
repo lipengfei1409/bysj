@@ -117,7 +117,7 @@ def slice_by_anchor(graph, pattern: re.Pattern) -> tuple[list, str]:
     return ordered, f"{len(anchors)} anchors, {len(ordered)} nodes in their input closures"
 
 
-def trace_conv(model, sample) -> tuple:
+def trace_conv(model, sample, index: int = 0) -> tuple:
     """Trace the first ``SO2Convolution`` instance on its real inputs.
 
     The whole-model trace records no ``nn_module_stack``, so the module cannot be
@@ -131,11 +131,12 @@ def trace_conv(model, sample) -> tuple:
     from deepmd.pt.model.descriptor.sezm_nn.so2 import SO2Convolution
 
     coord, atype, edge_index, edge_vec, scatter, mask, spin, fparam, aparam, charge_spin = sample
-    captured: list = []
+    captured: dict = {}
 
     def pre_hook(module, args):
-        if not captured:
-            captured.append((module, args))
+        # One entry per instance: each block is called once per forward.
+        if id(module) not in captured:
+            captured[id(module)] = (module, args)
 
     convs = [m for m in model.modules() if isinstance(m, SO2Convolution)]
     handles = [conv.register_forward_pre_hook(pre_hook) for conv in convs]
@@ -152,8 +153,13 @@ def trace_conv(model, sample) -> tuple:
             handle.remove()
     if not captured:
         raise RuntimeError("the eager pass never called an SO2Convolution instance")
+    calls = list(captured.values())
+    if not 0 <= index < len(calls):
+        raise IndexError(
+            f"this checkpoint has {len(calls)} SO2Convolution instances; --index {index} is out of range"
+        )
 
-    module, args = captured[0]
+    module, args = calls[index]
     # `forward(x, edge_cache, radial_feat)`: the cache is a container of tensors,
     # and make_fx cannot build concrete arguments for it, so close over it and
     # trace a tensor-only callable instead.  The cache then appears in the graph
@@ -167,11 +173,11 @@ def trace_conv(model, sample) -> tuple:
 
     traced = make_fx(call, tracing_mode="real")(tensor_args)
     note = (
-        f"{len(convs)} SO2Convolution instances; traced the first one "
+        f"{len(calls)} SO2Convolution instances; traced #{index} "
         f"(lmax={getattr(module, 'lmax', '?')}, channels={getattr(module, 'channels', '?')}) "
         f"on {len([a for a in args if hasattr(a, 'shape')])} tensor inputs"
     )
-    return traced, note
+    return traced, note, index
 
 
 def render(nodes: list) -> str:
@@ -212,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pattern = re.compile(args.module)
     if args.select == "conv":
-        conv_graph, note = trace_conv(model, sample)
+        conv_graph, note, _ = trace_conv(model, sample)
         graph = conv_graph.graph
         selected, _ = slice_by_module(graph, re.compile(r".*"))
         if not selected:
