@@ -34,13 +34,18 @@ ELEMENTWISE_PAGE = 2048
 #: Output tile the persistent GEMM walks, in rows and columns.
 GEMM_TILE = 16
 
+#: Consumer waves per block, i.e. output tiles one GEMM instruction covers along
+#: N.  Mirrors `config::kConsumerWaves` in `csrc/ops/config.h`; a host test reads
+#: that header and fails if the two drift.
+GEMM_TILES_PER_INSTRUCTION = 4
+
 
 @dataclass(frozen=True)
 class Work:
     """What a model needs computed, in each operator's native amount."""
 
     elementwise: int = 0        # elements
-    gemm_tiles: int = 0         # 16x16 output tiles
+    gemm_runs: int = 0         # runs of GEMM_TILES_PER_INSTRUCTION 16x16 tiles
     embedding_rows: int = 0     # table rows
     attention_queries: int = 0  # query rows
     gemm_k_tiles: int = 4       # k-steps per GEMM instruction
@@ -52,7 +57,7 @@ class Work:
         if kind == ELEMENTWISE:
             return (self.elementwise + ELEMENTWISE_PAGE - 1) // ELEMENTWISE_PAGE
         if kind == GEMM:
-            return self.gemm_tiles
+            return self.gemm_runs
         if kind == EMBEDDING:
             return self.embedding_rows
         if kind == ATTENTION:

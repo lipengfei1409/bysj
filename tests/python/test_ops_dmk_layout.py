@@ -22,6 +22,30 @@ def _headers(directory: Path) -> list[Path]:
     return sorted(p for p in directory.glob("*.h"))
 
 
+class GemmWaveContractTests(unittest.TestCase):
+    """The host and the kernel must agree on how many tiles one instruction covers."""
+
+    def test_the_tile_run_length_matches_the_consumer_wave_count(self) -> None:
+        from dmk.model_types import GEMM_TILES_PER_INSTRUCTION
+
+        header = (OPS / "config.h").read_text()
+        match = re.search(r"kConsumerWaves\s*=\s*(\d+)", header)
+        self.assertIsNotNone(match, "config.h no longer defines kConsumerWaves")
+        self.assertEqual(int(match.group(1)), GEMM_TILES_PER_INSTRUCTION,
+                         "host GEMM_TILES_PER_INSTRUCTION drifted from config.h")
+
+    def test_the_kernel_stages_one_slice_per_wave(self) -> None:
+        gemm = (OPS / "gemm.h").read_text()
+        self.assertIn("kTilesPerInstruction = config::kConsumerWaves", gemm)
+        self.assertIn("wave * kSliceElements", gemm)
+        # every consumer wave computes, so run() must not gate on `wave == 0`
+        self.assertNotIn("if (wave == 0) {", gemm.split("__device__ void store")[0])
+
+    def test_the_k_loop_is_unrolled(self) -> None:
+        gemm = (OPS / "gemm.h").read_text()
+        self.assertIn("#pragma unroll", gemm.split("__device__ void run")[1])
+
+
 class LayoutTests(unittest.TestCase):
     def test_ops_holds_the_templates_and_the_factory(self) -> None:
         names = {p.name for p in _headers(OPS)}

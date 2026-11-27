@@ -37,7 +37,8 @@ from __future__ import annotations
 
 from .instructions import (Attention, Embedding, Elementwise, Gemm, Instruction)
 from .model_types import (ATTENTION, ELEMENTWISE, EMBEDDING, GEMM, GEMM_TILE,
-                          ELEMENTWISE_PAGE, CuTileConfig, Work)
+                          ELEMENTWISE_PAGE, GEMM_TILES_PER_INSTRUCTION, CuTileConfig,
+                          Work)
 from .utils import split_units
 
 
@@ -145,7 +146,13 @@ class OperatorEmitter:
 
 
 class GemmEmitter(OperatorEmitter):
-    """A dense ``C = A @ B``: one instruction per 16x16 output tile."""
+    """A dense ``C = A @ B``: one instruction per run of output tiles.
+
+    A run is ``GEMM_TILES_PER_INSTRUCTION`` tiles along N -- one per consumer
+    wave, because a DUMMA wave computes a whole 16x16 tile and cannot split one.
+    The last run of a row is short when N is not a multiple of the run length;
+    the kernel skips the waves past the edge.
+    """
 
     kind = GEMM
 
@@ -156,18 +163,21 @@ class GemmEmitter(OperatorEmitter):
                     "the persistent GEMM tiles by 16 and has no edge path, so M, "
                     f"N and K must be multiples of 16 ({name}={value})"
                 )
-        super().__init__((m // GEMM_TILE) * (n // GEMM_TILE))
+        self.tiles_n = n // GEMM_TILE
+        self.runs_n = -(-self.tiles_n // GEMM_TILES_PER_INSTRUCTION)
+        super().__init__((m // GEMM_TILE) * self.runs_n)
         self.m, self.n, self.k = m, n, k
 
     def work(self) -> Work:
-        return Work(gemm_tiles=self.units(), gemm_k_tiles=self.k // GEMM_TILE)
+        return Work(gemm_runs=self.units(), gemm_k_tiles=self.k // GEMM_TILE)
 
     def emit(self, tiles: CuTileConfig, start: int, cover: int) -> Gemm:
-        # ``start`` is a tile index in row-major order over the 16x16 grid.
-        columns = self.n // GEMM_TILE
-        del cover  # one GEMM instruction is one whole output tile
-        return Gemm(m0=(start // columns) * GEMM_TILE,
-                    n0=(start % columns) * GEMM_TILE,
+        # ``start`` indexes a run of tiles in row-major order over the run grid;
+        # ``n0`` is the run's first tile column.
+        del cover  # one instruction is one whole run
+        run = start % self.runs_n
+        return Gemm(m0=(start // self.runs_n) * GEMM_TILE,
+                    n0=run * GEMM_TILES_PER_INSTRUCTION * GEMM_TILE,
                     k_tiles=self.k // GEMM_TILE)
 
 
@@ -276,7 +286,7 @@ def combined_work(emitters: list[OperatorEmitter]) -> Work:
             k_tiles = emitter.work().gemm_k_tiles
     return Work(
         elementwise=totals[ELEMENTWISE] * ELEMENTWISE_PAGE,
-        gemm_tiles=totals[GEMM],
+        gemm_runs=totals[GEMM],
         embedding_rows=totals[EMBEDDING],
         attention_queries=totals[ATTENTION],
         gemm_k_tiles=k_tiles,

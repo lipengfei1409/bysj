@@ -53,10 +53,10 @@ class WorkTests(unittest.TestCase):
         self.assertEqual(work.slots(ELEMENTWISE), 4)
 
     def test_only_kinds_with_work_are_kinds(self) -> None:
-        self.assertEqual(Work(gemm_tiles=3).kinds(), (GEMM,))
+        self.assertEqual(Work(gemm_runs=3).kinds(), (GEMM,))
 
     def test_every_cu_gets_a_tile_that_fits_its_share(self) -> None:
-        work = Work(elementwise=2048 * 10, gemm_tiles=9, embedding_rows=7,
+        work = Work(elementwise=2048 * 10, gemm_runs=9, embedding_rows=7,
                     attention_queries=5, embedding_tile=4, attention_tile=2)
         plans = plan_cus(work, 4)
         counts = instruction_counts(work, plans)
@@ -92,23 +92,31 @@ class WorkTests(unittest.TestCase):
 
 
 class EmitterTests(unittest.TestCase):
-    def test_one_instruction_per_output_tile(self) -> None:
+    def test_one_instruction_per_run_of_tiles(self) -> None:
+        # 64x48 is 4 tile rows x 3 tile columns = one run of 3 per row.
         instructions = emitters.gemm_instructions(64, 48, 32)
-        self.assertEqual(len(instructions), (64 // 16) * (48 // 16))
+        self.assertEqual(len(instructions), 4)
         self.assertTrue(all(item.k_tiles == 2 for item in instructions))
         self.assertEqual({(i.m0, i.n0) for i in instructions},
-                         {(m, n) for m in (0, 16, 32, 48) for n in (0, 16, 32)})
+                         {(m, 0) for m in (0, 16, 32, 48)})
+
+    def test_a_wide_matrix_needs_several_runs_per_row(self) -> None:
+        # 16 tile columns / 4 tiles per run = 4 runs.
+        instructions = emitters.gemm_instructions(16, 256, 16)
+        self.assertEqual([(i.m0, i.n0) for i in instructions],
+                         [(0, 0), (0, 64), (0, 128), (0, 192)])
 
     def test_a_shape_without_an_edge_path_is_rejected(self) -> None:
         for shape in ((17, 16, 16), (16, 17, 16), (16, 16, 17)):
             with self.assertRaises(ValueError):
                 emitters.gemm_instructions(*shape)
 
-    def test_the_split_covers_every_tile_once(self) -> None:
+    def test_the_split_covers_every_run_once(self) -> None:
+        # 64x64 is 4 tile rows x 1 run of 4 tiles = 4 instructions over 3 CUs.
         rows = emitters.gemm_queues(64, 64, 32, 3)
         self.assertEqual(len(rows), 3)
-        self.assertEqual(sum(len(row) for row in rows), 16)
-        self.assertEqual([len(row) for row in rows], [6, 5, 5])
+        self.assertEqual(sum(len(row) for row in rows), 4)
+        self.assertEqual([len(row) for row in rows], [2, 1, 1])
 
 
 class EmitterClassTests(unittest.TestCase):
@@ -140,7 +148,7 @@ class EmitterClassTests(unittest.TestCase):
 
     def test_the_split_is_shared_so_every_operator_behaves_the_same(self) -> None:
         cases = [
-            (emitters.GemmEmitter(64, 48, 32), 12),
+            (emitters.GemmEmitter(64, 48, 32), 4),
             (emitters.EmbeddingEmitter(7, elem_per_row=4), 7),
             (emitters.AttentionEmitter(5, num_keys=64, dim=32), 5),
             (emitters.ElementwiseEmitter(2048 * 3 + 10), 4),
@@ -173,10 +181,10 @@ class EmitterClassTests(unittest.TestCase):
         )
 
     def test_combined_work_adds_the_emitters_together(self) -> None:
-        gemm = emitters.GemmEmitter(32, 32, 16)          # 4 tiles
+        gemm = emitters.GemmEmitter(32, 32, 16)          # 2 rows x 1 run
         embedding = emitters.EmbeddingEmitter(3, elem_per_row=8)
         combined = emitters.combined_work([gemm, embedding])
-        self.assertEqual(combined.slots(GEMM), 4)
+        self.assertEqual(combined.slots(GEMM), 2)
         self.assertEqual(combined.slots("embedding"), 3)
         self.assertEqual(combined.gemm_k_tiles, 1)
 
@@ -202,7 +210,7 @@ class ModelScheduleTests(unittest.TestCase):
 
     def test_every_operator_contributes_its_own_slots(self) -> None:
         work = self._model().work()
-        self.assertEqual(work.slots("gemm"), 4)
+        self.assertEqual(work.slots("gemm"), 2)
         self.assertEqual(work.slots("embedding"), 5)
         self.assertEqual(work.slots("attention"), 3)
 
@@ -237,7 +245,7 @@ class EmulatorTests(unittest.TestCase):
 
     def test_every_tile_is_written_exactly_once(self) -> None:
         globals_ = self._globals(64, 48, 32, 3)
-        counts = python_vm.count_tiles(globals_.instructions)
+        counts = python_vm.count_tiles(globals_.instructions, globals_.b.shape[1])
         self.assertEqual(len(counts), (64 // 16) * (48 // 16))
         self.assertTrue(all(count == 1 for count in counts.values()), counts)
 

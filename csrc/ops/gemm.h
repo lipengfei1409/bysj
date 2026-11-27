@@ -30,11 +30,22 @@
 // destination than it reads; the pair is the same trick the deleted standalone
 // kernel used.
 //
-// One consumer wave computes, and that is not an oversight: DUMMA is a
-// whole-wave instruction, so four waves cannot split one 16x16 tile the way
-// scalar lanes could.
-// Pages: lid 0 = A k-tile, lid 1 = B k-tile, lid 2 = C tile; the pages the
-// operator does not own are released by load().
+// **All consumer waves compute, one output tile each.**  DUMMA is a whole-wave
+// instruction, so a wave cannot split a 16x16 tile -- what it can split is a
+// *run* of tiles.  One instruction therefore covers up to `kConsumerWaves`
+// consecutive tiles along N:
+//
+//     wave w  ->  tile (m0, n0 + w * 16)    (skipped when it is past the N edge)
+//
+// Each wave stages its own copy of the A slice and of its own B slice, so the
+// waves share no pages and need no cross-wave semaphore in the k loop: the only
+// hand-off is the C tile at the end (each wave's own page -> the storer).
+// Staging costs 4x the A traffic of a single-wave op; that is the price of four
+// waves working without a per-k-tile handshake.
+//
+// Pages: lid 0 = A copies (one 16x16 per wave), lid 1 = B copies (one 16x16 per
+// wave), lid 2 + w = wave w's C tile.  The pages the operator does not own are
+// released by load().
 namespace ops {
 
 template <typename Globals>
@@ -47,6 +58,11 @@ public:
 
     //: K width of one DUMMA step in the float32 path (m16n16k4).
     static constexpr int kStep = 4;
+
+    //: Output tiles one instruction covers: one per consumer wave.
+    static constexpr int kTilesPerInstruction = config::kConsumerWaves;
+    //: Elements one wave's staged A or B copy occupies in its page.
+    static constexpr int kSliceElements = kTile * kTile;
 
     using AFragment = ::du::dumma::DUFragment<::du::dumma::matrix_a, kTile, kTile,
                                               kStep, float,
@@ -73,97 +89,115 @@ public:
 
     __device__ int init_semaphores(State& s,
                                    const Globals&) const override {
+        // [0] loader -> consumers (the pages are yours), [1] every consumer wave
+        // -> storer (all four C tiles are written).
         s.semaphores()[0].init(1);
         s.semaphores()[1].init(config::kConsumerWaves);
         return 2;
     }
 
-    // Stage the A/B k-tile at (k * 16) into the two operand pages. The runtime
-    // calls it once (k = 0), run() calls it for the remaining k.
-    __device__ static void stage_operands(State& s, const Globals& g,
-                                          const Instruction& inst, int k,
-                                          int lane) {
+    //: Column of the tile this wave owns, or a value past the N edge if none.
+    __device__ static int tile_column(const Instruction& inst, int wave,
+                                      size_t n) {
+        const int column = inst.n0 + wave * kTile;
+        return static_cast<size_t>(column) < n ? column : -1;
+    }
+
+    // Stage this wave's A slice and B slice for k-tile ``k``.
+    //
+    // A copy: rows m0..m0+15, columns k*16..k*16+15          (identical for every
+    //        wave, which is the replication cost of not sharing a page)
+    // B copy: rows k*16..k*16+15, columns this wave's tile   (16 wide)
+    //
+    // Both land at ``wave * kSliceElements`` in their page, so the four waves
+    // never touch each other's bytes and no barrier between them is needed.
+    __device__ static void stage_slices(State& s, const Globals& g,
+                                        const Instruction& inst, int k, int wave,
+                                        int lane) {
+        const size_t n = g.matrix_c.shape.dims[1];
+        const int column = tile_column(inst, wave, n);
         const auto shape = tensor::Shape<2>{{kTile, kTile}};
         const auto layout = tensor::StridedLayout<2>{{kTile, 1}};
+        const size_t offset = static_cast<size_t>(wave) * kSliceElements;
+
         const size_t a_origin[2] = {static_cast<size_t>(inst.m0),
                                     static_cast<size_t>(k * kTile)};
-        const size_t b_origin[2] = {static_cast<size_t>(k * kTile),
-                                    static_cast<size_t>(inst.n0)};
         const auto a_src = tile::make_tile_at(g.matrix_a, kTileShape, a_origin);
-        const auto b_src = tile::make_tile_at(g.matrix_b, kTileShape, b_origin);
-        const int pid_a = s.pid(0);
-        const int pid_b = s.pid(1);
         tile::load_tile(
-            tile::make_lds_view(static_cast<float*>(s.pages[pid_a].ptr()), shape,
-                                layout),
+            tile::make_lds_view(static_cast<float*>(s.pages[s.pid(0)].ptr()) +
+                                    offset,
+                                shape, layout),
             a_src, lane, config::kWaveSize);
+
+        if (column < 0) return;  // this wave has no tile: leave its B slice alone
+        const size_t b_origin[2] = {static_cast<size_t>(k * kTile),
+                                    static_cast<size_t>(column)};
+        const auto b_src = tile::make_tile_at(g.matrix_b, kTileShape, b_origin);
         tile::load_tile(
-            tile::make_lds_view(static_cast<float*>(s.pages[pid_b].ptr()), shape,
-                                layout),
+            tile::make_lds_view(static_cast<float*>(s.pages[s.pid(1)].ptr()) +
+                                    offset,
+                                shape, layout),
             b_src, lane, config::kWaveSize);
     }
 
     __device__ void load(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
-        const int pid_a = s.pid(0);
-        const int pid_b = s.pid(1);
-        s.wait_page_ready(pid_a);
-        s.wait_page_ready(pid_b);
-        // The C page needs no wait or clear here: run()'s `store_matrix` writes
-        // all 256 elements, and every instruction takes at least one k-step.
-        s.wait_page_ready(s.pid(2));
+        const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
 
-        stage_operands(s, g, inst, 0, lane);
+        // The consumer waves own pages 0 and 1 (A and B copies) plus one C page
+        // each.  The loader only has to hand the pages over; staging is the
+        // consumers' job, because each wave stages for itself.
+        s.wait_page_ready(s.pid(0));
+        s.wait_page_ready(s.pid(1));
+        for (int w = 0; w < kTilesPerInstruction; ++w) s.wait_page_ready(s.pid(2 + w));
+        (void)inst;
 
         lds::wave_barrier();
         __threadfence_block();
         if (lane == 0) s.semaphores()[0].arrive();
 
         // Pages the operator does not own.
-        if (lane >= 3 && lane < config::kNumPages) {
+        if (lane >= 2 + kTilesPerInstruction && lane < config::kNumPages) {
             const int unused = s.pid(lane);
             s.wait_page_ready(unused);
             s.finish_page(unused, config::kConsumerWaves);
         }
+        (void)wave;
     }
 
-    // The whole GEMM for this output tile: every k-tile, accumulated in a DUMMA
-    // register fragment.
-    //
-    // Only the first consumer wave takes part -- DUMMA is a whole-wave
-    // instruction, so the tile cannot be split across waves the way a scalar
-    // loop could.
+    // Every consumer wave runs this, on its own output tile, with its own
+    // accumulator and its own staged slices.
     __device__ void run(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
-        const int pid_a = s.pid(0);
-        const int pid_b = s.pid(1);
-        const int pid_c = s.pid(2);
+        const size_t n = g.matrix_c.shape.dims[1];
+        const int column = tile_column(inst, wave, n);
 
         s.semaphores()[0].wait(0);
-        if (wave == 0) {
-            const float* a_page = static_cast<const float*>(s.pages[pid_a].ptr());
-            const float* b_page = static_cast<const float*>(s.pages[pid_b].ptr());
-            float* c_page = static_cast<float*>(s.pages[pid_c].ptr());
 
-            Accumulator current;
-            Accumulator next;
-            dumma::fill_fragment(current, 0.0f);
-            dumma::fill_fragment(next, 0.0f);
-            AFragment a_fragment;
-            BFragment b_fragment;
+        float* a_page = static_cast<float*>(s.pages[s.pid(0)].ptr()) +
+                        static_cast<size_t>(wave) * kSliceElements;
+        float* b_page = static_cast<float*>(s.pages[s.pid(1)].ptr()) +
+                        static_cast<size_t>(wave) * kSliceElements;
+        float* c_page = static_cast<float*>(s.pages[s.pid(2 + wave)].ptr());
 
+        Accumulator current;
+        Accumulator next;
+        AFragment a_fragment;
+        BFragment b_fragment;
+        dumma::fill_fragment(current, 0.0f);
+        dumma::fill_fragment(next, 0.0f);
+
+        if (column >= 0) {
+            // The k loop is the hot path: it is fully unrolled over the four
+            // m16n16k4 steps of a 16-wide k-tile, and carries no barrier --
+            // each wave reads only the slices it staged itself.
             for (int k = 0; k < inst.k_tiles; ++k) {
-                if (k > 0) {
-                    stage_operands(s, g, inst, k, lane);
-                    lds::wave_barrier();
-                    __threadfence_block();
-                }
-                // One k-tile is 16 wide; the float path consumes it in four
-                // m16n16k4 steps, reading the slices straight out of the pages
-                // (leading dimension kTile, so no repacking).
+                stage_slices(s, g, inst, k, wave, lane);
+                lds::wave_barrier();
+                __threadfence_block();
 #pragma unroll
                 for (int step = 0; step < kTile; step += kStep) {
                     dumma::ld_matrix(a_fragment, a_page + step,
@@ -175,51 +209,55 @@ public:
                     current = next;
                     next = previous;
                 }
+                // Free this wave's slices for the next k-tile.
                 lds::wave_barrier();
                 __threadfence_block();
             }
-            // Epilogue: the accumulator goes to the C *page*, never straight to
-            // HBM.  Two reasons: a fragment exists only in this wave's
-            // registers, and the storer is a different wave that can only read
-            // shared memory; and the page is what `store()` already copies out.
+            // Epilogue: this wave's tile lands in its own C page, never in HBM --
+            // the storer is another wave and can only read shared memory.
             dumma::store_matrix(c_page, current, static_cast<unsigned>(kTile),
                                 dumma::native::mem_row_major);
-            // Publish the tile before the arrival below: every lane of this wave
-            // finishes its write, then the fence orders LDS, then the count
-            // reaches the storer's wait.
             lds::wave_barrier();
             __threadfence_block();
         }
-        lds::wave_barrier();
-        __threadfence_block();
         if (lane == 0) s.semaphores()[1].arrive();
     }
 
+    // The storer copies every tile this instruction produced: one per consumer
+    // wave, skipping the waves whose column is past the N edge.
     __device__ void store(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
-        const int pid_a = s.pid(0);
-        const int pid_b = s.pid(1);
-        const int pid_c = s.pid(2);
+        const size_t n = g.matrix_c.shape.dims[1];
 
         s.semaphores()[1].wait(0);
 
-        const size_t c_origin[2] = {static_cast<size_t>(inst.m0),
-                                    static_cast<size_t>(inst.n0)};
-        const auto c_dst = tile::make_tile_at(g.matrix_c, kTileShape, c_origin);
-        const auto c_src = tile::make_lds_view(
-            static_cast<const float*>(s.pages[pid_c].ptr()), c_dst.shape,
-            tensor::StridedLayout<2>{{kTile, 1}});
-        tile::copy_tile(c_dst, c_src, lane, config::kWaveSize);
-
-        lds::wave_barrier();
-        __threadfence_block();
-        if (lane == 0) {
-            s.finish_page(pid_a, config::kConsumerWaves);
-            s.finish_page(pid_b, config::kConsumerWaves);
-            s.finish_page(pid_c, config::kConsumerWaves);
+        // Every lane of the storer wave takes part: this is not the consumer
+        // role, so there is no wave index to gate on.
+        {
+            for (int w = 0; w < kTilesPerInstruction; ++w) {
+                const int column = tile_column(inst, w, n);
+                if (column < 0) continue;
+                const size_t c_origin[2] = {static_cast<size_t>(inst.m0),
+                                            static_cast<size_t>(column)};
+                const auto c_dst = tile::make_tile_at(g.matrix_c, kTileShape,
+                                                      c_origin);
+                const auto c_src = tile::make_lds_view(
+                    static_cast<const float*>(s.pages[s.pid(2 + w)].ptr()),
+                    c_dst.shape, tensor::StridedLayout<2>{{kTile, 1}});
+                tile::copy_tile(c_dst, c_src, lane, config::kWaveSize);
+            }
+            lds::wave_barrier();
+            __threadfence_block();
+            if (lane == 0) {
+                for (int w = 0; w < kTilesPerInstruction; ++w)
+                    s.finish_page(s.pid(2 + w), config::kConsumerWaves);
+                s.finish_page(s.pid(0), config::kConsumerWaves);
+                s.finish_page(s.pid(1), config::kConsumerWaves);
+            }
         }
     }
+
 };
 
 }  // namespace ops

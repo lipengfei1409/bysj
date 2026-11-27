@@ -17,7 +17,7 @@ import torch
 from dmk import dispatch, emitters, mk, python_vm
 from dmk.demos.gemm import GemmDemo
 from dmk.instructions import InstructionStream
-from dmk.model_types import GEMM_TILE
+from dmk.model_types import GEMM_TILE, GEMM_TILES_PER_INSTRUCTION
 from kernels import mk_stream
 
 #: Shapes exercised everywhere below: square, tall, wide, single tile, deep-K,
@@ -43,7 +43,7 @@ class ScheduleTests(unittest.TestCase):
             for cus in CU_COUNTS:
                 with self.subTest(shape=(m, n, k), cus=cus):
                     stream = _schedule(m, n, k, cus)
-                    counts = python_vm.count_tiles(stream.tensor())
+                    counts = python_vm.count_tiles(stream.tensor(), n)
                     expected = (m // GEMM_TILE) * (n // GEMM_TILE)
                     self.assertEqual(len(counts), expected)
                     self.assertTrue(all(c == 1 for c in counts.values()), counts)
@@ -51,7 +51,7 @@ class ScheduleTests(unittest.TestCase):
     def test_every_tile_of_the_grid_appears(self) -> None:
         m, n, k = 64, 48, 32
         stream = _schedule(m, n, k, cus=3)
-        seen = set(python_vm.count_tiles(stream.tensor()))
+        seen = set(python_vm.count_tiles(stream.tensor(), n))
         expected = {
             (row * GEMM_TILE, column * GEMM_TILE)
             for row in range(m // GEMM_TILE)
@@ -126,9 +126,11 @@ class EmulatedProductTests(unittest.TestCase):
                 break
         globals_.instructions = torch.tensor(words, dtype=torch.int32)
         self.assertGreater(mk.verify(globals_, emulated=True), 1e-3)
-        counts = python_vm.count_tiles(globals_.instructions)
+        counts = python_vm.count_tiles(globals_.instructions, globals_.b.shape[1])
+        # 32x32 is two rows of one run (two tiles each).  Copying row 1's
+        # instruction from row 0 leaves row 1 unwritten and writes row 0 twice.
         self.assertEqual(max(counts.values()), 2)
-        self.assertEqual(len(counts), (32 // 16) ** 2 - 1)
+        self.assertEqual(len(counts), 2)
 
     def test_the_result_does_not_depend_on_the_cu_count(self) -> None:
         m, n, k = 64, 64, 32
@@ -184,8 +186,8 @@ class DemoTests(unittest.TestCase):
             demo = GemmDemo(m=32, n=48, k=32, cus=cus)
             rows = demo.rows()
             self.assertEqual(len(rows), cus)
-            self.assertEqual(sum(len(row) for row in rows),
-                             (32 // 16) * (48 // 16))
+            # 32/16 rows x ceil(48/16 / 4) runs
+        self.assertEqual(sum(len(row) for row in rows), 2 * 1)
 
     def test_the_demo_rejects_an_untileable_shape(self) -> None:
         with self.assertRaises(ValueError):
@@ -204,8 +206,12 @@ class CrossCheckTests(unittest.TestCase):
         for (m, n, k), cus in itertools.product(SHAPES, (1, 3)):
             with self.subTest(shape=(m, n, k), cus=cus):
                 emitter = emitters.GemmEmitter(m, n, k)
-                self.assertEqual(len(emitter.instructions()),
-                                 (m // GEMM_TILE) * (n // GEMM_TILE))
+                # one instruction per run of up to GEMM_TILES_PER_INSTRUCTION
+                # tiles along N
+                self.assertEqual(
+                    len(emitter.instructions()),
+                    (m // GEMM_TILE) * -(-(n // GEMM_TILE) // GEMM_TILES_PER_INSTRUCTION),
+                )
                 globals_ = mk.GemmGlobals.from_shapes(m, n, k, seed=2, device="cpu")
                 globals_.attach(emitter.queues(cus))
                 self.assertLess(mk.verify(globals_, emulated=True), 1e-4)
