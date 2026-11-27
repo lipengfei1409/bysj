@@ -125,6 +125,7 @@ sources = [
     # return -- swap it in below together with their sources.
     "csrc/bindings_dmk.cpp",
     "csrc/dmk/megakernel.cpp",
+    "csrc/dmk/gemm_flat.cpp",
 ]
 ext_modules = [CUDAExtension(
     "kernels._C",

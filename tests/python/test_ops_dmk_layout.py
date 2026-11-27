@@ -133,11 +133,17 @@ class GemmWaveContractTests(unittest.TestCase):
         # single-tile shape, wrong for everything else.
         kernel = (DMK / "megakernel.cpp").read_text()
         self.assertIn("__launch_bounds__(config::kThreads) mk_all", kernel)
+        # the role-free kernel declares its own block: it is not the scheduler's
+        flat = (DMK / "gemm_flat.cpp").read_text()
+        self.assertIn("__launch_bounds__(kFlatThreads)", flat)
+        self.assertNotIn("config::kThreads", flat)
+        self.assertIn("kFlatWaves = 4", flat)
         # ...and a clamped launch is refused instead of run: the driver would
         # otherwise drop the service waves without a word.
         shared = (DMK / "launch.h").read_text()
         self.assertIn("maxThreadsPerBlock", shared)
-        self.assertIn("__launch_bounds__(config::kThreads) to the kernel", shared)
+        self.assertIn("__launch_bounds__(<block size>) to the kernel", shared)
+        self.assertIn("uint32_t threads = config::kThreads", shared)
         self.assertIn("kThreads = kTotalWaves * kWaveSize", (OPS / "config.h").read_text())
 
     def test_the_k_loop_is_unrolled(self) -> None:

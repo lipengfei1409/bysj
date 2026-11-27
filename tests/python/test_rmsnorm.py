@@ -49,7 +49,8 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
         self.assertEqual(extension["name"], "kernels._C")
         self.assertEqual(
             extension["sources"],
-            ["csrc/bindings_dmk.cpp", "csrc/dmk/megakernel.cpp"],
+            ["csrc/bindings_dmk.cpp", "csrc/dmk/megakernel.cpp",
+             "csrc/dmk/gemm_flat.cpp"],
         )
         self.assertEqual(extension["define_macros"], [])
         # Only `build_ext`: the residue cleanup lives in tools/clean_build.py,

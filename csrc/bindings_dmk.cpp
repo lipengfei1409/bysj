@@ -18,4 +18,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.doc() = "DPA4 native operators: persistent megakernel only";
   m.def("dmk_gemm", &dmk_gemm_hip, py::arg("instructions"), py::arg("a"),
         py::arg("b"), py::arg("c"));
+  m.def("dmk_gemm_flat", &dmk_gemm_flat_hip, py::arg("instructions"),
+        py::arg("a"), py::arg("b"), py::arg("c"));
 }

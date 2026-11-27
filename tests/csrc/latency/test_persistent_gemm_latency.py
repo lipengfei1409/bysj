@@ -73,9 +73,11 @@ def _median(values: list[float]) -> float:
     return 0.5 * (ordered[middle - 1] + ordered[middle])
 
 
-def _time_persistent(globals_, *, iterations: int, repeats: int) -> float:
+def _time_persistent(globals_, *, iterations: int, repeats: int,
+                     flat: bool = False) -> float:
+    launch = globals_.instructions
     for _ in range(_WARMUP):
-        dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b, globals_.c)
+        dispatch.launch_gemm(launch, globals_.a, globals_.b, globals_.c, flat=flat)
     torch.cuda.synchronize()
     samples = []
     for _ in range(repeats):
@@ -83,8 +85,8 @@ def _time_persistent(globals_, *, iterations: int, repeats: int) -> float:
         end = torch.cuda.Event(enable_timing=True)
         start.record()
         for _ in range(iterations):
-            dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b,
-                                 globals_.c)
+            dispatch.launch_gemm(launch, globals_.a, globals_.b, globals_.c,
+                                 flat=flat)
         end.record()
         end.synchronize()
         samples.append(start.elapsed_time(end) / iterations)
@@ -144,6 +146,9 @@ class PersistentGemmLatenyTests(unittest.TestCase):
 
     def test_latency_against_rocblas(self) -> None:
         baseline, why = _rocblas_baseline()
+        flat_available = dispatch.flat_available()
+        if flat_available:
+            print("also measuring the role-free kernel (DPA4_GEMM_FLAT engine)")
         if baseline is None:
             print(f"\nrocBLAS baseline unavailable: {why}")
 
@@ -158,6 +163,12 @@ class PersistentGemmLatenyTests(unittest.TestCase):
                     persistent_ms = _time_persistent(
                         globals_, iterations=_ITERATIONS, repeats=_REPEATS
                     )
+                    flat_ms = None
+                    if flat_available:
+                        flat_ms = _time_persistent(
+                            globals_, iterations=_ITERATIONS, repeats=_REPEATS,
+                            flat=True,
+                        )
                     record = {
                         "shape": [m, n, k],
                         "cus": cus,
@@ -165,6 +176,12 @@ class PersistentGemmLatenyTests(unittest.TestCase):
                         "persistent_ms": persistent_ms,
                         "persistent_tflops": _tflops(m, n, k, persistent_ms),
                     }
+                    if flat_ms is not None:
+                        record["flat_ms"] = flat_ms
+                        record["flat_tflops"] = _tflops(m, n, k, flat_ms)
+                        record["flat_ratio"] = (
+                            persistent_ms / flat_ms if flat_ms else 0.0
+                        )
                     if baseline is not None:
                         baseline_ms = _time_callable(
                             lambda: baseline(globals_.a, globals_.b),
@@ -176,17 +193,27 @@ class PersistentGemmLatenyTests(unittest.TestCase):
                         record["ratio"] = (
                             baseline_ms / persistent_ms if persistent_ms else 0.0
                         )
+                        flat_note = (
+                            f" | flat {record['flat_ms']:8.3f} ms "
+                            f"({record['flat_tflops']:6.2f} TFLOP/s)"
+                            if flat_ms is not None else ""
+                        )
                         print(
                             f"  cus {cus:3d}: persistent {persistent_ms:8.3f} ms "
-                            f"({record['persistent_tflops']:6.2f} TFLOP/s) | "
-                            f"rocBLAS {baseline_ms:8.3f} ms "
+                            f"({record['persistent_tflops']:6.2f} TFLOP/s)"
+                            f"{flat_note} | rocBLAS {baseline_ms:8.3f} ms "
                             f"({record['rocblas_tflops']:6.2f} TFLOP/s) | "
                             f"{(record['ratio']):5.3f}x"
                         )
                     else:
+                        flat_note = (
+                            f" | flat {record['flat_ms']:8.3f} ms"
+                            if flat_ms is not None else ""
+                        )
                         print(
                             f"  cus {cus:3d}: persistent {persistent_ms:8.3f} ms "
                             f"({record['persistent_tflops']:6.2f} TFLOP/s)"
+                            f"{flat_note}"
                         )
                     type(self).records.append(record)
                     self.assertGreater(persistent_ms, 0.0)

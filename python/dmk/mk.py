@@ -62,11 +62,16 @@ class GemmGlobals:
         return self
 
 
-def launch_gemm(globals_: GemmGlobals) -> GemmGlobals:
-    """Launch the persistent GEMM once (device)."""
+def launch_gemm(globals_: GemmGlobals, *, flat: bool | None = None) -> GemmGlobals:
+    """Launch the persistent GEMM once (device).
+
+    ``flat=True`` runs the role-free kernel on the same schedule; ``None`` follows
+    ``DPA4_GEMM_FLAT``.  Both write ``globals_.c``.
+    """
     if globals_.instructions is None or globals_.num_instructions <= 0:
         raise RuntimeError("GemmGlobals has no instruction stream: attach one first")
-    dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b, globals_.c)
+    dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b, globals_.c,
+                         flat=flat)
     return globals_
 
 
@@ -88,15 +93,16 @@ def verify(globals_: GemmGlobals, *, emulated: bool = False,
     return float((got.to(expected.dtype) - expected).abs().max())
 
 
-def time_gemm(globals_: GemmGlobals, iterations: int = 1) -> float:
+def time_gemm(globals_: GemmGlobals, iterations: int = 1, *,
+              flat: bool | None = None) -> float:
     """Milliseconds per launch, warmed up once."""
-    launch_gemm(globals_)
+    launch_gemm(globals_, flat=flat)
     torch.cuda.synchronize()
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     start.record()
     for _ in range(max(1, iterations)):
-        launch_gemm(globals_)
+        launch_gemm(globals_, flat=flat)
     end.record()
     end.synchronize()
     return start.elapsed_time(end) / max(1, iterations)

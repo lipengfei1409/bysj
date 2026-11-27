@@ -40,7 +40,8 @@ inline bool fail(const char* what, const char* why = nullptr) {
 //: Reserve the dynamic LDS this kernel needs.  Returns false with a message on
 //: stderr when the instantiation cannot fit, which is a build/hardware mismatch
 //: rather than a caller error.
-inline bool reserve_dynamic_lds(const void* kernel) {
+inline bool reserve_dynamic_lds(const void* kernel,
+                               uint32_t threads = config::kThreads) {
     hipFuncAttributes attributes{};
     if (hipFuncGetAttributes(&attributes, kernel) != hipSuccess)
         return launch_detail::fail("hipFuncGetAttributes failed");
@@ -49,13 +50,12 @@ inline bool reserve_dynamic_lds(const void* kernel) {
     // and the driver then *clamps* the launch: the last waves silently do not exist,
     // which is invisible on a one-tile shape and wrong on every other.  Fail loudly
     // instead of launching a kernel that cannot host its own roles.
-    if (static_cast<uint32_t>(attributes.maxThreadsPerBlock) <
-        static_cast<uint32_t>(config::kThreads)) {
+    if (static_cast<uint32_t>(attributes.maxThreadsPerBlock) < threads) {
         std::fprintf(stderr,
                      "dmk::launch: kernel compiled for at most %d threads per "
-                     "block but the design needs %d -- add "
-                     "__launch_bounds__(config::kThreads) to the kernel\n",
-                     attributes.maxThreadsPerBlock, config::kThreads);
+                     "block but the design needs %u -- add "
+                     "__launch_bounds__(<block size>) to the kernel\n",
+                     attributes.maxThreadsPerBlock, threads);
         return false;
     }
     if (static_cast<size_t>(attributes.sharedSizeBytes) >=
@@ -75,13 +75,16 @@ inline bool reserve_dynamic_lds(const void* kernel) {
 //: `kernel` is the instantiation's function name (a __global__ function, not a
 //: `const void*`: the launch syntax needs the symbol, and the driver attribute
 //: calls take the address), `blocks` the number of CU rows.
+//: `threads` is the block size the design needs; the persistent runtime uses
+//: `config::kThreads`, a kernel with its own wave layout passes its own number.
 template <typename Kernel, typename Globals>
 inline bool launch_kernel(Kernel kernel, const Globals& globals, uint32_t blocks,
-                          hipStream_t stream) {
+                          hipStream_t stream,
+                          uint32_t threads = config::kThreads) {
     if (blocks == 0) return launch_detail::fail("no instruction rows to run");
-    if (!reserve_dynamic_lds(reinterpret_cast<const void*>(kernel)))
+    if (!reserve_dynamic_lds(reinterpret_cast<const void*>(kernel), threads))
         return false;
-    kernel<<<blocks, config::kThreads, kLaunchBytes, stream>>>(globals);
+    kernel<<<blocks, threads, kLaunchBytes, stream>>>(globals);
     return true;
 }
 

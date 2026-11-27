@@ -90,3 +90,9 @@ Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
 // `C = A @ B` in 16x16 tiles; M, N, K must be multiples of 16.
 Tensor dmk_gemm_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,
                     Tensor matrix_c);
+
+// Same schedule, same result, executed without the role split: no loader, storer or
+// controller wave, cooperative staging, `__syncthreads()` instead of semaphores, and
+// a double-buffered k loop (`csrc/dmk/gemm_flat.cpp`).
+Tensor dmk_gemm_flat_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,
+                         Tensor matrix_c);
