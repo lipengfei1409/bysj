@@ -5,9 +5,9 @@ failure there says "some shape is wrong" while a failure here says *which*
 mechanism is wrong.  Run it before the full suite, and in this order:
 
     single tile      -> pages, staging, fragment load/mma/store epilogue
-    two tiles        -> two consumer waves, one instruction
-    full run of four -> four waves, four C pages, the storer over four tiles
-    short run (N=48) -> the last run is three tiles: wave 3 must stay idle
+    two tiles        -> both consumer waves, one instruction
+    four tiles       -> two instructions, every wave busy
+    short run (N=48) -> the second run is short: its last wave must stay idle
     deep K           -> accumulation across many k-tiles, four waves in flight
 
 Every case compares against `torch.matmul`, which is rocBLAS on the device, so
@@ -48,12 +48,14 @@ class SmokeTests(unittest.TestCase):
         # 32 wide, 16 tall: one instruction covering two tiles, waves 0 and 1.
         _check(16, 32, 16)
 
-    def test_a_full_run_of_four_tiles(self) -> None:
-        # 16x64: four tiles in one instruction, all four consumer waves working.
+    def test_a_full_run_of_tiles(self) -> None:
+        # 16x64: four tiles, i.e. two full runs of kConsumerWaves tiles -- every
+        # consumer wave works, on two instructions.
         _check(16, 64, 16)
 
     def test_a_short_run_leaves_the_last_wave_idle(self) -> None:
-        # 16x48: three tiles, so wave 3 has no column and must write nothing.
+        # 16x48: three tiles, so the second run is short and its last wave has no
+        # column and must write nothing.
         _check(16, 48, 16)
 
     def test_deep_k_accumulates_across_waves(self) -> None:

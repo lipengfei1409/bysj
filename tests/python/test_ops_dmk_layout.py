@@ -100,6 +100,17 @@ class BuildIncludePathTests(unittest.TestCase):
 class GemmWaveContractTests(unittest.TestCase):
     """The host and the kernel must agree on how many tiles one instruction covers."""
 
+    def test_the_block_is_five_waves(self) -> None:
+        header = (OPS / "config.h").read_text()
+        consumers = int(re.search(r"kConsumerWaves\s*=\s*(\d+)", header).group(1))
+        service = int(re.search(r"kServiceWaves\s*=\s*(\d+)", header).group(1))
+        wave = int(re.search(r"kWaveSize\s*=\s*(\d+)", header).group(1))
+        self.assertEqual(consumers, 2)
+        self.assertEqual((consumers + service) * wave, 320)
+        # one C page per consumer wave, plus the A and B pages
+        pages = int(re.search(r"kNumPages\s*=\s*(\d+)", header).group(1))
+        self.assertGreaterEqual(pages, 2 + consumers)
+
     def test_the_tile_run_length_matches_the_consumer_wave_count(self) -> None:
         from dmk.model_types import GEMM_TILES_PER_INSTRUCTION
 

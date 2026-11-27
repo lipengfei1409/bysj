@@ -130,7 +130,7 @@ PYTHONPATH=python python3 -m unittest tests.csrc.accuracy.test_persistent_gemm_s
 | --- | --- |
 | 16³ | 单 tile、单 k-step、只有 wave 0：页 / stage / fragment / 尾声 |
 | 16×32 | 一条指令两个 tile：wave 0 与 1 |
-| 16×64 | 一条指令**四个** tile：四个 consumer wave + 四个 C 页 + storer 遍历 |
+| 16×64 | 两条指令各覆盖两个 tile：两个 consumer wave + 两个 C 页 + storer 遍历 |
 | 16×48 | 最后一个 run 只有三个 tile：**wave 3 必须完全不动**（越界裁剪） |
 | 64×256 | 四行 tile，每行一个满 run |
 | 128³ | 深 K：每波跨 8 个 k-tile 累加 |
@@ -141,7 +141,7 @@ PYTHONPATH=python python3 -m unittest tests.csrc.accuracy.test_persistent_gemm_s
 | --- | --- |
 | `16³` | `ld_matrix` / `store_matrix` 的参数（`ld`、`mem_row_major`）或累加器交替 |
 | `16³` 过、`16×32` 错 | 指令覆盖两个 tile 的 `n0` 计算（主机 `GemmEmitter.emit`） |
-| 小形状过、`16×64` 错 | 四波并行：`pid(2 + wave)` 的 C 页分配或 `tile_column` |
+| 小形状过、`16×64` 错 | 多波并行：`pid(2 + wave)` 的 C 页分配或 `tile_column` |
 | `16×48` 错 | 越界 wave 写了不该写的 C 页（`column < 0` 分支） |
 | 全过、`128³` 错 | k 循环：每 k-tile 重新 stage 的位置（`wave * kSliceElements`） |
 | **全 0** | `store()` 没执行——它是 storer 波，不能按 `wave == 0` 判断 |

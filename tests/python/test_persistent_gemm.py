@@ -186,8 +186,9 @@ class DemoTests(unittest.TestCase):
             demo = GemmDemo(m=32, n=48, k=32, cus=cus)
             rows = demo.rows()
             self.assertEqual(len(rows), cus)
-            # 32/16 rows x ceil(48/16 / 4) runs
-        self.assertEqual(sum(len(row) for row in rows), 2 * 1)
+            # rows x runs, where a run is GEMM_TILES_PER_INSTRUCTION tiles
+        runs = -(-(48 // 16) // GEMM_TILES_PER_INSTRUCTION)
+        self.assertEqual(sum(len(row) for row in rows), (32 // 16) * runs)
 
     def test_the_demo_rejects_an_untileable_shape(self) -> None:
         with self.assertRaises(ValueError):

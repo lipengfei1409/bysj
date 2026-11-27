@@ -15,7 +15,7 @@ import torch
 
 from dmk import dispatch, emitters, mk, python_vm, scheduler
 from dmk import instructions as I
-from dmk.model_types import GEMM, Work
+from dmk.model_types import GEMM, GEMM_TILES_PER_INSTRUCTION, Work
 from dmk.utils import (get_cu_count, instruction_counts, plan_cus, split_units,
                        tile_for)
 from kernels import mk_stream
@@ -93,18 +93,20 @@ class WorkTests(unittest.TestCase):
 
 class EmitterTests(unittest.TestCase):
     def test_one_instruction_per_run_of_tiles(self) -> None:
-        # 64x48 is 4 tile rows x 3 tile columns = one run of 3 per row.
+        # 64x48 is 4 tile rows x 3 tile columns, so two runs of two per row (the
+        # second run is short when the run length does not divide the row).
         instructions = emitters.gemm_instructions(64, 48, 32)
-        self.assertEqual(len(instructions), 4)
+        self.assertEqual(len(instructions), 8)
         self.assertTrue(all(item.k_tiles == 2 for item in instructions))
         self.assertEqual({(i.m0, i.n0) for i in instructions},
-                         {(m, 0) for m in (0, 16, 32, 48)})
+                         {(m, n) for m in (0, 16, 32, 48) for n in (0, 32)})
 
     def test_a_wide_matrix_needs_several_runs_per_row(self) -> None:
-        # 16 tile columns / 4 tiles per run = 4 runs.
+        # 16 tile columns of 16, GEMM_TILES_PER_INSTRUCTION per run.
+        step = GEMM_TILES_PER_INSTRUCTION * 16
         instructions = emitters.gemm_instructions(16, 256, 16)
         self.assertEqual([(i.m0, i.n0) for i in instructions],
-                         [(0, 0), (0, 64), (0, 128), (0, 192)])
+                         [(0, run * step) for run in range(256 // step)])
 
     def test_a_shape_without_an_edge_path_is_rejected(self) -> None:
         for shape in ((17, 16, 16), (16, 17, 16), (16, 16, 17)):
@@ -112,11 +114,13 @@ class EmitterTests(unittest.TestCase):
                 emitters.gemm_instructions(*shape)
 
     def test_the_split_covers_every_run_once(self) -> None:
-        # 64x64 is 4 tile rows x 1 run of 4 tiles = 4 instructions over 3 CUs.
+        # 64x64 is 4 tile rows x ceil(4 tiles / run) runs.
+        runs = (64 // 16) * -(-(64 // 16) // GEMM_TILES_PER_INSTRUCTION)
         rows = emitters.gemm_queues(64, 64, 32, 3)
         self.assertEqual(len(rows), 3)
-        self.assertEqual(sum(len(row) for row in rows), 4)
-        self.assertEqual([len(row) for row in rows], [2, 1, 1])
+        self.assertEqual(sum(len(row) for row in rows), runs)
+        self.assertEqual(max(len(row) for row in rows)
+                         - min(len(row) for row in rows), 1)
 
 
 class EmitterClassTests(unittest.TestCase):
@@ -147,8 +151,9 @@ class EmitterClassTests(unittest.TestCase):
             Incomplete(1).work()
 
     def test_the_split_is_shared_so_every_operator_behaves_the_same(self) -> None:
+        runs = (64 // 16) * -(-(48 // 16) // GEMM_TILES_PER_INSTRUCTION)
         cases = [
-            (emitters.GemmEmitter(64, 48, 32), 4),
+            (emitters.GemmEmitter(64, 48, 32), runs),
             (emitters.EmbeddingEmitter(7, elem_per_row=4), 7),
             (emitters.AttentionEmitter(5, num_keys=64, dim=32), 5),
             (emitters.ElementwiseEmitter(2048 * 3 + 10), 4),

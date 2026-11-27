@@ -46,12 +46,16 @@ inline constexpr int kDynamicSemaphores = 16;
 // semaphores.
 inline constexpr int kEvents = 8;
 
-// Roles: 4 consumer waves plus loader, storer and controller. The Blackwell
-// reference also has a launcher wave for async MMA/TMA issue; DCU's synchronous
-// DUMMA has no equivalent, so it is intentionally omitted here (this also
-// removes one worker wave from the retirement count and 64 threads from the
-// block).
-inline constexpr int kConsumerWaves = 4;
+// Roles: `kConsumerWaves` consumer waves plus loader, storer and controller.  The
+// Blackwell reference also has a launcher wave for async MMA/TMA issues; DCU's
+// synchronous DUMMA has no equivalent, so it is omitted (which also removes one
+// worker wave from the retirement count and 64 threads from the block).
+//
+// A consumer wave owns one 16x16 output tile per instruction and holds a DUMMA
+// accumulator in registers, so the consumer count is a register-pressure knob as
+// much as a parallelism one.  Two is the current step: one instruction covers two
+// tiles, and `kThreads` (5 waves = 320) follows.
+inline constexpr int kConsumerWaves = 2;
 inline constexpr int kServiceWaves = 3;  // loader, storer, controller
 inline constexpr int kWaveSize = 64;
 inline constexpr int kWorkerWaves = 2 + kConsumerWaves;

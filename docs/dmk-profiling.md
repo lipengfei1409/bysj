@@ -63,7 +63,7 @@ SQ_INSTS_VMEM,TCP_TCC_REQ,GRBM_GUI_ACTIVE \
 | `GRBM_GUI_ACTIVE` 接近 1、`SQ_INSTS_VALU` 高，但 TFLOP/s 只有 2–5 | 标量 FFMA 到顶（`fma_probe` 实测 18.1 TFLOP/s 是理论上限） | **P5：DUMMA 进 `GemmOp`** |
 | `SQ_LDS_BANK_CONFLICT` 与 `SQ_INSTS_LDS` 同量级 | LDS stride=16 的列访问冲突 | **P7：padding 到 17** |
 | `SQ_INSTS_LDS` 远大于 `SQ_INSTS_VALU` | 每条 FMA 两次 LDS（现状就是这样） | **P2：累加器进寄存器 + P3 寄存器分块** |
-| `SQ_WAVES` 只有 4 而 block 有 8 个 wave | 3 个 consumer wave 空转 | **P1：用满四波** |
+| `SQ_WAVES` 少于 `kConsumerWaves` | consumer wave 没在算 | 查指令覆盖与 `tile_column` 裁剪 |
 | `TCP_TCC_REQ` 高、`TCC_HIT` 低 | 访存放大（A 被重读 N/16 次） | **P6：宏 tile / tile 顺序** |
 
 ## 3. `torch.profiler`：主机 vs 设备
