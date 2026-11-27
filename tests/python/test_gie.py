@@ -31,7 +31,11 @@ def _inputs(*, requires_grad=False, degree_shape=(2,)):
 
 
 class GIEBuildConfigurationTests(unittest.TestCase):
-    def test_default_build_includes_all_remaining_operators(self):
+    def test_default_build_is_narrowed_to_the_framework(self):
+        # The build now compiles only `csrc/dmk/` and the entry points that
+        # register it (`csrc/ops/` is header-only).  The standalone kernels are
+        # out until they come back together with `csrc/bindings.cpp`, which
+        # registers all of them.
         root = Path(__file__).resolve().parents[2]
         extension_args = {}
 
@@ -53,23 +57,12 @@ class GIEBuildConfigurationTests(unittest.TestCase):
         self.assertEqual(extension_args["name"], "kernels._C")
         self.assertEqual(
             extension_args["sources"],
-            [
-                "csrc/bindings.cpp",
-                "csrc/rmsnorm.cpp",
-                "csrc/gie.cpp",
-                "csrc/segment_sum.cpp",
-                "csrc/segment_softmax.cpp",
-                "csrc/force_assembly.cpp",
-                "csrc/slot_ops.cpp",
-                "csrc/edge_combine.cpp",
-    "csrc/monomial.cpp",
-    "csrc/blockdiag.cpp",
-    "csrc/so2_conv.cpp",
-    "csrc/dmk/megakernel.cpp",
-            ],
+            ["csrc/bindings_dmk.cpp", "csrc/dmk/megakernel.cpp"],
         )
-        self.assertEqual(extension_args["define_macros"], [])
-
+        self.assertEqual(
+            extension_args["include_dirs"],
+            [str(root / "csrc")],
+        )
 
 class GIEReferenceTests(unittest.TestCase):
     def test_reference_matches_segment_sum_and_has_gradients(self):

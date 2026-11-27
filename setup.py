@@ -49,17 +49,13 @@ if not torch.version.hip:
     raise RuntimeError("native build requires a ROCm/DTK PyTorch installation")
 
 sources = [
-    "csrc/bindings.cpp",
-    "csrc/rmsnorm.cpp",
-    "csrc/gie.cpp",
-    "csrc/segment_sum.cpp",
-    "csrc/segment_softmax.cpp",
-    "csrc/force_assembly.cpp",
-    "csrc/slot_ops.cpp",
-    "csrc/edge_combine.cpp",
-    "csrc/monomial.cpp",
-    "csrc/blockdiag.cpp",
-    "csrc/so2_conv.cpp",
+    # Only the framework for now: `csrc/ops/` is header-only, so the two units
+    # below are the persistent megakernel and its Python entry points.  The
+    # standalone kernels (rmsnorm, gie, segment_*, force_assembly, slot_ops,
+    # edge_combine, monomial, blockdiag, so2_conv) are deliberately out of the
+    # build; `csrc/bindings.cpp` is the full registration set for when they
+    # return -- swap it in below together with their sources.
+    "csrc/bindings_dmk.cpp",
     "csrc/dmk/megakernel.cpp",
 ]
 ext_modules = [CUDAExtension(

@@ -40,29 +40,19 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
         return extension_args, setup_call.call_args.kwargs
 
     def test_default_build_includes_all_remaining_native_operators(self):
+        # The build is narrowed to the framework (`csrc/ops/` is header-only):
+        # the persistent megakernel plus the entry points that only register it.
+        # The standalone kernels are out of the build for now, and
+        # `csrc/bindings.cpp` -- which registers all of them -- is swapped back in
+        # together with their sources.
         extension, setup_kwargs = self._capture_native_extension()
         self.assertEqual(extension["name"], "kernels._C")
         self.assertEqual(
             extension["sources"],
-            [
-                "csrc/bindings.cpp",
-                "csrc/rmsnorm.cpp",
-                "csrc/gie.cpp",
-                "csrc/segment_sum.cpp",
-                "csrc/segment_softmax.cpp",
-                "csrc/force_assembly.cpp",
-                "csrc/slot_ops.cpp",
-                "csrc/edge_combine.cpp",
-    "csrc/monomial.cpp",
-    "csrc/blockdiag.cpp",
-    "csrc/so2_conv.cpp",
-    "csrc/dmk/megakernel.cpp",
-            ],
+            ["csrc/bindings_dmk.cpp", "csrc/dmk/megakernel.cpp"],
         )
         self.assertEqual(extension["define_macros"], [])
         self.assertEqual(set(setup_kwargs["cmdclass"]), {"build_ext"})
-
-
 
 class RMSNormReferenceTests(unittest.TestCase):
     def test_reference_matches_formula_and_gradients(self):

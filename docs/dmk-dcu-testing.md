@@ -25,6 +25,18 @@ gate，torch 默认还会编 gfx906，那会触发 `#error`，并在错误里漂
 
 ## 1. 编译
 
+现在的 `setup.py` **只编框架**：
+
+```
+csrc/bindings_dmk.cpp      只有 dmk_gemm 一个入口
+csrc/dmk/megakernel.cpp    唯一的 kernel（mk_all + launch）
+```
+
+`csrc/ops/` 是 header-only，所以这两个 TU 就是全部。其余手写 kernel（rmsnorm / gie / segment_* /
+force_assembly / slot_ops / edge_combine / monomial / blockdiag / so2_conv）**暂时不编**——它们各自的
+binding 在 `csrc/bindings.cpp` 里，等它们回来时把 `sources` 与 `bindings_dmk.cpp` 一起换回
+`bindings.cpp` 即可。
+
 ```bash
 MAX_JOBS=8 python3 setup.py build_ext --inplace
 ```
