@@ -141,6 +141,13 @@ ext_modules = [CUDAExtension(
         "cxx": ["-O3", "-std=c++17", "-Wno-return-type", *ARCH_FLAGS,
                 *CSCALAR_ARGS],
     },
+    # DTK's `du_mma.h` defines `du::dumma::__du_float_to_tf32` as a plain
+    # `__host__ __device__` function in a header -- not `inline`, not `static`.  One
+    # translation unit including it is fine; the moment two do (the scheduler kernel,
+    # the role-free one and the dense one), the host link reports a duplicate symbol.
+    # The bodies are identical, so letting the linker keep the first copy is exactly
+    # the semantics the header should have declared; it is scoped to this extension.
+    extra_ldflags=["-Wl,--allow-multiple-definition"],
 )]
 #: Where the compiler's full output goes.  A hipcc build of this extension emits
 #: hundreds of warnings from torch/pybind headers, and printing them buries the
