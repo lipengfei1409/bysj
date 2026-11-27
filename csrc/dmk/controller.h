@@ -27,6 +27,7 @@ namespace dmk::mk {
 // The controller drives op objects polymorphically; those types belong to ops::.
 namespace config = ops::config;
 namespace lds = ops::lds;
+namespace tensor = ::ops::tensor;
 using ops::BaseOp;
 using ops::InstructionState;
 using ops::make_op;

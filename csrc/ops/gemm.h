@@ -116,8 +116,8 @@ public:
                                         int lane) {
         const size_t n = g.matrix_c.shape.dims[1];
         const int column = tile_column(inst, wave, n);
-        const auto shape = tensor::Shape<2>{{kTile, kTile}};
-        const auto layout = tensor::StridedLayout<2>{{kTile, 1}};
+        const tensor::Shape<2> shape{{kTile, kTile}};
+        const tensor::StridedLayout<2> layout{{kTile, 1}};
         const size_t offset = static_cast<size_t>(wave) * kSliceElements;
 
         const size_t a_origin[2] = {static_cast<size_t>(inst.m0),

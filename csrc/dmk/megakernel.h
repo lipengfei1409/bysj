@@ -21,6 +21,10 @@ namespace dmk::mk {
 
 namespace config = ops::config;
 namespace lds = ops::lds;
+// `tensor` has to be named here: the file below says `tensor::Tensor`, and until
+// this alias existed it only compiled by accident of include order (and, in the
+// first real build, did not compile at all).
+namespace tensor = ::ops::tensor;
 
 using tensor::MemorySpace;
 using tensor::Shape;

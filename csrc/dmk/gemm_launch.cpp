@@ -16,11 +16,16 @@
 // this launcher rejects a shape that would need one rather than producing a
 // silently wrong tile.
 
-#include "ops.h"
-#include "checks.h"
+// The megakernel headers come first: `ops.h` defines a global `Tensor` alias for
+// torch::Tensor, and including it ahead of `dmk/megakernel.h` makes the
+// `tensor::Tensor` template used inside `dmk::mk` ambiguous to the eye (and, in
+// the first build, unresolvable).
 #include "dmk/megakernel.h"
 #include "ops/gemm.h"
 #include "ops/noop.h"
+
+#include "checks.h"
+#include "ops.h"
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -100,7 +105,7 @@ bool tileable(int64_t m, int64_t n, int64_t k) {
 
 Tensor dmk_gemm_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,
                     Tensor matrix_c) {
-    TORCH_CHECK(instructions.scalar_type() == torch::kInt32 &&
+    TORCH_CHECK(instructions.scalar_type() == torch::kInt &&
                     instructions.is_contiguous() && instructions.dim() == 3 &&
                     instructions.size(2) == config::kInstructionWidth,
                 "instructions must be a contiguous int32 (blocks, length, 32) tensor");
@@ -128,10 +133,16 @@ Tensor dmk_gemm_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,
     }
 
     dmk::mk::GemmGlobals g{};
-    dmk::tensor::from_torch(instructions, g.instructions);
-    dmk::tensor::from_torch(matrix_a, g.matrix_a);
-    dmk::tensor::from_torch(matrix_b, g.matrix_b);
-    dmk::tensor::from_torch(matrix_c, g.matrix_c);
+    // `from_torch` takes a mutable handle (it reads shape/strides from it), so the
+    // parameters are copied rather than bound by reference to the caller's.
+    at::Tensor instructions_handle = instructions;
+    at::Tensor a_handle = matrix_a;
+    at::Tensor b_handle = matrix_b;
+    at::Tensor c_handle = matrix_c;
+    dmk::tensor::from_torch(instructions_handle, g.instructions);
+    dmk::tensor::from_torch(a_handle, g.matrix_a);
+    dmk::tensor::from_torch(b_handle, g.matrix_b);
+    dmk::tensor::from_torch(c_handle, g.matrix_c);
     g.num_instructions = static_cast<int>(instructions.size(1));
     TORCH_CHECK(g.valid(), "the persistent GEMM globals are not valid");
 
