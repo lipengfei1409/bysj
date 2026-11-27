@@ -178,8 +178,17 @@ public:
                 lds::wave_barrier();
                 __threadfence_block();
             }
+            // Epilogue: the accumulator goes to the C *page*, never straight to
+            // HBM.  Two reasons: a fragment exists only in this wave's
+            // registers, and the storer is a different wave that can only read
+            // shared memory; and the page is what `store()` already copies out.
             dumma::store_matrix(c_page, current, static_cast<unsigned>(kTile),
                                 dumma::native::mem_row_major);
+            // Publish the tile before the arrival below: every lane of this wave
+            // finishes its write, then the fence orders LDS, then the count
+            // reaches the storer's wait.
+            lds::wave_barrier();
+            __threadfence_block();
         }
         lds::wave_barrier();
         __threadfence_block();
