@@ -111,6 +111,12 @@ PYTHONPATH=python python3 -m unittest tests.csrc.latency.test_persistent_gemm_la
 它内部用 `tests/dcu/rocblas_cpp.py`（直接调 rocBLAS 的 C++ 包装），输出 `persistent_ms` /
 `rocblas_ms` / `ratio`。**profile 给了"差在哪"，这个给了"差多少"**，两个都要。
 
+## 如果本卡是 gfx906
+
+矩阵单元不存在（`du_mma.h` 只认 gfx926/928/936/938），`setup.py` 会自动退回标量 GEMM。这时 rocBLAS
+的 SGEMM 在 gfx906 上也是 VALU/FFMA 实现，所以 `ratio` 比的是**两套标量调度的差距**，不是"标量 vs
+tensor core"——判断"要不要上矩阵单元"要换到支持 DUMMA 的卡上测。
+
 ## 一条经验
 
 先跑 §1 与 §2 各 **一次**（约两分钟），再决定改哪一项。不要在没有计数器的前提下直接写 P1/P2——那正是上一轮我差点做的：三个 consumer wave 空转是**读代码看出来的猜测**，而 `SQ_WAVES` 会直接告诉你是 4 还是 8。

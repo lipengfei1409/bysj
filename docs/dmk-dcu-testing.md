@@ -15,8 +15,12 @@ rocminfo | grep -o "gfx[0-9]*" | sort -u
 
 | 查到的架构 | 走哪条路 |
 | --- | --- |
-| `gfx926` / `gfx928` / `gfx936` / `gfx938` | **DUMMA**（矩阵单元），`export PYTORCH_ROCM_ARCH=<该架构>` |
-| 其它（如 `gfx906`） | 这张卡**没有**矩阵单元：`export DPA4_GEMM_SCALAR=1`，性能预期改成标量上限（~18 TFLOP/s 理论峰值） |
+| `gfx926` / `gfx928` / `gfx936` / `gfx938` | **DUMMA**（矩阵单元），`PYTORCH_ROCM_ARCH` 由 `setup.py` 自动取本卡架构 |
+| 其它（如 `gfx906`） | 这张卡**没有**矩阵单元。`setup.py` 会自动退回标量并打印一行说明；性能预期改成标量上限 |
+
+`gfx906` 上还有一个重要事实：**rocBLAS 的 SGEMM 在 gfx906 上同样是 VALU/FFMA 实现**（这张卡没有
+MFMA/DUMMA）。所以那边的对比是"同样用标量单元，谁的调度更好"，不是"标量 vs 矩阵单元"——差距会落在
+2–4 倍的量级，而不是 10 倍以上。
 
 `PYTORCH_ROCM_ARCH` 必须设：DTK 的 `du_mma.h` 把每个 fragment 偏特化和每个 load/mma/store 都按架构
 gate，torch 默认还会编 gfx906，那会触发 `#error`，并在错误里漂出

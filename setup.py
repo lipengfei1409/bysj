@@ -35,9 +35,10 @@ CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if os.environ.get("DPA4_GEMM_SCALAR") == "
 # message, instead of as "undefined template DUFragment" deep in a device pass.
 _DUMMA_ARCHES = ("gfx926", "gfx928", "gfx936", "gfx938")
 _ARCH_ENV = os.environ.get("PYTORCH_ROCM_ARCH", "")
-if not _ARCH_ENV and not CSCALAR_ARGS:
+if not _ARCH_ENV:
     # No explicit arch: ask the device.  torch otherwise compiles for every arch
-    # the toolkit knows, gfx906 included, and DTK's du_mma.h hard-errors on it.
+    # the toolkit knows -- gfx906 among them -- and DTK's du_mma.h hard-errors on
+    # anything outside the four it supports.
     try:
         _detected = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
     except Exception:  # noqa: BLE001 - no device visible; leave it to the build
@@ -45,6 +46,20 @@ if not _ARCH_ENV and not CSCALAR_ARGS:
     if _detected:
         os.environ["PYTORCH_ROCM_ARCH"] = _detected
         _ARCH_ENV = _detected
+
+if not CSCALAR_ARGS and _ARCH_ENV and _ARCH_ENV not in _DUMMA_ARCHES:
+    # This card has no matrix unit, so the DUMMA path cannot exist on it.  Building
+    # the scalar GEMM is the only thing that can run here, and asking for it in an
+    # error message would just be a riddle: do it, and say so.
+    if not os.environ.get("DPA4_GEMM_SCALAR"):
+        print(
+            f"note: {_ARCH_ENV} has no DUMMA (supported: "
+            + ", ".join(_DUMMA_ARCHES)
+            + "); building the scalar GEMM.  The persistent scheduling, pages and"
+            " waves are the same -- only the inner loop is FFMA."
+        )
+    os.environ["DPA4_GEMM_SCALAR"] = "1"
+    CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"]
 if not CSCALAR_ARGS and _ARCH_ENV:
     _targets = [a.strip() for a in _ARCH_ENV.replace(";", " ").split(",") if a.strip()]
     _bad = [a for a in _targets if a not in _DUMMA_ARCHES]
@@ -132,11 +147,23 @@ class QuietBuildExt(BuildExtension):
 
     def build_extensions(self) -> None:
         BUILD_LOG.parent.mkdir(parents=True, exist_ok=True)
+        # The compiler is a child process and inherits the file descriptors, so a
+        # Python-level redirect captures nothing; dup2 moves the descriptors
+        # themselves and the whole build lands in the log.
+        saved_out, saved_err = os.dup(1), os.dup(2)
         try:
-            with open(BUILD_LOG, "w", encoding="utf-8") as log, \
-                    contextlib.redirect_stdout(log), \
-                    contextlib.redirect_stderr(log):
-                super().build_extensions()
+            with open(BUILD_LOG, "w", encoding="utf-8") as log:
+                os.dup2(log.fileno(), 1)
+                os.dup2(log.fileno(), 2)
+                try:
+                    super().build_extensions()
+                finally:
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                    os.dup2(saved_out, 1)
+                    os.dup2(saved_err, 2)
+                    os.close(saved_out)
+                    os.close(saved_err)
         except SystemExit:
             raise
         except BaseException as failure:  # noqa: BLE001 - report, then stop
