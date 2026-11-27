@@ -10,8 +10,17 @@ gets a :class:`OperatorGenerator` subclass that knows three things:
 * nothing about splitting them across CUs -- that lives in the base class, so
   every operator is split the same way and only its own arithmetic differs.
 
-Adding an operator therefore means writing one ``instructions()`` body, not
-re-implementing the split:
+Why a class rather than one function per operator: the split is the part that is
+identical for every operator and easy to get subtly wrong, while the operator
+itself only knows how to turn one range into one instruction.  With the split in
+the base class the elementwise generator cannot disagree with the GEMM generator
+about how a share is tiled, and a test can loop over every kind asserting the
+same invariants -- which is only expressible if they share an interface.  (The
+reference implementation keeps this in one model-level function; a class per
+operator is our addition, because our schedule has more than one operator.)
+
+Adding an operator therefore means writing one ``emit()`` body, not re-implementing
+the split:
 
     class EmbeddingGenerator(OperatorGenerator):
         kind = EMBEDDING
