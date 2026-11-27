@@ -34,7 +34,12 @@
 
 namespace dmk::mk {
 
-__global__ void mk_all(const MkGlobals g) {
+// The block is `kThreads` = (4 consumer + loader + storer + controller) * 64.
+// Without the bound the compiler assumes hipcc's default maximum and the launch is
+// clamped to 256 threads -- the last three waves then do not exist, which is
+// invisible for a single-tile shape (wave 0 does everything) and silently wrong for
+// every shape that needs the loader, the storer or the controller.
+__global__ void __launch_bounds__(config::kThreads) mk_all(const MkGlobals g) {
     mk_internal<MkGlobals, ops::NoOp<MkGlobals>, ops::ElementwiseOp<MkGlobals>,
                 ops::GemmOp<MkGlobals>, ops::EmbeddingOp<MkGlobals>>(g);
 }

@@ -116,6 +116,14 @@ class GemmWaveContractTests(unittest.TestCase):
         # every consumer wave computes, so run() must not gate on `wave == 0`
         self.assertNotIn("if (wave == 0) {", gemm.split("__device__ void store")[0])
 
+    def test_the_kernel_declares_its_block_size(self) -> None:
+        # A kernel compiled without `__launch_bounds__` gets hipcc's default, and the
+        # three service waves beyond it are silently dropped at launch: correct for a
+        # single-tile shape, wrong for everything else.
+        kernel = (DMK / "megakernel.cpp").read_text()
+        self.assertIn("__launch_bounds__(config::kThreads) mk_all", kernel)
+        self.assertIn("kThreads = kTotalWaves * kWaveSize", (OPS / "config.h").read_text())
+
     def test_the_k_loop_is_unrolled(self) -> None:
         gemm = (OPS / "gemm.h").read_text()
         self.assertIn("#pragma unroll", gemm.split("__device__ void run")[1])

@@ -15,6 +15,13 @@ This runner puts it there and then behaves like `unittest discover`:
 It also puts `tests/dcu/` on the path, because a few host tests import helpers
 from there (`rocblas_cpp`), and those live next to the DCU harness rather than in
 a package.
+
+`--dcu` adds the device suites (`tests/csrc/accuracy`, which skip themselves on a
+host), and `--latency` adds the opt-in timing sweep with the rocBLAS baseline::
+
+    python3 tests/run_python_tests.py                 # host only
+    python3 tests/run_python_tests.py --dcu           # + accuracy on the device
+    python3 tests/run_python_tests.py --dcu --latency # + timing against rocBLAS
 """
 
 from __future__ import annotations
@@ -47,12 +54,20 @@ def main(argv: list[str] | None = None) -> int:
             print("-k needs a substring", file=sys.stderr)
             return 2
 
+    into = [ROOT / "tests" / "python"]
+    if "--dcu" in argv:
+        into += [ROOT / "tests" / "csrc" / "accuracy"]
+    if "--latency" in argv:
+        into += [ROOT / "tests" / "csrc" / "latency"]
+
     loader = unittest.TestLoader()
-    try:
-        suite = loader.discover(str(ROOT / "tests" / "python"), pattern=pattern)
-    except ImportError as failure:  # pragma: no cover - only on a broken checkout
-        print(f"cannot discover the suite: {failure}", file=sys.stderr)
-        return 2
+    suite = unittest.TestSuite()
+    for directory in into:
+        try:
+            suite.addTests(loader.discover(str(directory), pattern=pattern))
+        except ImportError as failure:  # pragma: no cover - broken checkout
+            print(f"cannot discover {directory}: {failure}", file=sys.stderr)
+            return 2
     result = unittest.TextTestRunner(verbosity=verbosity).run(suite)
     return 0 if result.wasSuccessful() else 1
 
