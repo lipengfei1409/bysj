@@ -1,36 +1,31 @@
 """The model kernel: globals plus the launch (the reference's ``mk.py`` role).
 
-In `Megakernels/megakernels/mk.py` this is a thin interpreter that loads a
-model-specific builder and hands the schedule to the C++ VM.  Ours is the same
-shape with one operator in it today -- the persistent GEMM -- because that is the
-only op pack the runtime builds (`csrc/dmk/gemm_launch.cpp`).
+`Megakernels/megakernels/mk.py` is a thin interpreter that loads a model-specific
+builder and hands the schedule to the VM.  Ours has one model -- a dense GEMM --
+and the same two pieces:
 
-    globals = GemmGlobals.from_shapes(m, n, k, cus)   # device tensors
-    globals.instructions = queues.tensor(device=...)  # the schedule, as words
-    run_gemm(globals)                                 # one launch
+    globals_ = GemmGlobals.from_shapes(m, n, k)        # device tensors
+    globals_.instructions = generators.gemm_queues(...)  # the schedule
+    launch_gemm(globals_)                                # one launch
 
-`GemmGlobals` mirrors `BaseGlobals` from the reference: the tensors the kernel
-reads, the model constants, and `sm_count()` -- the number of CUs a launch fans
-out to.
+`GemmGlobals` mirrors `BaseGlobals`: the tensors the kernel reads, the model
+constants, and ``sm_count()`` -- here the number of CU rows.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 
-from kernels.native import _extension
+from . import dispatch, generators, python_vm
+from .instructions import InstructionStream
+from .model_types import GEMM_TILE
 
 
 @dataclass
 class GemmGlobals:
-    """Everything one persistent-GEMM launch reads.
-
-    ``a``/``b``/``c`` are the dense operands; ``instructions`` is the per-CU
-    schedule produced by `shard`; ``num_instructions`` is the row length the
-    kernel walks.
-    """
+    """Everything one persistent-GEMM launch reads."""
 
     a: torch.Tensor
     b: torch.Tensor
@@ -43,14 +38,12 @@ class GemmGlobals:
         return (self.c.shape[0], self.c.shape[1], self.a.shape[1])
 
     def sm_count(self) -> int:
-        """CUs the launch fans out to: one block per instruction row."""
         return 0 if self.instructions is None else int(self.instructions.shape[0])
 
     @classmethod
     def from_shapes(cls, m: int, n: int, k: int, *, seed: int = 0,
-                    device: str | torch.device = "cuda") -> "GemmGlobals":
-        """Allocate operands of the given shape with reproducible contents."""
-        if m % 16 or n % 16 or k % 16:
+                    device="cuda") -> "GemmGlobals":
+        if m % GEMM_TILE or n % GEMM_TILE or k % GEMM_TILE:
             raise ValueError(
                 "the persistent GEMM tiles by 16 and has no edge path, so M, N "
                 f"and K must be multiples of 16 (got {m}x{n}x{k})"
@@ -61,37 +54,52 @@ class GemmGlobals:
         c = torch.zeros(m, n, device=device)
         return cls(a=a, b=b, c=c)
 
-
-def run_gemm(globals: GemmGlobals) -> GemmGlobals:
-    """Launch the persistent GEMM once; returns the globals for chaining."""
-    if globals.instructions is None or globals.num_instructions <= 0:
-        raise RuntimeError("GemmGlobals has no instruction stream: shard first")
-    _extension("dmk_gemm").dmk_gemm(globals.instructions, globals.a, globals.b,
-                                    globals.c)
-    return globals
+    def attach(self, rows: list[list]) -> "GemmGlobals":
+        """Attach per-CU instruction rows produced by `generators`."""
+        stream = InstructionStream(rows) if not hasattr(rows, "words") else rows
+        self.instructions = stream.tensor(device=self.a.device)
+        self.num_instructions = stream.length
+        return self
 
 
-def verify_gemm(globals: GemmGlobals, *, rtol: float = 1e-4,
-                atol: float = 1e-4) -> float:
-    """Max absolute error against a dense product (the accuracy contract)."""
-    torch.cuda.synchronize() if globals.a.is_cuda else None
-    expected = globals.a @ globals.b
-    return float((globals.c - expected).abs().max())
+def launch_gemm(globals_: GemmGlobals) -> GemmGlobals:
+    """Launch the persistent GEMM once (device)."""
+    if globals_.instructions is None or globals_.num_instructions <= 0:
+        raise RuntimeError("GemmGlobals has no instruction stream: attach one first")
+    dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b, globals_.c)
+    return globals_
 
 
-def time_gemm(globals: GemmGlobals, iterations: int = 1) -> float:
+def emulate_gemm(globals_: GemmGlobals) -> torch.Tensor:
+    """Run the same schedule in Python -- no DCU, no build (see `python_vm`)."""
+    if globals_.instructions is None:
+        raise RuntimeError("GemmGlobals has no instruction stream: attach one first")
+    return python_vm.emulate_gemm(globals_.instructions, globals_.a, globals_.b)
+
+
+def verify(globals_: GemmGlobals, *, emulated: bool = False,
+           rtol: float = 1e-4, atol: float = 1e-4) -> float:
+    """Max absolute error against a dense ``a @ b``."""
+    expected = globals_.a @ globals_.b
+    if emulated:
+        got = emulate_gemm(globals_)
+    else:
+        got = globals_.c
+    return float((got.to(expected.dtype) - expected).abs().max())
+
+
+def time_gemm(globals_: GemmGlobals, iterations: int = 1) -> float:
     """Milliseconds per launch, warmed up once."""
-    run_gemm(globals)
-    if globals.a.is_cuda:
-        torch.cuda.synchronize()
+    launch_gemm(globals_)
+    torch.cuda.synchronize()
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     start.record()
     for _ in range(max(1, iterations)):
-        run_gemm(globals)
+        launch_gemm(globals_)
     end.record()
     end.synchronize()
     return start.elapsed_time(end) / max(1, iterations)
 
 
-__all__ = ["GemmGlobals", "run_gemm", "time_gemm", "verify_gemm"]
+__all__ = ["GemmGlobals", "emulate_gemm", "launch_gemm", "time_gemm", "verify"]

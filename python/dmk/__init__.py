@@ -1,50 +1,58 @@
-"""Host side of the persistent megakernel: config, shard, run.
+"""Host side of the persistent megakernel, laid out like `Megakernels/megakernels`.
 
-* :mod:`dmk.config` -- per-CU operator configuration (tile sizes for each kind),
-  and the split of the model's total work into per-CU shares.
-* :mod:`dmk.shard` -- turn a data flow plus those plans into one instruction
-  queue per CU.
-* :mod:`dmk.instructions` -- the instruction objects, one per operator, with
-  ``serialize()`` (32 words) and ``cost()`` for the scheduler;
+* :mod:`dmk.model_types` -- the value types a schedule is written in (work,
+  per-CU tile configuration), and the device/kind constants.
+* :mod:`dmk.utils` -- how many CUs, how work divides between them.
+* :mod:`dmk.instructions` -- one dataclass per operator: ``serialize()`` to the
+  32 words the runtime reads, ``cost()`` for the scheduler.
 * :mod:`dmk.scheduler` -- assign instructions to CUs: a dependency-aware heap
-  (`assign_dag_to_cus`) or round robin, the reference's two strategies;
-* :mod:`dmk.mk` -- the model kernel: globals plus the launch;
-* :mod:`dmk.main` -- the entry point: build the flow, shard it, launch it.
+  (``assign_dag_to_cus``) or round robin.
+* :mod:`dmk.generators` -- a model's instruction sequence: one instruction per
+  16x16 output tile for the GEMM.
+* :mod:`dmk.dispatch` -- hand a schedule to the runtime.
+* :mod:`dmk.mk` -- the model kernel: globals plus the launch.
+* :mod:`dmk.python_vm` -- a Python emulator of the instruction stream, so a
+  schedule can be checked without a DCU.
 
-The encoding of an individual instruction lives in :mod:`kernels.mk_stream`,
-which mirrors the opcodes in `csrc/ops/config.h`; this package decides *who does
-what*, not how an instruction is laid out.
+The numeric opcodes belong to the C++ side (`ops::config`) and are mirrored in
+:mod:`kernels.mk_stream`; this package decides who runs what, not how a word is
+laid out.
 """
 
-from . import instructions, scheduler
-from .config import CuPlan, TilePlan, Work, plan_cus
+from . import (dispatch, generators, instructions, mk, model_types, python_vm,
+               scheduler, utils)
 from .instructions import Attention, Embedding, Elementwise, Gemm, Instruction, NoOp
-from .mk import GemmGlobals, run_gemm, verify_gemm
-from .scheduler import DagNode, assign_dag_to_cus, linear_chain, round_robin_assign
-from .shard import DataFlow, OpCall, Queues, shard
+from .mk import GemmGlobals, launch_gemm
+from .model_types import CuPlan, CuTileConfig, Work
+from .python_vm import emulate_gemm
+from .scheduler import assign_dag_to_cus, linear_chain, round_robin_assign
+from .utils import get_cu_count, plan_cus, split_units
 
 __all__ = [
     "Attention",
     "CuPlan",
-    "DagNode",
-    "DataFlow",
+    "CuTileConfig",
     "Elementwise",
     "Embedding",
     "Gemm",
     "GemmGlobals",
     "Instruction",
     "NoOp",
-    "OpCall",
-    "Queues",
-    "TilePlan",
     "Work",
     "assign_dag_to_cus",
+    "dispatch",
+    "emulate_gemm",
+    "generators",
+    "get_cu_count",
     "instructions",
+    "launch_gemm",
     "linear_chain",
+    "mk",
+    "model_types",
     "plan_cus",
+    "python_vm",
     "round_robin_assign",
-    "run_gemm",
     "scheduler",
-    "shard",
-    "verify_gemm",
+    "split_units",
+    "utils",
 ]
