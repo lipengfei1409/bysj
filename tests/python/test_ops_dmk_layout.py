@@ -99,6 +99,26 @@ class StandaloneKernelNamespaceTests(unittest.TestCase):
         self.assertIn("namespace dumma = ops::dumma;", flat)
 
 
+class LdsStrideTests(unittest.TestCase):
+    """The dense kernel's LDS rows are padded, and why that is not a swizzle."""
+
+    def test_the_stage_strides_are_padded(self) -> None:
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        self.assertIn("constexpr int kStrideA = kKT + kPad", dense)
+        self.assertIn("constexpr int kStrideB = kNT + kPad", dense)
+        # the fragment loader is told the padded stride, which is the whole point
+        self.assertIn("static_cast<unsigned>(kStrideA)", dense)
+        self.assertIn("static_cast<unsigned>(kStrideB)", dense)
+
+    def test_the_padding_is_explained_as_a_loader_constraint(self) -> None:
+        # A swizzled stage would disagree with `ld_matrix`, which only takes a leading
+        # dimension -- that must be written down or the next reader will "fix" it.
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        self.assertIn("du_load_matrix_sync", dense)
+        self.assertIn("plain row-major", dense)
+        self.assertIn("ShmemSwizzleLayout", dense)
+
+
 class BuildIncludePathTests(unittest.TestCase):
     """A cwd-relative include dir breaks every header include from a subdirectory."""
 

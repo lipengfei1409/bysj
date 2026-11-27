@@ -156,11 +156,26 @@ GRBM_GUI_ACTIVE,TCP_TCC_READ_REQ,TCC_HIT -f csv -o /tmp/dense_pmc -- \
 
 | 观测 | 结论 | 改法 |
 | --- | --- | --- |
-| `SQ_LDS_BANK_CONFLICT` 与 `SQ_INSTS_LDS` 同量级 | **LDS 冲突**：A 的 stride=8、B 的 stride=64 都是 32 bank 的整数倍，fragment 读每次都撞同一批 bank | stage 行距加 padding（A 8→36、B 64→68，`ld` 跟着改） |
+| `SQ_LDS_BANK_CONFLICT` 与 `SQ_INSTS_LDS` 同量级 | **LDS 冲突**。曾经：A 行距 8 floats = 32 B（4 个 bank 偏移）、B 行距 64 floats = 256 B（正好一个 bank 周期，每行同 bank）。**已改为 padding**：A 12、B 68（均 16 B 对齐），每行 bank 偏移 12 / 4 | 见 `csrc/gemm.cpp` 的 `kStrideA/kStrideB`；**不能用 swizzle**，见下 |
 | `SQ_WAVES` 只有 4（一个 block）且 `GRBM_GUI_ACTIVE` 很低 | occupancy = 1，stage 与计算串行 | 砍 LDS（C 用 4 KiB 分块）到 ≤16 KiB，或加预取 |
 | `SQ_INSTS_MFMA × 4096 FLOP / duration ≪ 实测 TFLOP/s` | 矩阵单元在等数据 | 加大 k-step（8 → 32）减少屏障与分批次数 |
 | `TCP_TCC_READ_REQ` 高、`TCC_HIT` 低 | 每个输出 tile 都重读 A/B | 加大 block tile（64→128）或做 L2 分块 |
 | A 的装载只有 32 B/行（`kKT=8`）| 每行一段独立事务 | `kKT=32` → 128 B/行 |
+
+## 为什么这里用 padding 而不是 swizzle
+
+`du_load_matrix_sync(fragment&, const T* p, unsigned ldm)` 只接受**一个 leading
+dimension**：它按 `p + row * ldm` 取片，因此它消费的 LDS tile 必须是**行主序**的。
+
+`ops/tensor.h` 里确实有 `ShmemSwizzleLayout`（按行索引 XOR 32 个 bank word）——但把 stage 改成
+swizzled 之后，`ld_matrix` 读到的就是错位元素，**结果错但不报错**。要真接 swizzle，只有两条路：
+
+1. DTK 里存在带 swizzle 模式的取片变体（需查 `grep -i swizzle /opt/dtk/include/du_mma.h`）；
+2. 绕开厂家的取片，自己用 `ds_read_b128` 读 LDS 并手工拼 fragment——需要反推 fragment 的
+   lane→(row,col) 映射，在没有卡上验证手段时风险最高。
+
+padding 只改 stride，不动布局族，因此不可能"静默错位"，而且 16 B 对齐保持不变（A 48 B/行、
+B 272 B/行）。代价是 LDS 多几百字节，收益是 bank 偏移从"4 个 / 1 个"变成"12 / 4"。
 
 ## 一条经验
 

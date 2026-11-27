@@ -50,8 +50,26 @@ constexpr int kKT = 8;    // k step: m16n16k8 for float32
 constexpr int kWaves = 4; // 16 rows each
 constexpr int kThreads = kWaves * config::kWaveSize;
 constexpr int kGroups = kNT / 16;      // 16x16 column groups per wave
-constexpr int kStageA = kMT * kKT;     // 512 floats
-constexpr int kStageB = kKT * kNT;     // 512 floats
+
+// Row padding, and the reason it is padding rather than swizzling:
+// `du_load_matrix_sync(fragment&, const T* p, unsigned ldm)` carries no layout except
+// a leading dimension -- it reads `p + row * ldm`, so the tile it consumes must be
+// plain row-major.  `ops/tensor.h` has `ShmemSwizzleLayout` (the XOR-by-row one), but
+// wiring it in means either a DTK loader that takes a swizzle mode or hand-rolled
+// `ds_read` fragment packing; padding keeps the layout the loader understands and only
+// changes the stride, so it cannot be silently wrong.
+//
+// The numbers: a row of the A stage is kKT = 8 floats = 32 B, so rows start 8 banks
+// apart and only four distinct bank offsets exist -> rows alias.  A stride of 12
+// (48 B, still 16 B aligned) gives eight distinct offsets before repeating.  The B
+// stage row is kNT = 64 floats = 256 B, exactly a multiple of the 128 B bank cycle, so
+// *every* row starts at the same bank; a stride of 68 shifts by four banks per row and
+// spreads eight rows across the cycle.
+constexpr int kPad = 4;                // floats per row, keeps every stride 16 B aligned
+constexpr int kStrideA = kKT + kPad;   // 12
+constexpr int kStrideB = kNT + kPad;   // 68
+constexpr int kStageA = kMT * kStrideA;
+constexpr int kStageB = kKT * kStrideB;
 constexpr int kStageC = kMT * kNT;     // 4096 floats
 
 static_assert(kWaves * 16 == kMT, "each wave owns exactly 16 rows");
@@ -93,10 +111,11 @@ __device__ __forceinline__ void stage_a(float* dst, const DenseGemm& g, size_t m
         const int col = slot % kKT;
         const size_t absolute_row = m0 + static_cast<size_t>(row);
         const size_t absolute_col = k0 + static_cast<size_t>(col);
-        dst[slot] = (absolute_row < g.a.shape.dims[0] &&
-                     absolute_col < g.a.shape.dims[1])
-                        ? g.a.data[absolute_row * stride + absolute_col]
-                        : 0.0f;
+        dst[static_cast<size_t>(row) * kStrideA + col] =
+            (absolute_row < g.a.shape.dims[0] &&
+             absolute_col < g.a.shape.dims[1])
+                ? g.a.data[absolute_row * stride + absolute_col]
+                : 0.0f;
     }
 }
 
@@ -112,10 +131,11 @@ __device__ __forceinline__ void stage_b(float* dst, const DenseGemm& g, size_t n
         const int col = slot % kNT;
         const size_t absolute_row = k0 + static_cast<size_t>(row);
         const size_t absolute_col = n0 + static_cast<size_t>(col);
-        dst[slot] = (absolute_row < g.b.shape.dims[0] &&
-                     absolute_col < g.b.shape.dims[1])
-                        ? g.b.data[absolute_row * stride + absolute_col]
-                        : 0.0f;
+        dst[static_cast<size_t>(row) * kStrideB + col] =
+            (absolute_row < g.b.shape.dims[0] &&
+             absolute_col < g.b.shape.dims[1])
+                ? g.b.data[absolute_row * stride + absolute_col]
+                : 0.0f;
     }
 }
 
@@ -149,12 +169,12 @@ dense_gemm_kernel(const DenseGemm g) {
 
         // This wave owns rows [wave*16, wave*16+16); its A fragment is shared by the
         // four column groups, which is where the reuse comes from.
-        dumma::ld_matrix(a_fragment, stage_a_buffer + wave * 16 * kKT,
-                         static_cast<unsigned>(kKT));
+        dumma::ld_matrix(a_fragment, stage_a_buffer + wave * 16 * kStrideA,
+                         static_cast<unsigned>(kStrideA));
 #pragma unroll
         for (int group = 0; group < kGroups; ++group) {
             dumma::ld_matrix(b_fragment, stage_b_buffer + group * 16,
-                             static_cast<unsigned>(kNT));
+                             static_cast<unsigned>(kStrideB));
             dumma::mma(next[group], a_fragment, b_fragment, current[group]);
             Accumulator previous = current[group];
             current[group] = next[group];
