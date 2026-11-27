@@ -24,7 +24,7 @@ namespace ops {
 template <typename Globals>
 class GemmOp final : public BaseOp<Globals> {
 public:
-    static constexpr int opcode = 2;
+    static constexpr int opcode = config::kOpGemm;
     static constexpr int kTile = 16;
     static constexpr int kTileElements = kTile * kTile;
     static constexpr tile::TileShape<2> kTileShape{{kTile, kTile}};

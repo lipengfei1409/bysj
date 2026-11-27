@@ -29,6 +29,9 @@ from __future__ import annotations
 
 import struct
 
+#: Mirrors `ops::config::Opcode` in csrc/ops/config.h -- the C++ side owns the
+#: table, this is the host encoder's copy of it.  `tests/python/test_ops_dmk_layout.py`
+#: fails if the two drift.
 OPCODE_NOOP = 0
 OPCODE_ELEMENTWISE = 1
 OPCODE_GEMM = 2

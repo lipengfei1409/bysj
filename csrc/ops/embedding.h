@@ -8,7 +8,7 @@
 // run() is empty and the work is entirely load() -> store().
 //
 // Instruction words:
-//   [0] opcode (3)
+//   [0] opcode (config::kOpEmbedding)
 //   [1] src_row
 //   [2] dst_row
 //   [3] count (elements, <= kPageElements)
@@ -35,7 +35,7 @@ namespace ops {
 template <typename Globals>
 class EmbeddingOp final : public BaseOp<Globals> {
 public:
-    static constexpr int opcode = 3;
+    static constexpr int opcode = config::kOpEmbedding;
     static constexpr int kPageElements = config::kPageSize / sizeof(float);
 
     static constexpr size_t kVector = sizeof(float4) / sizeof(float);

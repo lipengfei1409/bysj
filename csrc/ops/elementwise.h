@@ -8,7 +8,7 @@
 // and only `count` elements are written back).
 //
 // Instruction words:
-//   [0] opcode (1)
+//   [0] opcode (config::kOpElementwise)
 //   [1] tile index (tile * kTileElements is the HBM offset)
 //   [2] scale, bit-cast from float
 //   [3] bias, bit-cast from float
@@ -37,7 +37,7 @@ namespace ops {
 template <typename Globals>
 class ElementwiseOp final : public BaseOp<Globals> {
 public:
-    static constexpr int opcode = 1;
+    static constexpr int opcode = config::kOpElementwise;
     static constexpr int kTileElements = config::kPageSize / sizeof(float);
 
     static constexpr size_t kVector = sizeof(float4) / sizeof(float);

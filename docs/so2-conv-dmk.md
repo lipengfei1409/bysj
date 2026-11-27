@@ -18,7 +18,7 @@
 
 | 目录 | 放什么 | 怎么跑 |
 | --- | --- | --- |
-| `csrc/ops/` | **通用算子**，全部按持久化调度编写：`noop`、`elementwise`、`embedding`、`gemm`、`attention`，加契约头（`op.h`、`state.h`、`config.h`、`lds.h`、`copy.h`、`tensor.h`、`tile.h`、`dtype.h`、`dumma.h`） | 进 op pack，由 `dmk/` 的 VM 驱动 |
+| `csrc/ops/` | **通用算子**，全部按持久化调度编写：`noop`、`elementwise`、`embedding`、`gemm`、`attention`，加契约头（`op.h`、`state.h`、`config.h`、`lds.h`、`copy.h`、`tensor.h`、`tile.h`、`dtype.h`）；**opcode 表只写在 `config.h`**（`config::kOp*`），每个算子读它而不是重复字面量 | 进 op pack，由 `dmk/` 的 VM 驱动 |
 | `csrc/*.cpp` | **模型特定优化**：`so2_conv.cpp`（本文件）、`gie.cpp`（zonal scatter / GIE）等 | 普通 kernel launch，不做成持久化调度 |
 | `csrc/dmk/` | 持久化调度本身：`megakernel`、`state`、`controller` | 驱动 `ops/` 里的算子 |
 

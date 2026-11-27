@@ -15,7 +15,7 @@ namespace ops {
 template <typename Globals>
 class NoOp final : public BaseOp<Globals> {
 public:
-    static constexpr int opcode = 0;
+    static constexpr int opcode = config::kOpNoop;
 
     __device__ explicit NoOp(const int* instruction)
         : BaseOp<Globals>(instruction) {}

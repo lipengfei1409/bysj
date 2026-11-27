@@ -131,6 +131,41 @@ class SpecificOptimisationTests(unittest.TestCase):
             self.assertNotIn(gone, gemm, gone)
         self.assertEqual(gemm.count("class "), 1)
 
+    def test_opcodes_are_declared_once_in_config(self) -> None:
+        # words[0] is a wire format shared by the runtime, the host encoder and
+        # the op pack, so it has exactly one definition site.
+        config = (OPS / "config.h").read_text()
+        for name, value in (("kOpNoop", 0), ("kOpElementwise", 1), ("kOpGemm", 2),
+                            ("kOpEmbedding", 3), ("kOpAttention", 5)):
+            self.assertIn(f"{name} = {value}", config, name)
+        self.assertIn("kOpcodeUnused = 4", config)
+        self.assertIn("kMaxOpcode = 5", config)
+        self.assertIn("constexpr bool opcode_known(int opcode)", config)
+
+        # Every operator reads its opcode instead of repeating a literal.
+        for header in _headers(OPS):
+            text = header.read_text()
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("static constexpr int opcode"):
+                    self.assertIn("config::kOp", stripped, header.name)
+                    self.assertNotRegex(stripped, r"=\s*\d", header.name)
+
+    def test_the_host_encoder_agrees_with_the_cpp_table(self) -> None:
+        # python/kernels/mk_stream.py builds the same instruction words; a drift
+        # there would dispatch the wrong operator at runtime.
+        config = (OPS / "config.h").read_text()
+        stream = (ROOT / "python" / "kernels" / "mk_stream.py").read_text()
+        for name, value, host in (
+            ("kOpNoop", 0, "OPCODE_NOOP"),
+            ("kOpElementwise", 1, "OPCODE_ELEMENTWISE"),
+            ("kOpGemm", 2, "OPCODE_GEMM"),
+            ("kOpEmbedding", 3, "OPCODE_EMBEDDING"),
+            ("kOpAttention", 5, "OPCODE_ATTENTION"),
+        ):
+            self.assertIn(f"{name} = {value}", config, name)
+            self.assertIn(f"{host} = {value}", stream, host)
+
     def test_no_operator_carries_a_mode_switch_any_more(self) -> None:
         for header in _headers(OPS):
             text = header.read_text()

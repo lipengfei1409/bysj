@@ -71,6 +71,32 @@ inline constexpr int kOpStorageBytes = 64;
 
 inline constexpr bool kTimingRecordEnabled = false;
 
+// Instruction opcodes: the wire format of words[0].
+//
+// The runtime dispatches an instruction by this value, so the numbers are not
+// free to renumber -- a checkpoint's instruction stream, the host encoder
+// (`python/kernels/mk_stream.py`) and the op pack all agree on them.  Add, never
+// renumber; `kOpcodeUnused` marks a slot kept free on purpose.
+enum Opcode : int {
+    kOpNoop = 0,        // padding: a zeroed instruction word is a no-op
+    kOpElementwise = 1, // y = scale * x + bias
+    kOpGemm = 2,        // C += A @ B for one output tile
+    kOpEmbedding = 3,   // one table row, gathered
+    kOpAttention = 5,   // one query tile over all keys
+};
+
+//: Slot 4 was reserved for the SO(2) conv when it was a persistent op; that op
+//: now lives in csrc/ as a plain kernel, so 4 is free again.
+inline constexpr int kOpcodeUnused = 4;
+
+//: Every opcode the runtime knows. Used by the host to reject a stale table.
+inline constexpr int kMaxOpcode = 5;
+
+__host__ __device__ constexpr bool opcode_known(int opcode) {
+    return opcode == kOpNoop || opcode == kOpElementwise || opcode == kOpGemm ||
+           opcode == kOpEmbedding || opcode == kOpAttention;
+}
+
 static_assert((1 << kStageBits) == kStages,
               "stage bits must address the instruction pipeline");
 static_assert(kNumPages <= 32,

@@ -17,7 +17,7 @@
 //   lid 5  scratch    S 16x16 (float) followed by P 16x16 (T)
 //
 // Instruction words:
-//   [0] opcode (5)
+//   [0] opcode (config::kOpAttention)
 //   [1] query tile index   (rows 16*q .. 16*q+15)
 //   [2] key tile index
 //   [3] number of keys N   (the last tile is masked past the end)
@@ -115,7 +115,7 @@ class AttentionOp final : public BaseOp<Globals> {
 public:
     using T = typename Globals::element;
 
-    static constexpr int opcode = 5;
+    static constexpr int opcode = config::kOpAttention;
 
     struct Instruction {
         int query_tile;
