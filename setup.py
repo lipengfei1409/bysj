@@ -78,7 +78,9 @@ ext_modules = [CUDAExtension(
     # translation unit, including the headers they include from each other.
     include_dirs=[str(CSRC)],
     define_macros=[],
-    extra_compile_args={"cxx": ["-O3", "-std=c++17"] + CSCALAR_ARGS},
+    # `-Wreturn-type` fires inside torch/pybind headers (830+ lines per build)
+    # and drowns the log; the two below are what this tree actually needs to see.
+    extra_compile_args={"cxx": ["-O3", "-std=c++17", "-Wno-return-type"] + CSCALAR_ARGS},
 )]
 #: Where the compiler's full output goes.  A hipcc build of this extension emits
 #: hundreds of warnings from torch/pybind headers, and printing them buries the
@@ -87,6 +89,24 @@ BUILD_LOG = pathlib.Path(__file__).resolve().parent / "build" / "build.log"
 
 #: Errors printed to the terminal before pointing at the log.
 MAX_ERRORS_SHOWN = 10
+
+
+def _fallback_lines(text: str, limit: int = 15) -> list[str]:
+    """The tail of a failed log, minus warnings and notes.
+
+    Used when no `error:` line exists -- ninja and the linker do not always use
+    that word, and a build that says "subcommand failed" with no error is the one
+    case where the last lines are the message.
+    """
+    keep = [
+        line.rstrip()
+        for line in text.splitlines()
+        if line.strip()
+        and "warning:" not in line
+        and "note:" not in line
+        and not line.startswith("In file included from")
+    ]
+    return keep[-limit:]
 
 
 def _error_lines(text: str) -> list[str]:
@@ -120,19 +140,24 @@ class QuietBuildExt(BuildExtension):
         except SystemExit:
             raise
         except BaseException as failure:  # noqa: BLE001 - report, then stop
-            text = str(failure)
+            # The compiler writes to the redirected file descriptors, so the
+            # errors are in the log and *not* in the exception text: scan the log.
             with open(BUILD_LOG, "a", encoding="utf-8") as log:
-                log.write(text)
+                log.write(str(failure))
+            text = BUILD_LOG.read_text(encoding="utf-8")
             errors = _error_lines(text)
-            print(f"\nbuild failed: {len(errors)} error line(s)", file=sys.stderr)
-            for line in errors[:MAX_ERRORS_SHOWN]:
-                print(f"  {line}", file=sys.stderr)
-            if len(errors) > MAX_ERRORS_SHOWN:
-                print(f"  ... and {len(errors) - MAX_ERRORS_SHOWN} more",
+            if errors:
+                print(f"\nbuild failed: {len(errors)} error line(s)", file=sys.stderr)
+                for line in errors[:MAX_ERRORS_SHOWN]:
+                    print(f"  {line}", file=sys.stderr)
+                if len(errors) > MAX_ERRORS_SHOWN:
+                    print(f"  ... and {len(errors) - MAX_ERRORS_SHOWN} more",
+                          file=sys.stderr)
+            else:
+                print("\nbuild failed: no 'error:' line -- last lines of the log",
                       file=sys.stderr)
-            if not errors:
-                print("  no 'error:' line found -- the log has the whole story",
-                      file=sys.stderr)
+                for line in _fallback_lines(text):
+                    print(f"  {line}", file=sys.stderr)
             print(f"\nfull output: {BUILD_LOG}", file=sys.stderr)
             raise SystemExit(1) from failure
         else:
