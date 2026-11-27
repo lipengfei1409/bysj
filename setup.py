@@ -3,6 +3,7 @@ import contextlib
 import os
 import pathlib
 import re
+import subprocess
 import sys
 
 from setuptools import find_packages, setup
@@ -52,12 +53,38 @@ if not BUILD_SCALAR:
 CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if BUILD_SCALAR else []
 
 
+def _arch_from_rocminfo(text: str) -> str:
+    """The first agent arch in `rocminfo` output, or "" when there is none."""
+    match = re.search(r"amdgcn-amd-amdhsa--(gfx[0-9a-f]+)", text)
+    if match is None:
+        match = re.search(r"\b(gfx[0-9a-f]+)\b", text)
+    return match.group(1) if match else ""
+
+
 def _device_arch() -> str:
-    """The arch of the visible card, or "" when there is none."""
+    """The arch of the card in this machine, or "" when it cannot be determined.
+
+    torch is asked first, but its `gcnArchName` has been observed to report an arch
+    this build was made for rather than the agent present -- which is how a gfx928
+    host came to be treated as gfx906.  `rocminfo` describes the actual agents, so
+    it is the fallback and the arbiter when the two disagree.
+    """
     try:
-        return torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
-    except Exception:  # noqa: BLE001 - no device visible
-        return ""
+        reported = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+        reported = reported.strip()
+    except Exception:  # noqa: BLE001 - no device visible through torch
+        reported = ""
+    try:
+        listed = _arch_from_rocminfo(
+            subprocess.run(["rocminfo"], capture_output=True, text=True,
+                           timeout=30, check=False).stdout
+        )
+    except Exception:  # noqa: BLE001 - rocminfo missing or slow
+        listed = ""
+    if reported and listed and reported != listed:
+        print(f"note: torch reports {reported}, rocminfo reports {listed}; "
+              f"using {listed}.")
+    return listed or reported
 
 
 _DEVICE = _device_arch()

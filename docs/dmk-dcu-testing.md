@@ -32,6 +32,15 @@ ARCH = os.environ.get("PYTORCH_ROCM_ARCH") or DEFAULT_ARCH
 MFMA/DUMMA）。所以那边的对比是"同样用标量单元，谁的调度更好"，不是"标量 vs 矩阵单元"——差距会落在
 2–4 倍的量级，而不是 10 倍以上。
 
+本机到底是哪张卡，以 `rocminfo` 为准：
+
+```bash
+rocminfo | grep -m1 amdgcn-amd-amdhsa         # → amdgcn-amd-amdhsa--gfx928:...
+```
+
+`torch.cuda.get_device_properties(0).gcnArchName` **不可靠**：在 gfx928 的机器上曾报成 `gfx906`，
+把 DUMMA 路径误排除了。`setup.py` 现在两者都问，冲突时以 `rocminfo` 为准并打印一句说明。
+
 **为什么只编一个架构**：`PYTORCH_ROCM_ARCH` 没设时，torch 会按套件默认编**全部**已知架构（早先那次
 就是 gfx906+gfx926+gfx928 三个一起编），每个架构都要完整跑一遍 device 编译；而且只要其中有一个不受支持
 的架构，整个构建就失败。`setup.py` 因此在未显式设置时取**本卡架构**这一个。想编多个（要在多张不同卡上

@@ -91,6 +91,28 @@ class BuildLogTests(unittest.TestCase):
                       source)
         self.assertNotIn('if not _ARCH_ENV:', source)
 
+    def test_the_agent_arch_is_read_from_rocminfo(self) -> None:
+        # torch's gcnArchName reported gfx906 on a gfx928 host once, which is how a
+        # DUMMA build got excluded by accident; rocminfo describes the agents.
+        source = (ROOT / "setup.py").read_text()
+        start = source.index("def _arch_from_rocminfo")
+        end = source.index("def _device_arch")
+        namespace = {"re": re}
+        exec(compile(source[start:end], "setup.py", "exec"), namespace)  # noqa: S102
+        parse = namespace["_arch_from_rocminfo"]
+        self.assertEqual(
+            parse("  Name:   gfx928\n"
+                  "      Name:   amdgcn-amd-amdhsa--gfx928:sramecc+:xnack-"),
+            "gfx928",
+        )
+        self.assertEqual(parse("  Name:   gfx928\n"), "gfx928")
+        self.assertEqual(parse("no gpu here"), "")
+
+    def test_torch_and_rocminfo_disagreeing_is_reported(self) -> None:
+        source = (ROOT / "setup.py").read_text()
+        self.assertIn("rocminfo reports", source)
+        self.assertIn("return listed or reported", source)
+
     def test_a_build_for_another_card_says_so(self) -> None:
         # Cross-compiling is allowed, but the binary will not run on this machine;
         # saying it here is cheaper than a HIP "no binary for GPU" later.
