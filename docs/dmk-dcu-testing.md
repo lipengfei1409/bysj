@@ -78,11 +78,16 @@ MAX_JOBS=8 python3 setup.py build_ext --inplace
 **换架构、改头文件、或"报的错和上次一模一样"时，先清干净**：
 
 ```bash
-python3 setup.py clean --all          # build/ + hipify 产物 + 就地扩展
+python3 tools/clean_build.py --dry-run   # 先看会删什么
+python3 tools/clean_build.py             # build/ + hipify 产物 + 就地扩展
 MAX_JOBS=8 python3 setup.py build_ext --inplace
 ```
 
-`clean` 现在会删三类残余，各有各的坑：
+> 清理是**独立脚本**而不是 `setup.py clean` 的子类：在 `setup.py` 里继承 distutils 的
+> `clean` 会在 import 阶段把 setuptools 自带的 distutils 拉进来，某台机器上直接让 `setup()`
+> 挂在 `MinimalDistribution has no attribute set_defaults`。构建工具进不去，比多一条命令更糟。
+
+它会删三类残余，各有各的坑：
 
 | 残余 | 为什么必须删 |
 | --- | --- |

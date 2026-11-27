@@ -113,14 +113,24 @@ class BuildLogTests(unittest.TestCase):
         self.assertIn("rocminfo reports", source)
         self.assertIn("return listed or reported", source)
 
-    def test_clean_removes_the_hipified_copies_too(self) -> None:
-        # These live beside the sources, not in build/, so `clean` has to know
-        # about them: a stale copy is compiled instead of the real headers.
-        source = (ROOT / "setup.py").read_text()
-        self.assertIn("class CleanBuild(_Clean)", source)
-        self.assertIn('"csrc/**/*_hip.cpp", "csrc/**/*_hip.h",', source)
-        self.assertIn('"clean": CleanBuild', source)
+    def test_clean_tool_knows_the_hipified_copies(self) -> None:
+        # A script rather than a `clean` command on purpose: importing setuptools'
+        # vendored distutils at setup.py import time broke `setup()` itself on one
+        # install ("MinimalDistribution has no attribute set_defaults").
+        tool = (ROOT / "tools" / "clean_build.py").read_text()
+        self.assertIn("csrc/**/*_hip.cpp", tool)
+        self.assertIn("csrc/**/*_hip.h", tool)
+        self.assertIn("python/kernels/_C*.so", tool)
+        self.assertIn("DIRECTORIES = (\"build\",)", tool)
+        self.assertNotIn("CleanBuild", (ROOT / "setup.py").read_text())
         self.assertIn("*_hip.cpp\n*_hip.h", (ROOT / ".gitignore").read_text())
+
+    def test_the_clean_tool_lists_before_removing(self) -> None:
+        # `--dry-run` is the whole reason this is safe to hand to someone on a host
+        # with a slow rebuild.
+        tool = (ROOT / "tools" / "clean_build.py").read_text()
+        self.assertIn("--dry-run", tool)
+        self.assertIn("would remove", tool)
 
     def test_the_effective_arch_is_printed(self) -> None:
         # One line at the top of every build, because "which arch did this compile
@@ -148,8 +158,7 @@ class BuildLogTests(unittest.TestCase):
         source = (ROOT / "setup.py").read_text()
         self.assertIn('BUILD_LOG = pathlib.Path(__file__).resolve().parent / "build" / "build.log"',
                       source)
-        self.assertIn('cmdclass = {"build_ext": QuietBuildExt, "clean": CleanBuild}',
-                      source)
+        self.assertIn('cmdclass = {"build_ext": QuietBuildExt}', source)
 
 
 if __name__ == "__main__":
