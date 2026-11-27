@@ -71,6 +71,25 @@ class TwoPhaseLookupTests(unittest.TestCase):
             self.assertNotIn("dmk::config::", text)
 
 
+class StandaloneKernelNamespaceTests(unittest.TestCase):
+    """A kernel outside `ops/` must import the names it borrows."""
+
+    def test_the_dense_kernel_aliases_config_and_dumma(self) -> None:
+        # csrc/gemm.cpp is deliberately not an operator, so it sits outside the
+        # namespace that declares config/dumma and has to alias them itself.  The
+        # first build failed on exactly this.
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        self.assertIn("namespace config = ops::config;", dense)
+        self.assertIn("namespace dumma = ops::dumma;", dense)
+        self.assertIn("::du::dumma::DUFragment", dense)
+
+    def test_the_flat_kernel_inherits_the_runtime_aliases(self) -> None:
+        # It lives in dmk::mk, where megakernel.h already aliases config/lds/tensor.
+        flat = (DMK / "gemm_flat.cpp").read_text()
+        self.assertIn("namespace dmk::mk {", flat)
+        self.assertNotIn("namespace config =", flat)
+
+
 class BuildIncludePathTests(unittest.TestCase):
     """A cwd-relative include dir breaks every header include from a subdirectory."""
 

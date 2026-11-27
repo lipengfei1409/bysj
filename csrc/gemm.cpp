@@ -37,6 +37,11 @@
 
 namespace {
 
+// `csrc/gemm.cpp` sits outside the operator headers' namespace (that is the point:
+// it is not an op), so the two names this file borrows are aliased here.
+namespace config = ops::config;
+namespace dumma = ops::dumma;
+
 constexpr int kMT = 64;   // block tile rows
 constexpr int kNT = 64;   // block tile cols
 constexpr int kKT = 8;    // k step: m16n16k8 for float32
