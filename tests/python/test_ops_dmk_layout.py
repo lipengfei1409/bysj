@@ -50,6 +50,27 @@ class NamespaceTests(unittest.TestCase):
         self.assertIn("using ops::kLaunchBytes;", (DMK / "megakernel.h").read_text())
 
 
+class TwoPhaseLookupTests(unittest.TestCase):
+    """Names used inside dmk templates must be visible at the definition site."""
+
+    def test_every_ops_name_used_in_the_runtime_is_imported(self) -> None:
+        # `make_op<Globals, Ops...>` is a template-id with explicit arguments: it
+        # resolves at the definition site and never through ADL, so a missing
+        # `using` is a hard error rather than a fallback.
+        for header in ("state.h", "controller.h"):
+            text = (DMK / header).read_text()
+            for name in ("make_op", "BaseOp", "InstructionState"):
+                if f"{name}<" in text:
+                    self.assertIn(f"using ops::{name};", text, f"{header}: {name}")
+
+    def test_the_runtime_does_not_use_unqualified_op_names(self) -> None:
+        # Everything in ops/ is reached through a `using` or a qualified name.
+        for header in ("state.h", "controller.h", "megakernel.h", "launch.h"):
+            text = (DMK / header).read_text()
+            self.assertNotIn("dmk::tensor::", text)
+            self.assertNotIn("dmk::config::", text)
+
+
 class BuildIncludePathTests(unittest.TestCase):
     """A cwd-relative include dir breaks every header include from a subdirectory."""
 

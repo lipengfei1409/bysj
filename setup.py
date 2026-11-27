@@ -32,6 +32,16 @@ CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if os.environ.get("DPA4_GEMM_SCALAR") == "
 # message, instead of as "undefined template DUFragment" deep in a device pass.
 _DUMMA_ARCHES = ("gfx926", "gfx928", "gfx936", "gfx938")
 _ARCH_ENV = os.environ.get("PYTORCH_ROCM_ARCH", "")
+if not _ARCH_ENV and not CSCALAR_ARGS:
+    # No explicit arch: ask the device.  torch otherwise compiles for every arch
+    # the toolkit knows, gfx906 included, and DTK's du_mma.h hard-errors on it.
+    try:
+        _detected = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+    except Exception:  # noqa: BLE001 - no device visible; leave it to the build
+        _detected = ""
+    if _detected:
+        os.environ["PYTORCH_ROCM_ARCH"] = _detected
+        _ARCH_ENV = _detected
 if not CSCALAR_ARGS and _ARCH_ENV:
     _targets = [a.strip() for a in _ARCH_ENV.replace(";", " ").split(",") if a.strip()]
     _bad = [a for a in _targets if a not in _DUMMA_ARCHES]

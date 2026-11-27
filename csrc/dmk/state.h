@@ -18,6 +18,12 @@ namespace dmk::mk {
 namespace config = ops::config;
 namespace lds = ops::lds;
 using ops::BaseOp;
+// Named before the templates below use it: `make_op<Globals, Ops...>` is a
+// template-id with explicit arguments, so two-phase lookup resolves it at the
+// definition site and never by ADL -- without this line clang reports "call to
+// function 'make_op' that is neither visible in the template definition nor found
+// by argument-dependent lookup".
+using ops::make_op;
 using ops::InstructionState;
 using ops::ring_advance;
 using ops::ring_retreat;
