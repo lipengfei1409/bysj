@@ -74,11 +74,24 @@ def _median(values: list[float]) -> float:
     return 0.5 * (ordered[middle - 1] + ordered[middle])
 
 
+def _launch(globals_, flat: bool):
+    """Launch once, forwarding `flat` only when it is meaningful.
+
+    The switched engine is the only one that needs the keyword; passing
+    `flat=False` to an older `dispatch` would fail for the *default* engine too --
+    which is exactly what happened when a DCU checkout held an older `python/dmk`.
+    """
+    if flat:
+        return dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b,
+                                    globals_.c, flat=True)
+    return dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b,
+                               globals_.c)
+
+
 def _time_persistent(globals_, *, iterations: int, repeats: int,
                      flat: bool = False) -> float:
-    launch = globals_.instructions
     for _ in range(_WARMUP):
-        dispatch.launch_gemm(launch, globals_.a, globals_.b, globals_.c, flat=flat)
+        _launch(globals_, flat)
     torch.cuda.synchronize()
     samples = []
     for _ in range(repeats):
@@ -86,8 +99,7 @@ def _time_persistent(globals_, *, iterations: int, repeats: int,
         end = torch.cuda.Event(enable_timing=True)
         start.record()
         for _ in range(iterations):
-            dispatch.launch_gemm(launch, globals_.a, globals_.b, globals_.c,
-                                 flat=flat)
+            _launch(globals_, flat)
         end.record()
         end.synchronize()
         samples.append(start.elapsed_time(end) / iterations)
@@ -177,8 +189,10 @@ class PersistentGemmLatenyTests(unittest.TestCase):
 
     def test_latency_against_rocblas(self) -> None:
         baseline, why = _rocblas_baseline()
-        flat_available = _supports_flat() and dispatch.flat_available()
-        dense_available = hasattr(dispatch, "launch_dense") and dispatch.dense_available()
+        flat_available = _supports_flat() and getattr(
+            dispatch, "flat_available", lambda: False)()
+        dense_available = hasattr(dispatch, "launch_dense") and getattr(
+            dispatch, "dense_available", lambda: False)()
         if flat_available:
             print("also measuring the role-free kernel (DPA4_GEMM_FLAT engine)")
         if baseline is None:

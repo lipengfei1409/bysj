@@ -24,13 +24,13 @@ from dmk import dispatch, emitters, mk
 from dmk.model_types import GEMM_TILE, GEMM_TILES_PER_INSTRUCTION
 
 try:  # both engines come with the default build
-    _AVAILABLE = dispatch.available(flat=False)
+    _AVAILABLE = dispatch.available()
     # The kernel comes from `csrc/`, the tests from `tests/`, so a checkout can hold
     # an older `python/dmk` than the tests expect: detect the switch instead of
     # passing it and failing with a TypeError.
     _FLAT_AVAILABLE = (
         "flat" in inspect.signature(dispatch.launch_gemm).parameters
-        and dispatch.flat_available()
+        and getattr(dispatch, "flat_available", lambda: False)()
     )
 except Exception:  # noqa: BLE001 - a host build simply has no extension
     _AVAILABLE = _FLAT_AVAILABLE = False
@@ -62,8 +62,12 @@ def _run(m: int, n: int, k: int, cus: int, seed: int = 0, *,
          flat: bool = False) -> mk.GemmGlobals:
     globals_ = mk.GemmGlobals.from_shapes(m, n, k, seed=seed)
     globals_.attach(emitters.GemmEmitter(m, n, k).queues(cus))
-    dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b, globals_.c,
-                         flat=flat)
+    if flat:
+        dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b,
+                             globals_.c, flat=True)
+    else:
+        dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b,
+                             globals_.c)
     torch.cuda.synchronize()
     return globals_
 

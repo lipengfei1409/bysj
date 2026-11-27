@@ -60,10 +60,11 @@ class GIEBuildConfigurationTests(unittest.TestCase):
             ["csrc/bindings_dmk.cpp", "csrc/dmk/megakernel.cpp",
              "csrc/dmk/gemm_flat.cpp", "csrc/gemm.cpp"],
         )
-        self.assertEqual(
-            extension_args["include_dirs"],
-            [str(root / "csrc")],
-        )
+        # `csrc` is always last; a patched DTK header directory may precede it when
+        # the installed `du_mma.h` needs `inline` inserted (see setup.py).
+        include_dirs = extension_args["include_dirs"]
+        self.assertEqual(include_dirs[-1], str(root / "csrc"))
+        self.assertLessEqual(len(include_dirs), 2)
 
 class GIEReferenceTests(unittest.TestCase):
     def test_reference_matches_segment_sum_and_has_gradients(self):

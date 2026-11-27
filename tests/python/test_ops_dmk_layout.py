@@ -19,7 +19,13 @@ DMK = ROOT / "csrc" / "dmk"
 
 
 def _headers(directory: Path) -> list[Path]:
-    return sorted(p for p in directory.glob("*.h"))
+    """Source headers of a directory, excluding torch's hipified copies.
+
+    hipify writes `<name>_hip.h` / `<name>_hip.cpp` next to the sources before
+    compiling them, so a built tree contains build output that looks like source.  It
+    is in `.gitignore`, and these checks are about the files we write.
+    """
+    return sorted(p for p in directory.glob("*.h") if not p.name.endswith("_hip.h"))
 
 
 class NamespaceTests(unittest.TestCase):
@@ -240,7 +246,9 @@ class LayoutTests(unittest.TestCase):
         # in two directories; every cross-folder include is spelled out.
         known = {p.name for p in _headers(OPS)} | {p.name for p in _headers(DMK)}
         for directory in (OPS, DMK):
-            for path in list(directory.glob("*.h")) + list(directory.glob("*.cpp")):
+            for path in [*_headers(directory),
+                         *(p for p in sorted(directory.glob("*.cpp"))
+                           if not p.name.endswith("_hip.cpp"))]:
                 for match in re.finditer(r'#include "([A-Za-z0-9_./-]+)"', path.read_text()):
                     target = match.group(1)
                     if "/" not in target:
