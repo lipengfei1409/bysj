@@ -12,7 +12,6 @@ The optional HIP extension in this checkout builds standalone RMSNorm, GIE (`zon
 - `docs/deepmd-fusions.md`: deepmd-kit 上游已有的算子融合清单（融合了什么、省多少访存、收益来源、调用点与开关）。
 - `tests/deepmd/profile/fx_graph.py`: 打印模型/子模块的 FX 图（`--target model|so2_conv`，CPU 或 DCU 追踪）。
 - `python/dmk/`（`model_types` / `utils` / `instructions` / `scheduler` / `emitters` / `dispatch` / `mk` / `python_vm`）: 持久化调度的主机侧，结构对齐 `Megakernels/megakernels/`；`scripts/run_gemm.py` 是入口，见 [docs/dmk-host.md](docs/dmk-host.md)。
-- `docs/so2-conv-hip.md`: 把上游 fused SO(2) 卷积移植到 HIP 的方案、目录、翻译映射与验证步骤；`DPA4Model(so2_conv="hip")` 或 profile CLI 的 `--so2-conv hip` 启用。
 - `docs/optimization-status.md`: 优化项状态表（每个优化项解决什么、方案、完成度、预期收益）。
 
 ## Python API

@@ -44,7 +44,7 @@ PYTHONPATH=python python3 -m unittest discover -s tests/csrc/accuracy -p 'test_s
 
 上游 kernel 的并行单元是 **32 lane**（CUDA warp），而 DCU 一个 wave 是 **64 lane**。hipified 移植
 为了对齐 32，保留了每 warp 26×33 floats 的私有 staging 和 32-lane 的位序约定
-（见 [`so2-conv-hip.md`](so2-conv-hip.md) §3）。这个版本把**lane 轴直接取成 channel 轴**：
+这个版本把**lane 轴直接取成 channel 轴**：
 
 ```cpp
 const int channel = lane;   // C = 64 -> 一个 wave 正好一个张量行
@@ -79,7 +79,7 @@ msg[e][d]   = alpha[e] · y[d]                          包络/注意力权重
 | 缺什么 | 归谁 | 为什么 |
 | --- | --- | --- |
 | **目标节点归约**（边消息 → 原子求和，无原子 CSR） | `kernels.segment_sum` | 这是逐边算子与归约算子的组合方式，不是这个 span 的一部分 |
-| **反向** | 尚未写 | 先测前向；反向正是 ridge 咬得最狠的地方（[`so2-conv-hip.md`](so2-conv-hip.md) §6.4） |
+| **反向** | 尚未写 | 先测前向；反向正是 ridge 咬得最狠的地方（hipify 版实测 0.80×，已移除） |
 | **Wigner run 打包** | 现有 `dpa4_wigner_runs` 产出稠密 `R` | 让这个 kernel 吃稠密矩阵，不在里面重推块对角代数 |
 
 ## 测试

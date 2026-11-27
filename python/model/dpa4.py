@@ -124,21 +124,16 @@ class DPA4Model:
         # Normalise the switch before loading anything, so a typo fails fast
         # instead of after a multi-GB checkpoint has been read.
         self.fused_seams = _normalize_fused(fused)
-        if so2_conv not in ("off", "hip"):
-            raise ValueError(f"so2_conv must be 'off' or 'hip', got {so2_conv!r}")
-        # Upstream selects the fused SO(2) convolution while the descriptor is
-        # constructed, so both gates (`DP_CUDA_INFER` and the profitability
-        # guard) have to be opened *before* the checkpoint is loaded.
-        self.so2_conv_ops: dict[str, Any] = {}
-        if so2_conv == "hip":
-            from .so2_conv_hip import enable
-
-            self.so2_conv_ops = dict(enable())
-            if not self.so2_conv_ops.get("enabled"):
-                raise RuntimeError(
-                    "so2_conv='hip' could not route the fused convolution: "
-                    + str(self.so2_conv_ops.get("reason", "unknown"))
-                )
+        # The translated (hipified) SO(2) convolution was removed: it measured
+        # 0.80x the dense path, so it is no longer built or routed.  The argument
+        # stays, and only "off" is accepted, so an old call site fails with a
+        # sentence instead of a TypeError on an unexpected keyword.
+        if so2_conv != "off":
+            raise ValueError(
+                f"so2_conv={so2_conv!r} is no longer supported: the translated "
+                "SO(2) convolution was removed from this project (measured 0.80x "
+                "the dense path)"
+            )
         self.so2_conv = so2_conv
         self._deep_pot = _create_deep_pot(self.model_file, **deepmd_kwargs)
         self.backend = _backend_name(self._deep_pot)
@@ -190,10 +185,6 @@ class DPA4Model:
             from .fused_deepmd import uninstall
 
             uninstall(self._deep_pot)
-        if self.so2_conv_ops:
-            from .so2_conv_hip import disable
-
-            disable()
         self.fused_ops = {}
         close = getattr(self._deep_pot, "close", None)
         if callable(close):
