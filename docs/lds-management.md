@@ -424,7 +424,7 @@ op 内部用 `s.pid(lid)`、`s.wait_page_ready`、`s.finish_page`、`s.semaphore
 - **`GemmOp`**（`csrc/dmk/gemm.h`，opcode 2）：一条指令算一个 16×16 输出 tile
   的**整个 K**；page 0/1/2 分别是 A k-tile、B k-tile、C tile。`load()` 装
   k=0 的 A/B 并把 C 清零，`run()` 在 wave 0 里循环每个 k、用同一个 A/B page
-  重新装载并累加，`store()` 写 C。指令字 `[1]=m0 [2]=n0 [3]=k_tiles`。文件里同时保留低层 `GemmWave` / `run_gemm_wave`，
+  重新装载并累加，`store()` 写 C。指令字 `[1]=m0 [2]=n0 [3]=k_tiles`。文件里同时保留低层 `GemmWave` / `GemmOp`，
   它是原来的 DUMMA microbench，不经过 page VM。
 - **`EmbeddingOp`**（`csrc/dmk/embedding.h`，opcode 3）：一条指令把 table 的
   一行 gather 到 output 的一行；page 0 做中转，`run()` 为空，后续可加
@@ -485,7 +485,7 @@ megakernel 之外还有一条独立路径，先把算子本身跑对，再考虑
 
 | 算子 | 入口 | 说明 |
 | --- | --- | --- |
-| GEMM `C = A*B` | `dmk::gemm::run_gemm_wave<T, K>` | 一条 wave 算一个 16×16 输出 tile，K 方向 3 个 stage 预取；A/B 装载和 C epilogue 都是 16 B 向量，tile 越界或非连续时退回带边界检查的标量循环 |
+| GEMM `C = A*B` | `dmk::gemm::GemmOp<T, K>` | 一条 wave 算一个 16×16 输出 tile，K 方向 3 个 stage 预取；A/B 装载和 C epilogue 都是 16 B 向量，tile 越界或非连续时退回带边界检查的标量循环 |
 | attention | `dmk::mk::AttentionOp<Globals>`（opcode 5） | 一条指令 = 一个 query tile 的全部 key，page 版 flash attention |
 
 dtype 与 MMA 尺寸按 DUMMA 手册表 3.1 用模板参数表达（累加器固定 float）：
@@ -581,7 +581,7 @@ instructions = stream.tensor()                    # (3, 2, 32) int32，短的 bl
 | `csrc/dmk/controller.h` | `prepare_instruction`、`main_loop`（op 通过 `BaseOp*` 直接调用） |
 | `csrc/dmk/noop.h` | `NoOp<Globals>` |
 | `csrc/ops/elementwise.h` | `ElementwiseOp<Globals>` |
-| `csrc/dmk/gemm.h` | 低层 `GemmWave`/`run_gemm_wave` + 页面版 `GemmOp` |
+| `csrc/dmk/gemm.h` | 低层 `GemmWave`/`GemmOp` + 页面版 `GemmOp` |
 | `csrc/dmk/embedding.h` | `EmbeddingOp<Globals>` |
 | `csrc/dmk/attention.h` | `AttentionGlobalsT<T>`、`AttentionOp<Globals>`（page 版 flash attention，opcode 5） |
 | `csrc/dmk/dtype.h` | float/`__half`/`__hip_bfloat16` 与 float 之间的转换 trait |
@@ -591,7 +591,7 @@ instructions = stream.tensor()                    # (3, 2, 32) int32，短的 bl
 | `python/kernels/mk_stream.py` | 主机侧指令流/图构建（op 编码 + `InstructionStream` + `attention_stream`） |
 | `tests/csrc/test_dmk_lds.cpp` | host 逻辑测试 |
 | `tests/csrc/test_dmk_lds_megakernel.cpp` | DCU 设备测试 |
-| `tests/csrc/test_dmk_gemm_standalone.cpp` | 独立 GEMM 算子测试（CPU 参考） |
+| `tests/csrc/（已随 DUMMA 版一起删除）` | 独立 GEMM 算子测试（CPU 参考） |
 | `tests/csrc/test_dmk_attention.cpp` | 独立 attention 算子测试（CPU 参考） |
 | `tests/csrc/test_dmk_tile.cpp` | tile 视图/拷贝测试（host + 可选设备往返） |
 | `tests/csrc/run_dmk_ops_test.py` | 独立算子测试的 hipcc 直编 + 运行 |

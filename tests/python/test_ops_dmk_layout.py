@@ -121,6 +121,16 @@ class SpecificOptimisationTests(unittest.TestCase):
             },
         )
 
+    def test_gemm_has_exactly_one_class(self) -> None:
+        # The DUMMA-fragment GEMM used to live beside GemmOp and was never called
+        # by it; two implementations of one operator is one too many.
+        gemm = (OPS / "gemm.h").read_text()
+        self.assertIn("class GemmOp final : public BaseOp<Globals>", gemm)
+        for gone in ("GemmWaveT", "GemmSharedT", "GemmParamsT", "run_gemm_wave",
+                     "mma_supported", "dumma"):
+            self.assertNotIn(gone, gemm, gone)
+        self.assertEqual(gemm.count("class "), 1)
+
     def test_no_operator_carries_a_mode_switch_any_more(self) -> None:
         for header in _headers(OPS):
             text = header.read_text()

@@ -9,10 +9,12 @@ round trip through LDS.
 
 The DUMMA tile K depends on the dtype and the device (DTK 26.04 DUMMA 使用手册,
 表 3.1), so gfx928/936/938 additionally build the float m16n16k8 and the
-half/bfloat16 m16n16k16 cases through DMK_MMA_F32K8 / DMK_MMA_F16.
+half/bfloat16 m16n16k16 cases through DMK_MMA_F32K8 / DMK_MMA_F16.  The GEMM
+entry is gone: `GemmOp` is the only GEMM now, and it is exercised through the
+megakernel test (`test_dmk_lds_megakernel.cpp`).
 
 Usage:
-    python tests/csrc/run_dmk_ops_test.py [--op all|attention|gemm|tile]
+    python tests/csrc/run_dmk_ops_test.py [--op all|attention|tile]
 
 Requires a DTK 26.04 HIP compiler and a Torch installation providing ATen
 headers (the DMK tensor views reuse them).
@@ -34,7 +36,6 @@ SUPPORTED_DUMMA_ARCHES = {"gfx926", "gfx928", "gfx936", "gfx938"}
 
 TESTS = {
     "attention": ("test_dmk_attention.cpp", "test_dmk_attention"),
-    "gemm": ("test_dmk_gemm_standalone.cpp", "test_dmk_gemm_standalone"),
     "tile": ("test_dmk_tile.cpp", "test_dmk_tile"),
 }
 
