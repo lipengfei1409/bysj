@@ -41,6 +41,20 @@ binding 在 `csrc/bindings.cpp` 里，等它们回来时把 `sources` 与 `bindi
 MAX_JOBS=8 python3 setup.py build_ext --inplace
 ```
 
+编译器的完整输出写到 **`build/build.log`**，终端只打印错误行和日志路径：
+
+```
+build failed: 3 error line(s)
+  /…/csrc/ops/gemm.h:190:21: error: implicit instantiation of undefined template …
+  /…/csrc/dmk/state.h:51:31: error: call to function 'make_op' that is neither …
+
+full output: /…/build/build.log
+```
+
+成功的构建只打印一行 `build ok -- compiler output: …/build/build.log`。
+一次构建会有 800+ 条警告（几乎全来自 torch / pybind 头），所以把错误挑出来是省时的关键——尤其
+每轮修复都要上卡的时候。
+
 要过的门：
 `ops/gemm.h` 的 fragment 声明、`dmk/launch.h` 的 LDS 预留、`ops/dumma.h` 的名字解析。
 报 `unsupported DUMMA (dtype, K) pair` 或 `has no DUMMA` 就回第 0 步。

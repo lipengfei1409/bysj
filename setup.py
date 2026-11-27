@@ -1,6 +1,9 @@
 """Build the DPA4 native HIP operators by default."""
+import contextlib
 import os
 import pathlib
+import re
+import sys
 
 from setuptools import find_packages, setup
 
@@ -77,7 +80,66 @@ ext_modules = [CUDAExtension(
     define_macros=[],
     extra_compile_args={"cxx": ["-O3", "-std=c++17"] + CSCALAR_ARGS},
 )]
-cmdclass = {"build_ext": BuildExtension}
+#: Where the compiler's full output goes.  A hipcc build of this extension emits
+#: hundreds of warnings from torch/pybind headers, and printing them buries the
+#: two or three lines that actually matter.
+BUILD_LOG = pathlib.Path(__file__).resolve().parent / "build" / "build.log"
+
+#: Errors printed to the terminal before pointing at the log.
+MAX_ERRORS_SHOWN = 10
+
+
+def _error_lines(text: str) -> list[str]:
+    """The lines that say something is wrong, without the note/warning noise."""
+    patterns = (re.compile(r"\berror:"), re.compile(r"fatal error:"),
+                re.compile(r"undefined reference"), re.compile(r"\bFAILED:"))
+    seen: list[str] = []
+    for line in text.splitlines():
+        if any(p.search(line) for p in patterns):
+            stripped = line.strip()
+            if stripped and stripped not in seen:
+                seen.append(stripped)
+    return seen
+
+
+class QuietBuildExt(BuildExtension):
+    """Build with the compiler's output in `build/build.log`.
+
+    On failure the log keeps everything, while the terminal gets only the error
+    lines and the path -- which is the difference between "scroll for the first
+    error" and "read it".
+    """
+
+    def build_extensions(self) -> None:
+        BUILD_LOG.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(BUILD_LOG, "w", encoding="utf-8") as log, \
+                    contextlib.redirect_stdout(log), \
+                    contextlib.redirect_stderr(log):
+                super().build_extensions()
+        except SystemExit:
+            raise
+        except BaseException as failure:  # noqa: BLE001 - report, then stop
+            text = str(failure)
+            with open(BUILD_LOG, "a", encoding="utf-8") as log:
+                log.write(text)
+            errors = _error_lines(text)
+            print(f"\nbuild failed: {len(errors)} error line(s)", file=sys.stderr)
+            for line in errors[:MAX_ERRORS_SHOWN]:
+                print(f"  {line}", file=sys.stderr)
+            if len(errors) > MAX_ERRORS_SHOWN:
+                print(f"  ... and {len(errors) - MAX_ERRORS_SHOWN} more",
+                      file=sys.stderr)
+            if not errors:
+                print("  no 'error:' line found -- the log has the whole story",
+                      file=sys.stderr)
+            print(f"\nfull output: {BUILD_LOG}", file=sys.stderr)
+            raise SystemExit(1) from failure
+        else:
+            print(f"build ok -- compiler output: {BUILD_LOG}")
+
+
+cmdclass = {"build_ext": QuietBuildExt}
 
 setup(name="dcu-dpa4", version="0.1.0", python_requires=">=3.9",
       package_dir={"": "python"}, packages=find_packages("python"),
