@@ -52,7 +52,9 @@ class RMSNormBuildConfigurationTests(unittest.TestCase):
             ["csrc/bindings_dmk.cpp", "csrc/dmk/megakernel.cpp"],
         )
         self.assertEqual(extension["define_macros"], [])
-        self.assertEqual(set(setup_kwargs["cmdclass"]), {"build_ext"})
+        # `clean` joins `build_ext` so that a change of arch or of a header cannot
+        # leave torch's hipified copies behind for the next build to compile.
+        self.assertEqual(set(setup_kwargs["cmdclass"]), {"build_ext", "clean"})
 
 class RMSNormReferenceTests(unittest.TestCase):
     def test_reference_matches_formula_and_gradients(self):

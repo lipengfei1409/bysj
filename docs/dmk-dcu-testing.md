@@ -75,6 +75,21 @@ binding 在 `csrc/bindings.cpp` 里，等它们回来时把 `sources` 与 `bindi
 MAX_JOBS=8 python3 setup.py build_ext --inplace
 ```
 
+**换架构、改头文件、或"报的错和上次一模一样"时，先清干净**：
+
+```bash
+python3 setup.py clean --all          # build/ + hipify 产物 + 就地扩展
+MAX_JOBS=8 python3 setup.py build_ext --inplace
+```
+
+`clean` 现在会删三类残余，各有各的坑：
+
+| 残余 | 为什么必须删 |
+| --- | --- |
+| `build/`（ninja 对象、临时目录） | 换架构后旧对象不会自动失效 |
+| `csrc/**/*_hip.cpp` / `*_hip.h` | **torch 的 hipify 把产物写在源码目录里**，陈旧的副本会被当成真实头文件编译 |
+| `python/kernels/_C*.so` | `--inplace` 会覆盖它，但 `clean` 原本不管 |
+
 编译器的完整输出写到 **`build/build.log`**，终端只打印错误行和日志路径：
 
 ```

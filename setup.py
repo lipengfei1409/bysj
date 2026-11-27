@@ -7,6 +7,10 @@ import subprocess
 import sys
 
 from setuptools import find_packages, setup
+try:  # setuptools >= 60 vendors distutils; older installs still expose it
+    from setuptools._distutils.command.clean import clean as _Clean
+except ImportError:  # pragma: no cover - Python 3.9 with system setuptools
+    from distutils.command.clean import clean as _Clean
 
 # Native kernels use HIP syntax in .cpp translation units. Follow the DTK
 # manual's hipcc test.cpp convention rather than dispatching by suffix.
@@ -223,7 +227,31 @@ class QuietBuildExt(BuildExtension):
             print(f"build ok -- compiler output: {BUILD_LOG}")
 
 
-cmdclass = {"build_ext": QuietBuildExt}
+class CleanBuild(_Clean):
+    """`clean` that also removes what setuptools does not know about.
+
+    Three kinds of residue outlive `build/` and each has wasted a build here:
+
+    * `*_hip.cpp` / `*_hip.h` -- torch's hipify step writes them *next to the
+      sources*, and a stale copy is compiled in place of the real headers;
+    * the in-place extension (`python/kernels/_C*.so`), which `build_ext
+      --inplace` overwrites but `clean` leaves behind;
+    * `build/`, which is the ordinary case and is handled by the base class.
+    """
+
+    def run(self) -> None:
+        super().run()
+        removed = 0
+        for pattern in ("csrc/**/*_hip.cpp", "csrc/**/*_hip.h",
+                        "python/kernels/_C*.so"):
+            for path in pathlib.Path(__file__).resolve().parent.glob(pattern):
+                path.unlink()
+                removed += 1
+        if removed:
+            print(f"clean: removed {removed} hipified/extension file(s)")
+
+
+cmdclass = {"build_ext": QuietBuildExt, "clean": CleanBuild}
 
 setup(name="dcu-dpa4", version="0.1.0", python_requires=">=3.9",
       package_dir={"": "python"}, packages=find_packages("python"),
