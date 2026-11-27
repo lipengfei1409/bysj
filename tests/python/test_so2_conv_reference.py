@@ -24,8 +24,9 @@ from reference.so2_conv import (
 ROOT = Path(__file__).resolve().parents[2]
 # The op lives with the rest of the op templates; its math is in
 # ops/so2_conv_math.h and the ordinary entry point in csrc/so2_conv.cpp.
-OP_HEADER = ROOT / "csrc" / "ops" / "so2_conv_op.h"
-MATH_HEADER = ROOT / "csrc" / "ops" / "so2_conv_math.h"
+MATH_HEADER = ROOT / "csrc" / "so2_conv_math.h"
+ORDINARY_KERNEL = ROOT / "csrc" / "so2_conv.cpp"
+MATH_HEADER = ROOT / "csrc" / "so2_conv_math.h"
 ORDINARY_KERNEL = ROOT / "csrc" / "so2_conv.cpp"
 
 
@@ -120,26 +121,19 @@ class PropertyTests(unittest.TestCase):
 
 
 class HeaderContractTests(unittest.TestCase):
-    def test_the_page_budget_matches_the_reference_formula(self) -> None:
-        # 2*red*dim + 2*layers*red*red + 1 floats per wave, pinned in the header.
-        text = OP_HEADER.read_text()
-        self.assertIn("2 * red * dim + 2 * layers * red * red + 1", text)
-        self.assertIn("so2_conv_table_bytes(16, 10, 4) <= config::kPageSize", text)
-        floats = 2 * 10 * 16 + 2 * 4 * 10 * 10 + 1
-        self.assertEqual(floats, 1121)
+    def test_the_stages_are_the_five_the_oracle_implements(self) -> None:
+        # The kernel's math header must name the same stages, in the same order,
+        # as the reference: rotate, gate, rotate back.
+        math = MATH_HEADER.read_text()
+        for stage in ("rotate_to_local", "gated_layer", "rotate_back", "edge_span"):
+            self.assertIn(stage, math)
 
-    def test_the_documented_stage_order_matches_this_oracle(self) -> None:
-        # The header's formula block and the reference's docstring must describe
-        # the same five stages in the same order.
-        text = OP_HEADER.read_text()
-        stage_comments = [
-            "rotate to the local frame",
-            "block-diagonal content",
-            "block-diagonal gate",
-            "gated mixing + residual",
-            "rotate back",
-        ]
-        positions = [text.find(s) for s in stage_comments]
+    def test_the_math_header_defines_the_stages_in_order(self) -> None:
+        # The reference calls rotate -> gate (per layer) -> rotate back, so the
+        # header's definitions must appear in that order.
+        text = MATH_HEADER.read_text()
+        stages = ["void rotate_to_local(", "void gated_layer(", "void rotate_back("]
+        positions = [text.find(stage) for stage in stages]
         self.assertNotIn(-1, positions, positions)
         self.assertEqual(positions, sorted(positions))
 

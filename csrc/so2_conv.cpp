@@ -1,40 +1,100 @@
-// Ordinary (non-persistent) entry point for the SO(2) convolution.
+// The SO(2) convolution's per-edge span, as a standalone kernel.
 //
-// The same per-edge span also exists as a megakernel operator
-// (ops/so2_conv_op.h, run under the persistent VM in dmk/). This file is the
-// second way to reach it: one launch, no pages, no semaphores, the shape of
-// every other kernel in csrc/. Both call ops/so2_conv_math.h, so the two paths
-// cannot drift, and tests/csrc/accuracy/test_so2_conv_accuracy.py drives
-// this entry point against reference/so2_conv.py.
+// This file is the *problem-specific* half of the tree: `csrc/ops/` holds the
+// generic operators that run under the persistent megakernel, while a
+// convolution this specialised is written here and launched directly.  Same for
+// `csrc/gie.cpp` (zonal scatter / GIE) and the other model-specific kernels.
 //
-//   msg[e, d, c] = alpha[e] * sum_r R^T[e][d][r] * xl[r]
-//   xl           = stack of layers: xl += silu(K_l xl) * sigmoid(G_l xl),
-//                  entered from xl = R[e] @ x[src[e]][:, c]
+//   msg[e, d, c] = alpha[e] * (R^T[e] @ stack(R[e] @ x[src[e]][:, c]))
+//   stack        = layers of  xl += silu(K_l xl) * sigmoid(G_l xl)
 //
-// The kernel's thread mapping (one wave per edge, lane = channel) lives in the
-// op header next to the persistent form, so the two modes cannot disagree about
-// it.  This file selects ordinary mode and supplies the torch side.
+// Thread mapping: one wave64 per edge, lane of the wave = channel, so every HBM
+// access is a full coalesced row (256 B at C = 64) and the whole span stays in
+// registers.  A block carries kEdgeWaves edges in flight and strides by that, so
+// any edge count is covered.
 //
-// The destination reduction is not here either: `msg` is per edge, and summing
-// it onto atoms is SegmentSumOp's job (see docs/so2-conv-dmk.md).
+// The arithmetic is in so2_conv_math.h, next to this file, because the
+// reference (python/reference/so2_conv.py) and the accuracy test are written
+// against exactly these stages.  The destination reduction is not here: `msg` is
+// per edge, and summing it onto atoms is kernels.segment_sum's job.
 
 #include "ops.h"
 #include "checks.h"
+#include "so2_conv_math.h"
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <hip/hip_runtime.h>
-#include <cstdint>
+#include <cstddef>
 
-// The operator is in ops/so2_conv_op.h, built here in ordinary mode: the same
-// header that provides the persistent megakernel form provides this kernel, and
-// both call ops/so2_conv_math.h.  What is left below is the torch-facing part --
-// validation, allocation, the launch and the stream.
-#define OPS_MODE OPS_MODE_ORDINARY
-#include "ops/so2_conv_op.h"
+namespace {
+
+//: Host-side pointers the kernel reads, in the layout the conv consumes.
+struct So2ConvPack {
+    const float* x;      // (n_node, dim, channels) node features
+    const long* src;     // (n_edge,) source node of each edge
+    const float* rot;    // (n_edge, red, dim) local-frame rotation R
+    const float* rot_t;  // (n_edge, dim, red) its transpose R^T
+    const float* kc;     // (n_edge, layers, 2, red, red) content then gate
+    const float* alpha;  // (n_edge,) envelope / attention weight
+    float* msg;          // (n_edge, dim, channels) per-edge message
+};
+
+//: Edges in flight per block: one wave each.
+constexpr int kEdgeWaves = 4;
+
+//: One wave64 per edge.
+constexpr int kBlockThreads = kEdgeWaves * 64;
+
+//: Grid for an edge count, clamped so a huge edge array still launches.
+__host__ inline unsigned blocks_for(long edges) {
+    const long needed = (edges + kEdgeWaves - 1) / kEdgeWaves;
+    const long limit = 65535;
+    return static_cast<unsigned>(needed < limit ? needed : limit);
+}
+
+__global__ void so2_conv_kernel(const So2ConvPack pack, long edges, int dim,
+                                int red, int layers, int channels) {
+    const int wave = static_cast<int>(threadIdx.x) / 64;
+    const int lane = static_cast<int>(threadIdx.x) % 64;
+    const int channel = lane;
+    const bool active = channel < channels;
+    const long stride = static_cast<long>(gridDim.x) * kEdgeWaves;
+
+    for (long edge = static_cast<long>(blockIdx.x) * kEdgeWaves + wave;
+         edge < edges; edge += stride) {
+        float y[ops::so2::kMaxDim];
+        float xl[ops::so2::kMaxRed];
+        float envelope = 0.0f;
+        if (active) {
+            const float* xrow =
+                pack.x + static_cast<size_t>(pack.src[edge]) * dim * channels;
+            float xv[ops::so2::kMaxDim];
+            for (int d = 0; d < dim; ++d)
+                xv[d] = xrow[static_cast<size_t>(d) * channels + channel];
+            const long rot_n = static_cast<long>(red) * dim;
+            const long block = static_cast<long>(red) * red;
+            envelope = pack.alpha[edge];
+            ops::so2::edge_span(
+                xv, pack.rot + static_cast<size_t>(edge) * rot_n,
+                pack.rot_t + static_cast<size_t>(edge) * rot_n,
+                pack.kc + static_cast<size_t>(edge) * layers * 2 * block, dim,
+                red, layers, y, xl);
+        }
+        // Idle lanes (channels < 64) write nothing, so a narrow focus cannot
+        // touch the next edge's message.
+        if (active) {
+            float* out = pack.msg + static_cast<size_t>(edge) * dim * channels;
+            for (int d = 0; d < dim; ++d)
+                out[static_cast<size_t>(d) * channels + channel] = envelope * y[d];
+        }
+    }
+}
+
+}  // namespace
 
 Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
-                        Tensor kc, Tensor alpha) {
+                    Tensor kc, Tensor alpha) {
   f32(x);
   f32(rot);
   f32(rot_t);
@@ -55,8 +115,8 @@ Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
 
   TORCH_CHECK(rot_t.size(1) == dim && rot_t.size(2) == red,
               "rot_t must be the transpose of rot");
-  TORCH_CHECK(rot.size(0) == edges && rot_t.size(0) == edges && kc.size(0) == edges &&
-                  alpha.size(0) == edges,
+  TORCH_CHECK(rot.size(0) == edges && rot_t.size(0) == edges &&
+                  kc.size(0) == edges && alpha.size(0) == edges,
               "every per-edge tensor must have one row per edge");
   TORCH_CHECK(kc.size(2) == 2 && kc.size(3) == red && kc.size(4) == red,
               "kc must hold a content and a gate kernel of (red, red)");
@@ -70,13 +130,12 @@ Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
   auto msg = torch::zeros({edges, dim, channels}, x.options());
   if (edges == 0) return msg;
 
-  const ops::so2_conv::So2ConvTensorPack pack{
-      x.data_ptr<float>(), src.data_ptr<long>(),
-      rot.data_ptr<float>(), rot_t.data_ptr<float>(), kc.data_ptr<float>(),
-      alpha.data_ptr<float>(), msg.data_ptr<float>()};
-  so2_conv_span_kernel<<<ops::so2_conv::so2_conv_span_blocks(edges),
-                         ops::so2_conv::kBlockThreads, 0,
-                         at::cuda::getCurrentCUDAStream()>>>(
+  const So2ConvPack pack{x.data_ptr<float>(), src.data_ptr<long>(),
+                         rot.data_ptr<float>(), rot_t.data_ptr<float>(),
+                         kc.data_ptr<float>(), alpha.data_ptr<float>(),
+                         msg.data_ptr<float>()};
+  so2_conv_kernel<<<blocks_for(edges), kBlockThreads, 0,
+                    at::cuda::getCurrentCUDAStream()>>>(
       pack, edges, dim, red, layers, channels);
   launch_check();
   return msg;

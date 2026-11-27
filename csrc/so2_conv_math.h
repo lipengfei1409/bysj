@@ -42,7 +42,7 @@ __device__ __forceinline__ float gated_term(float content, float gate) {
     return content * sigmoid_content * sigmoid_gate;
 }
 
-//: xl = R @ x, one lane per channel.
+//: Rotate to local: xl = R @ x, one lane per channel.
 __device__ __forceinline__ void rotate_to_local(const float* rot, const float* x,
                                                 float* xl, int dim, int red) {
     for (int r = 0; r < red; ++r) {

@@ -26,7 +26,7 @@ class LayoutTests(unittest.TestCase):
     def test_ops_holds_the_templates_and_the_factory(self) -> None:
         names = {p.name for p in _headers(OPS)}
         for expected in ("op.h", "config.h", "elementwise.h", "gemm.h", "tile.h",
-                         "lds.h", "so2_conv_op.h", "so2_conv_math.h"):
+                         "lds.h", "state.h"):
             self.assertIn(expected, names)
 
     def test_dmk_holds_only_the_persistent_runtime(self) -> None:
@@ -100,87 +100,45 @@ class LayoutTests(unittest.TestCase):
 ORDINARY = ROOT / "csrc" / "so2_conv.cpp"
 
 
-class ModeSwitchTests(unittest.TestCase):
-    def test_the_switch_is_a_single_compile_time_define(self) -> None:
-        mode = (OPS / "mode.h").read_text()
-        self.assertIn("#define OPS_MODE_PERSISTENT 0", mode)
-        self.assertIn("#define OPS_MODE_ORDINARY 1", mode)
-        self.assertIn("#ifndef OPS_MODE", mode)
-        self.assertIn("#define OPS_MODE OPS_MODE_PERSISTENT", mode)  # default
-        self.assertIn('"OPS_MODE must be OPS_MODE_PERSISTENT (0) or OPS_MODE_ORDINARY (1)"', mode)
-        # The two forms must never be compiled into one translation unit.
-        self.assertIn("constexpr bool kPersistentMode", mode)
+class SpecificOptimisationTests(unittest.TestCase):
+    """`csrc/ops/` is for generic persistent ops; specific work is in `csrc/`."""
 
-    def test_the_converted_operator_has_both_forms_in_one_header(self) -> None:
-        op = (OPS / "so2_conv_op.h").read_text()
-        self.assertIn("#if OPS_MODE == OPS_MODE_PERSISTENT", op)
-        self.assertIn("#if OPS_MODE == OPS_MODE_ORDINARY", op)
-        self.assertIn("class Op final : public BaseOp<Globals>", op)
-        self.assertIn("__global__ void so2_conv_span_kernel", op)
-        # Both forms on one class.
-        self.assertIn("struct So2Conv {", op)
-        self.assertIn("static void launch(", op)
+    def test_the_specific_optimisations_live_in_csrc(self) -> None:
+        self.assertTrue((ROOT / "csrc" / "so2_conv.cpp").is_file())
+        self.assertTrue((ROOT / "csrc" / "so2_conv_math.h").is_file())
+        self.assertTrue((ROOT / "csrc" / "gie.cpp").is_file())  # GIE / zonal scatter
+        for gone in ("so2_conv_op.h", "so2_conv_math.h", "mode.h"):
+            self.assertFalse((OPS / gone).exists(), gone)
 
-    def test_the_ordinary_mode_does_not_see_the_runtime_contract(self) -> None:
-        # Ordinary mode must compile without ops/state.h or ops/op.h: no pages,
-        # no hooks, no State.
-        op = (OPS / "so2_conv_op.h").read_text()
-        head = op[: op.index("namespace ops::so2_conv")]
-        self.assertIn("#if OPS_MODE == OPS_MODE_PERSISTENT", head)
-        self.assertIn('#include "ops/state.h"', head)
-        ordinary = head[head.index("#else") :]
-        self.assertIn("#include <hip/hip_runtime.h>", ordinary)
-        self.assertNotIn("ops/state.h", ordinary)
+    def test_ops_holds_only_the_generic_operators(self) -> None:
+        ops = {p.name for p in _headers(OPS)}
+        self.assertEqual(
+            ops,
+            {
+                "op.h", "state.h", "config.h", "lds.h", "copy.h", "tensor.h",
+                "tile.h", "dtype.h", "dumma.h", "utils.h",
+                "noop.h", "elementwise.h", "embedding.h", "gemm.h", "attention.h",
+            },
+        )
 
-    def test_the_ordinary_translation_unit_only_selects_a_mode(self) -> None:
+    def test_no_operator_carries_a_mode_switch_any_more(self) -> None:
+        for header in _headers(OPS):
+            text = header.read_text()
+            self.assertNotIn("OPS_MODE", text, header.name)
+
+    def test_the_conv_kernel_is_a_plain_launch(self) -> None:
         kernel = (ROOT / "csrc" / "so2_conv.cpp").read_text()
-        self.assertIn("#define OPS_MODE OPS_MODE_ORDINARY", kernel)
-        self.assertIn('#include "ops/so2_conv_op.h"', kernel)
-        # The kernel body moved into the header, so the launcher has no __global__.
-        self.assertNotIn("__global__", kernel)
+        self.assertIn("__global__ void so2_conv_kernel", kernel)
+        self.assertIn("<<<blocks_for(edges), kBlockThreads", kernel)
+        self.assertIn('#include "so2_conv_math.h"', kernel)
+        # No pages, no semaphores, no BaseOp: it is not a persistent op.
+        for forbidden in ("State&", "semaphores()", "BaseOp"):
+            self.assertNotIn(forbidden, kernel)
 
-
-class TwoEntryPointTests(unittest.TestCase):
-    def test_both_modes_share_one_math_header(self) -> None:
-        # Both forms live in one header now, so the invariant is checked once:
-        # the header pulls in the shared arithmetic and the torch glue only
-        # selects a mode.
-        op = (OPS / "so2_conv_op.h").read_text()
-        self.assertIn('#include "ops/so2_conv_math.h"', op)
-        self.assertIn("#define OPS_MODE OPS_MODE_ORDINARY", ORDINARY.read_text())
-
-    def test_neither_entry_reimplements_the_span(self) -> None:
-        # The gate expression exists exactly once, in the shared header.
-        math = (OPS / "so2_conv_math.h").read_text()
+    def test_the_conv_arithmetic_exists_once(self) -> None:
+        kernel = (ROOT / "csrc" / "so2_conv.cpp").read_text()
+        math = (ROOT / "csrc" / "so2_conv_math.h").read_text()
         self.assertIn("sigmoid_content", math)
-        for text, name in (
-            ((OPS / "so2_conv_op.h").read_text(), "so2_conv_op.h"),
-            (ORDINARY.read_text(), "so2_conv.cpp"),
-        ):
-            self.assertNotIn("__expf", text, name)
-
-    def test_only_the_ordinary_entry_point_is_wired(self) -> None:
-        # Decision for now: reachable through the normal operator path, and the
-        # persistent op stays source-only until the runtime is wired.
-        self.assertTrue(ORDINARY.is_file())
-        top = (ROOT / "setup.py").read_text()
-        self.assertIn('"csrc/so2_conv.cpp"', top)
-        self.assertIn('include_dirs=["csrc"]', top)
-
-        self.assertIn("so2_conv_hip", (ROOT / "csrc" / "ops.h").read_text())
-        self.assertIn('m.def("so2_conv"', (ROOT / "csrc" / "bindings.cpp").read_text())
-        self.assertIn("so2_conv", (ROOT / "python" / "kernels" / "__init__.py").read_text())
-        self.assertTrue((ROOT / "python" / "kernels" / "so2_conv.py").is_file())
-
-    def test_the_persistent_op_is_not_built(self) -> None:
-        # So2ConvOp has no launch path yet, so nothing should compile it and no
-        # dmk-side build should exist.
-        for path in (ROOT / "setup.py", ROOT / "csrc" / "ops.h",
-                     ROOT / "csrc" / "bindings.cpp"):
-            self.assertNotIn("So2ConvOp", path.read_text(), path.name)
-        self.assertFalse((DMK / "setup.py").exists())
-        self.assertFalse((ROOT / "python" / "kernels" / "dmk").exists())
+        self.assertNotIn("__expf", kernel)  # the gate expression lives in the math
 
 
-if __name__ == "__main__":
-    unittest.main()

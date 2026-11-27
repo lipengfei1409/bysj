@@ -75,10 +75,10 @@ Tensor blockdiag_gemm_hip(Tensor x, Tensor weights, Tensor offsets);
 
 Tensor blockdiag_gemm_backward_hip(Tensor grad_out, Tensor weights, Tensor offsets);
 
-// --- C8: the SO(2) convolution, ordinary entry point ------------------------
+// --- C8: the SO(2) convolution ---------------------------------------------
 //
-// `csrc/so2_conv.cpp`. The persistent op that mirrors it
-// (`ops/so2_conv_op.h`) is source-only for now, so this is the only way to
-// reach ops/so2_conv_math.h from Python.
+// `csrc/so2_conv.cpp`: a model-specific optimisation, so it is a standalone
+// kernel here rather than a persistent op under ops/ (which holds only the
+// generic operators).
 Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
                         Tensor kc, Tensor alpha);
