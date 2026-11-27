@@ -108,7 +108,7 @@ PYTHONPATH=python rocprofv3 --kernel-trace -f csv -o /tmp/gemm_k -- \
   env SHAPE=2048 CUS=32 python /tmp/bench.py
 
 # 6.2 决定"下一步改哪"的计数器
-ropcvf3 --list-pmc | head -30        # 先看本 DTK 的计数器名
+rocprofv3 --list-pmc | head -30        # 先看本 DTK 的计数器名
 PYTHONPATH=python rocprofv3 --pmc \
   GRBM_GUI_ACTIVE,SQ_INSTS_VALU,SQ_INSTS_LDS,SQ_LDS_BANK_CONFLICT,SQ_WAVES \
   -f csv -o /tmp/gemm_pmc -- env SHAPE=2048 CUS=32 python /tmp/bench.py
