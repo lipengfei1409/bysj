@@ -8,7 +8,7 @@ python/dmk/
   utils.py         CU 数量、工作量切分（split_units / plan_cus / instruction_counts）
   instructions.py  指令对象：serialize() → 32 字，cost() → 调度代价
   scheduler.py     DAG + 分配策略：assign_dag_to_cus（堆）/ round_robin_assign
-  generators.py    模型 → 指令序列：gemm_instructions / gemm_queues
+  emitters.py    模型 → 指令序列：gemm_instructions / gemm_queues
   dispatch.py      交给运行时：kernels._C.dmk_gemm
   mk.py            Globals + launch（emulate / launch / verify / time）
   python_vm.py     指令流的 Python 模拟器（无 DCU 也能验调度）
@@ -38,13 +38,13 @@ python -m dmk.scripts.run_gemm 256 256 256 --cus 4
 #   persistent GEMM: max |C - A@B| = ..., ... ms/iter
 ```
 
-## 新增算子：写一个 Generator 子类
+## 新增算子：写一个 Emitter 子类
 
-`generators.py` 里每个算子是一个 `OperatorGenerator` 子类，分片（shard）逻辑在基类里，子类只写
+`emitters.py` 里每个算子是一个 `OperatorEmitter` 子类，分片（shard）逻辑在基类里，子类只写
 "怎么把一段范围变成指令"：
 
 ```python
-class OperatorGenerator:
+class OperatorEmitter:
     kind: str                                  # gemm / embedding / attention / elementwise
     def units(self) -> int                     # 原生单位（元素 / tile / 行 / query 行）
     def slots(self) -> int                     # 可寻址槽位，默认等于 units
@@ -62,7 +62,7 @@ class OperatorGenerator:
 一个最小实现（Embedding）：
 
 ```python
-class EmbeddingGenerator(OperatorGenerator):
+class EmbeddingEmitter(OperatorEmitter):
     kind = EMBEDDING
     def __init__(self, rows, *, elem_per_row):
         super().__init__(rows); self.elem_per_row = elem_per_row
@@ -73,7 +73,7 @@ class EmbeddingGenerator(OperatorGenerator):
         return Embedding(src_row=start, dst_row=start, count=self.elem_per_row)
 ```
 
-模型 = 一组 Generator：`ModelGenerator([...]).rows(cus)` 按模型顺序把每个算子的每 CU 行拼起来
+模型 = 一组 Emitter：`ModelSchedule([...]).rows(cus)` 按模型顺序把每个算子的每 CU 行拼起来
 （一个 CU 从前往后走自己那一行，所以顺序必须是"算子 1 的份额 → 算子 2 的份额"）。
 
 **加一个算子要动的四处**：
@@ -83,7 +83,7 @@ class EmbeddingGenerator(OperatorGenerator):
 | `csrc/ops/<op>.h` | `BaseOp` 子类（页、信号量、指令字） | 编译 |
 | `csrc/ops/config.h` | `kOp<X>` 加进 `enum Opcode`（不改已用值） | `test_opcodes_are_declared_once_in_config` |
 | `csrc/dmk/*_launch.cpp` | op pack 加类型、Globals 加张量 | 编译（字段名要对得上） |
-| `python/dmk/generators.py` | 一个 `OperatorGenerator` 子类 + 注册进 `GENERATORS` | `test_each_kind_has_a_generator_and_a_registry_entry` |
+| `python/dmk/emitters.py` | 一个 `OperatorEmitter` 子类 + 注册进 `EMITTERS` | `test_each_kind_has_an_emitter_and_a_registry_entry` |
 
 `instructions.py` 里通常已经有对应的 dataclass；没有就加一个（**字段顺序 = 线格式**，会被双编码器
 逐字比对的测试抓到）。
@@ -115,7 +115,7 @@ opcode 是 C++ 侧的表（`ops::config`），镜像在 `kernels.mk_stream`。�
 
 ```
 demos/gemm.py            GemmDemo(m, n, k, cus)
-  → generators.gemm_queues      一个 16×16 tile 一条指令，按 CU 均分
+  → emitters.gemm_queues      一个 16×16 tile 一条指令，按 CU 均分
   → instructions.InstructionStream   补 NoOp 成矩形 → (cus, length, 32) int32
   → mk.GemmGlobals.attach       指令张量 + A/B/C
   → dispatch.launch_gemm        kernels._C.dmk_gemm
@@ -123,7 +123,7 @@ demos/gemm.py            GemmDemo(m, n, k, cus)
   → mk_internal<GemmGlobals, NoOp, GemmOp>  → ops/gemm.h
 ```
 
-M/N/K 不是 16 的倍数会在**三处**被拒（`generators.gemm_instructions`、
+M/N/K 不是 16 的倍数会在**三处**被拒（`emitters.gemm_instructions`、
 `GemmGlobals.from_shapes`、C++ launcher），因为 `GemmOp` 没有边界路径。
 
 ## 测试

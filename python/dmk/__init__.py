@@ -7,7 +7,7 @@
   32 words the runtime reads, ``cost()`` for the scheduler.
 * :mod:`dmk.scheduler` -- assign instructions to CUs: a dependency-aware heap
   (``assign_dag_to_cus``) or round robin.
-* :mod:`dmk.generators` -- a model's instruction sequence: one instruction per
+* :mod:`dmk.emitters` -- a model's instruction sequence: one instruction per
   16x16 output tile for the GEMM.
 * :mod:`dmk.dispatch` -- hand a schedule to the runtime.
 * :mod:`dmk.mk` -- the model kernel: globals plus the launch.
@@ -19,8 +19,10 @@ The numeric opcodes belong to the C++ side (`ops::config`) and are mirrored in
 laid out.
 """
 
-from . import (dispatch, generators, instructions, mk, model_types, python_vm,
+from . import (dispatch, emitters, instructions, mk, model_types, python_vm,
                scheduler, utils)
+from .emitters import (AttentionEmitter, ElementwiseEmitter, EmbeddingEmitter,
+                       GemmEmitter, ModelSchedule, OperatorEmitter, emitter_for)
 from .instructions import Attention, Embedding, Elementwise, Gemm, Instruction, NoOp
 from .mk import GemmGlobals, launch_gemm
 from .model_types import CuPlan, CuTileConfig, Work
@@ -30,19 +32,26 @@ from .utils import get_cu_count, plan_cus, split_units
 
 __all__ = [
     "Attention",
+    "AttentionEmitter",
     "CuPlan",
     "CuTileConfig",
     "Elementwise",
     "Embedding",
+    "ElementwiseEmitter",
+    "EmbeddingEmitter",
     "Gemm",
+    "GemmEmitter",
     "GemmGlobals",
     "Instruction",
+    "ModelSchedule",
     "NoOp",
+    "OperatorEmitter",
     "Work",
     "assign_dag_to_cus",
     "dispatch",
     "emulate_gemm",
-    "generators",
+    "emitter_for",
+    "emitters",
     "get_cu_count",
     "instructions",
     "launch_gemm",

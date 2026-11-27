@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import torch
 
-from .. import generators, mk
+from .. import emitters, mk
 
 
 @dataclass
@@ -29,9 +29,9 @@ class GemmDemo:
     k: int
     cus: int = 4
 
-    def generator(self) -> generators.GemmGenerator:
+    def generator(self) -> emitters.GemmEmitter:
         """This model's operator generator (one op, so one generator)."""
-        return generators.GemmGenerator(self.m, self.n, self.k)
+        return emitters.GemmEmitter(self.m, self.n, self.k)
 
     def rows(self):
         """The per-CU instruction rows for this shape."""

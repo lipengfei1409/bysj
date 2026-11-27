@@ -1,11 +1,11 @@
-"""Per-operator instruction generators -- one class per operator kind.
+"""Per-operator instruction emitters -- one class per operator kind.
 
-`Megakernels/megakernels/generators.py` emits a whole model's instruction
+`Megakernels/megakernels/emitters.py` emits a whole model's instruction
 sequence; this tree needs the same thing one operator at a time, so each operator
-gets a :class:`OperatorGenerator` subclass that knows three things:
+gets a :class:`OperatorEmitter` subclass that knows three things:
 
 * how much work it covers, in the unit its operator is addressed by
-  (:meth:`OperatorGenerator.work`, which feeds `utils.plan_cus`),
+  (:meth:`OperatorEmitter.work`, which feeds `utils.plan_cus`),
 * how to expand that work into instructions (:meth:`instructions`),
 * nothing about splitting them across CUs -- that lives in the base class, so
   every operator is split the same way and only its own arithmetic differs.
@@ -13,7 +13,7 @@ gets a :class:`OperatorGenerator` subclass that knows three things:
 Why a class rather than one function per operator: the split is the part that is
 identical for every operator and easy to get subtly wrong, while the operator
 itself only knows how to turn one range into one instruction.  With the split in
-the base class the elementwise generator cannot disagree with the GEMM generator
+the base class the elementwise emitter cannot disagree with the GEMM emitter
 about how a share is tiled, and a test can loop over every kind asserting the
 same invariants -- which is only expressible if they share an interface.  (The
 reference implementation keeps this in one model-level function; a class per
@@ -22,7 +22,7 @@ operator is our addition, because our schedule has more than one operator.)
 Adding an operator therefore means writing one ``emit()`` body, not re-implementing
 the split:
 
-    class EmbeddingGenerator(OperatorGenerator):
+    class EmbeddingEmitter(OperatorEmitter):
         kind = EMBEDDING
 
         def instructions(self):
@@ -41,10 +41,10 @@ from .model_types import (ATTENTION, ELEMENTWISE, EMBEDDING, GEMM, GEMM_TILE,
 from .utils import split_units
 
 
-class OperatorGenerator:
+class OperatorEmitter:
     """Base: one operator's work, instructions, and per-CU split."""
 
-    #: Which operator kind this generator emits (one of `model_types.OP_KINDS`).
+    #: Which operator kind this emitter covers (one of `model_types.OP_KINDS`).
     kind: str = ""
 
     def __init__(self, units: int):
@@ -144,7 +144,7 @@ class OperatorGenerator:
         return f"{type(self).__name__}(units={self._units})"
 
 
-class GemmGenerator(OperatorGenerator):
+class GemmEmitter(OperatorEmitter):
     """A dense ``C = A @ B``: one instruction per 16x16 output tile."""
 
     kind = GEMM
@@ -171,7 +171,7 @@ class GemmGenerator(OperatorGenerator):
                     k_tiles=self.k // GEMM_TILE)
 
 
-class EmbeddingGenerator(OperatorGenerator):
+class EmbeddingEmitter(OperatorEmitter):
     """A table gather: one instruction per destination row."""
 
     kind = EMBEDDING
@@ -191,7 +191,7 @@ class EmbeddingGenerator(OperatorGenerator):
         return Embedding(src_row=start, dst_row=start, count=self.elem_per_row)
 
 
-class AttentionGenerator(OperatorGenerator):
+class AttentionEmitter(OperatorEmitter):
     """One instruction per query row: the key walk happens inside the op."""
 
     kind = ATTENTION
@@ -214,7 +214,7 @@ class AttentionGenerator(OperatorGenerator):
         return Attention(query_tile=start, num_keys=self.num_keys, dim=self.dim)
 
 
-class ElementwiseGenerator(OperatorGenerator):
+class ElementwiseEmitter(OperatorEmitter):
     """``y = scale * x + bias``: one instruction per page."""
 
     kind = ELEMENTWISE
@@ -239,28 +239,28 @@ class ElementwiseGenerator(OperatorGenerator):
                            count=max(0, min(ELEMENTWISE_PAGE, remaining)))
 
 
-#: Kind name -> generator class, so a model description can name its operators.
-GENERATORS = {
-    GEMM: GemmGenerator,
-    EMBEDDING: EmbeddingGenerator,
-    ATTENTION: AttentionGenerator,
-    ELEMENTWISE: ElementwiseGenerator,
+#: Kind name -> emitter class, so a model description can name its operators.
+EMITTERS = {
+    GEMM: GemmEmitter,
+    EMBEDDING: EmbeddingEmitter,
+    ATTENTION: AttentionEmitter,
+    ELEMENTWISE: ElementwiseEmitter,
 }
 
 
-def generator_for(kind: str, **shapes) -> OperatorGenerator:
-    """Build the generator for ``kind`` (``GENERATORS`` is the registry)."""
+def emitter_for(kind: str, **shapes) -> OperatorEmitter:
+    """Build the emitter for ``kind`` (``EMITTERS`` is the registry)."""
     try:
-        factory = GENERATORS[kind]
+        factory = EMITTERS[kind]
     except KeyError:
         raise ValueError(
-            f"no generator for {kind!r}; known kinds: {sorted(GENERATORS)}"
+            f"no emitter for {kind!r}; known kinds: {sorted(EMITTERS)}"
         ) from None
     return factory(**shapes)
 
 
-def combined_work(generators: list[OperatorGenerator]) -> Work:
-    """Merge several generators' work into the totals `utils.plan_cus` divides."""
+def combined_work(emitters: list[OperatorEmitter]) -> Work:
+    """Merge several emitters' work into the totals `utils.plan_cus` divides."""
     totals = {
         GEMM: 0,
         EMBEDDING: 0,
@@ -268,12 +268,12 @@ def combined_work(generators: list[OperatorGenerator]) -> Work:
         ELEMENTWISE: 0,
     }
     k_tiles = 4
-    for generator in generators:
-        work = generator.work()
+    for emitter in emitters:
+        work = emitter.work()
         for kind in (GEMM, EMBEDDING, ATTENTION, ELEMENTWISE):
             totals[kind] += work.slots(kind)
-        if generator.kind == GEMM:
-            k_tiles = generator.work().gemm_k_tiles
+        if emitter.kind == GEMM:
+            k_tiles = emitter.work().gemm_k_tiles
     return Work(
         elementwise=totals[ELEMENTWISE] * ELEMENTWISE_PAGE,
         gemm_tiles=totals[GEMM],
@@ -283,7 +283,7 @@ def combined_work(generators: list[OperatorGenerator]) -> Work:
     )
 
 
-class ModelGenerator:
+class ModelSchedule:
     """A model as a list of operators: one instruction stream for all of them.
 
     Each operator's `queues` is already per-CU, so assembling a model is a
@@ -292,70 +292,70 @@ class ModelGenerator:
     CU walks its own row front to back.
     """
 
-    def __init__(self, generators: list[OperatorGenerator]):
-        if not generators:
+    def __init__(self, emitters: list[OperatorEmitter]):
+        if not emitters:
             raise ValueError("a model needs at least one operator generator")
-        kinds = [generator.kind for generator in generators]
+        kinds = [emitter.kind for emitter in emitters]
         if len(set(kinds)) != len(kinds):
             raise ValueError(f"each operator kind may appear once, got {kinds}")
-        self.generators = list(generators)
+        self.emitters = list(emitters)
 
     def work(self) -> Work:
-        return combined_work(self.generators)
+        return combined_work(self.emitters)
 
     def rows(self, cus: int) -> list[list[Instruction]]:
         """Per-CU rows: every operator's share of that CU, in model order."""
         rows: list[list[Instruction]] = [[] for _ in range(cus)]
-        for generator in self.generators:
-            for cu, row in enumerate(generator.queues(cus)):
+        for emitter in self.emitters:
+            for cu, row in enumerate(emitter.queues(cus)):
                 rows[cu].extend(row)
         return rows
 
     def describe(self) -> str:
         parts = ", ".join(
-            f"{generator.kind}={generator.slots()}" for generator in self.generators
+            f"{emitter.kind}={emitter.slots()}" for emitter in self.emitters
         )
-        return f"{len(self.generators)} operators ({parts})"
+        return f"{len(self.emitters)} operators ({parts})"
 
     def __repr__(self) -> str:
-        return f"ModelGenerator({self.describe()})"
+        return f"ModelSchedule({self.describe()})"
 
 
 # --- one-line conveniences for the single-operator call sites ---------------
 
 def gemm_instructions(m: int, n: int, k: int) -> list[Gemm]:
-    return GemmGenerator(m, n, k).instructions()
+    return GemmEmitter(m, n, k).instructions()
 
 
 def gemm_queues(m: int, n: int, k: int, cus: int) -> list[list[Instruction]]:
-    return GemmGenerator(m, n, k).queues(cus)
+    return GemmEmitter(m, n, k).queues(cus)
 
 
 def gemm_work(m: int, n: int, k: int) -> Work:
-    return GemmGenerator(m, n, k).work()
+    return GemmEmitter(m, n, k).work()
 
 
 def embedding_queues(rows: int, *, elem_per_row: int, cus: int):
-    return EmbeddingGenerator(rows, elem_per_row=elem_per_row).queues(cus)
+    return EmbeddingEmitter(rows, elem_per_row=elem_per_row).queues(cus)
 
 
 def attention_queues(queries: int, *, num_keys: int, dim: int, cus: int):
-    return AttentionGenerator(queries, num_keys=num_keys, dim=dim).queues(cus)
+    return AttentionEmitter(queries, num_keys=num_keys, dim=dim).queues(cus)
 
 
 __all__ = [
-    "GENERATORS",
-    "AttentionGenerator",
-    "ElementwiseGenerator",
-    "EmbeddingGenerator",
-    "GemmGenerator",
-    "ModelGenerator",
-    "OperatorGenerator",
+    "EMITTERS",
+    "AttentionEmitter",
+    "ElementwiseEmitter",
+    "EmbeddingEmitter",
+    "GemmEmitter",
+    "ModelSchedule",
+    "OperatorEmitter",
     "attention_queues",
     "combined_work",
     "embedding_queues",
     "gemm_instructions",
     "gemm_queues",
     "gemm_work",
-    "generator_for",
+    "emitter_for",
 ]

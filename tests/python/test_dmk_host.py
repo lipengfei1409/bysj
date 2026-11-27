@@ -1,7 +1,7 @@
 """Host tests for the persistent host side (`python/dmk`).
 
 The layout follows `Megakernels/megakernels`: `model_types`/`utils` hold the
-value types and the division of work, `generators` emits instructions,
+value types and the division of work, `emitters` emits instructions,
 `scheduler` assigns them, `python_vm` executes a schedule in Python.  Because the
 last one runs without a device, the schedule can be checked end to end here --
 coverage, order, and the product itself.
@@ -13,7 +13,7 @@ import unittest
 
 import torch
 
-from dmk import dispatch, generators, mk, python_vm, scheduler
+from dmk import dispatch, emitters, mk, python_vm, scheduler
 from dmk import instructions as I
 from dmk.model_types import GEMM, Work
 from dmk.utils import (get_cu_count, instruction_counts, plan_cus, split_units,
@@ -91,9 +91,9 @@ class WorkTests(unittest.TestCase):
         self.assertGreaterEqual(get_cu_count(), 1)
 
 
-class GeneratorTests(unittest.TestCase):
+class EmitterTests(unittest.TestCase):
     def test_one_instruction_per_output_tile(self) -> None:
-        instructions = generators.gemm_instructions(64, 48, 32)
+        instructions = emitters.gemm_instructions(64, 48, 32)
         self.assertEqual(len(instructions), (64 // 16) * (48 // 16))
         self.assertTrue(all(item.k_tiles == 2 for item in instructions))
         self.assertEqual({(i.m0, i.n0) for i in instructions},
@@ -102,35 +102,35 @@ class GeneratorTests(unittest.TestCase):
     def test_a_shape_without_an_edge_path_is_rejected(self) -> None:
         for shape in ((17, 16, 16), (16, 17, 16), (16, 16, 17)):
             with self.assertRaises(ValueError):
-                generators.gemm_instructions(*shape)
+                emitters.gemm_instructions(*shape)
 
     def test_the_split_covers_every_tile_once(self) -> None:
-        rows = generators.gemm_queues(64, 64, 32, 3)
+        rows = emitters.gemm_queues(64, 64, 32, 3)
         self.assertEqual(len(rows), 3)
         self.assertEqual(sum(len(row) for row in rows), 16)
         self.assertEqual([len(row) for row in rows], [6, 5, 5])
 
 
-class GeneratorClassTests(unittest.TestCase):
+class EmitterClassTests(unittest.TestCase):
     """Every operator implements the same three things, so the split is shared."""
 
     def test_each_kind_has_a_generator_and_a_registry_entry(self) -> None:
         from dmk.model_types import ATTENTION, ELEMENTWISE, EMBEDDING, GEMM
 
         for kind in (GEMM, EMBEDDING, ATTENTION, ELEMENTWISE):
-            self.assertIn(kind, generators.GENERATORS)
-        self.assertIs(generators.generator_for(GEMM, m=16, n=16, k=16).__class__,
-                      generators.GemmGenerator)
+            self.assertIn(kind, emitters.EMITTERS)
+        self.assertIs(emitters.emitter_for(GEMM, m=16, n=16, k=16).__class__,
+                      emitters.GemmEmitter)
 
     def test_an_unknown_kind_is_rejected(self) -> None:
         with self.assertRaises(ValueError) as caught:
-            generators.generator_for("matmul", m=16)
-        self.assertIn("no generator", str(caught.exception))
+            emitters.emitter_for("matmul", m=16)
+        self.assertIn("no emitter", str(caught.exception))
 
     def test_the_base_class_refuses_to_emit_instructions(self) -> None:
         # A subclass that forgets instructions() must fail loudly, not silently
         # produce an empty schedule.
-        class Incomplete(generators.OperatorGenerator):
+        class Incomplete(emitters.OperatorEmitter):
             kind = "gemm"
 
         with self.assertRaises(NotImplementedError):
@@ -140,10 +140,10 @@ class GeneratorClassTests(unittest.TestCase):
 
     def test_the_split_is_shared_so_every_operator_behaves_the_same(self) -> None:
         cases = [
-            (generators.GemmGenerator(64, 48, 32), 12),
-            (generators.EmbeddingGenerator(7, elem_per_row=4), 7),
-            (generators.AttentionGenerator(5, num_keys=64, dim=32), 5),
-            (generators.ElementwiseGenerator(2048 * 3 + 10), 4),
+            (emitters.GemmEmitter(64, 48, 32), 12),
+            (emitters.EmbeddingEmitter(7, elem_per_row=4), 7),
+            (emitters.AttentionEmitter(5, num_keys=64, dim=32), 5),
+            (emitters.ElementwiseEmitter(2048 * 3 + 10), 4),
         ]
         for generator, expected in cases:
             with self.subTest(kind=generator.kind):
@@ -160,37 +160,37 @@ class GeneratorClassTests(unittest.TestCase):
     def test_each_generator_reports_its_own_work(self) -> None:
         from dmk.model_types import ATTENTION, ELEMENTWISE, EMBEDDING, GEMM
 
-        self.assertEqual(generators.GemmGenerator(32, 16, 16).work().kinds(), (GEMM,))
+        self.assertEqual(emitters.GemmEmitter(32, 16, 16).work().kinds(), (GEMM,))
         self.assertEqual(
-            generators.EmbeddingGenerator(3, elem_per_row=2).work().kinds(), (EMBEDDING,)
+            emitters.EmbeddingEmitter(3, elem_per_row=2).work().kinds(), (EMBEDDING,)
         )
         self.assertEqual(
-            generators.AttentionGenerator(4, num_keys=8, dim=8).work().kinds(),
+            emitters.AttentionEmitter(4, num_keys=8, dim=8).work().kinds(),
             (ATTENTION,),
         )
         self.assertEqual(
-            generators.ElementwiseGenerator(4096).work().kinds(), (ELEMENTWISE,)
+            emitters.ElementwiseEmitter(4096).work().kinds(), (ELEMENTWISE,)
         )
 
-    def test_combined_work_adds_the_generators_together(self) -> None:
-        gemm = generators.GemmGenerator(32, 32, 16)          # 4 tiles
-        embedding = generators.EmbeddingGenerator(3, elem_per_row=8)
-        combined = generators.combined_work([gemm, embedding])
+    def test_combined_work_adds_the_emitters_together(self) -> None:
+        gemm = emitters.GemmEmitter(32, 32, 16)          # 4 tiles
+        embedding = emitters.EmbeddingEmitter(3, elem_per_row=8)
+        combined = emitters.combined_work([gemm, embedding])
         self.assertEqual(combined.slots(GEMM), 4)
         self.assertEqual(combined.slots("embedding"), 3)
         self.assertEqual(combined.gemm_k_tiles, 1)
 
     def test_a_zero_cu_split_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            generators.GemmGenerator(16, 16, 16).queues(0)
+            emitters.GemmEmitter(16, 16, 16).queues(0)
 
 
-class ModelGeneratorTests(unittest.TestCase):
+class ModelScheduleTests(unittest.TestCase):
     def _model(self):
-        return generators.ModelGenerator([
-            generators.GemmGenerator(32, 32, 16),
-            generators.EmbeddingGenerator(5, elem_per_row=8),
-            generators.AttentionGenerator(3, num_keys=16, dim=8),
+        return emitters.ModelSchedule([
+            emitters.GemmEmitter(32, 32, 16),
+            emitters.EmbeddingEmitter(5, elem_per_row=8),
+            emitters.AttentionEmitter(3, num_keys=16, dim=8),
         ])
 
     def test_a_model_concatenates_its_operators_in_order(self) -> None:
@@ -210,25 +210,25 @@ class ModelGeneratorTests(unittest.TestCase):
         model = self._model()
         rows = model.rows(3)
         total = sum(len(row) for row in rows)
-        expected = sum(len(g.instructions()) for g in model.generators)
+        expected = sum(len(g.instructions()) for g in model.emitters)
         self.assertEqual(total, expected)
 
     def test_a_duplicated_kind_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            generators.ModelGenerator([
-                generators.GemmGenerator(16, 16, 16),
-                generators.GemmGenerator(16, 16, 16),
+            emitters.ModelSchedule([
+                emitters.GemmEmitter(16, 16, 16),
+                emitters.GemmEmitter(16, 16, 16),
             ])
 
     def test_an_empty_model_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            generators.ModelGenerator([])
+            emitters.ModelSchedule([])
 
 
 class EmulatorTests(unittest.TestCase):
     def _globals(self, m, n, k, cus):
         globals_ = mk.GemmGlobals.from_shapes(m, n, k, seed=0, device="cpu")
-        globals_.attach(generators.gemm_queues(m, n, k, cus))
+        globals_.attach(emitters.gemm_queues(m, n, k, cus))
         return globals_
 
     def test_the_emulated_schedule_reproduces_the_product(self) -> None:

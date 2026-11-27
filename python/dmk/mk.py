@@ -5,7 +5,7 @@ builder and hands the schedule to the VM.  Ours has one model -- a dense GEMM --
 and the same two pieces:
 
     globals_ = GemmGlobals.from_shapes(m, n, k)        # device tensors
-    globals_.instructions = generators.gemm_queues(...)  # the schedule
+    globals_.instructions = emitters.gemm_queues(...)  # the schedule
     launch_gemm(globals_)                                # one launch
 
 `GemmGlobals` mirrors `BaseGlobals`: the tensors the kernel reads, the model
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import torch
 
-from . import dispatch, generators, python_vm
+from . import dispatch, emitters, python_vm
 from .instructions import InstructionStream
 from .model_types import GEMM_TILE
 
@@ -55,7 +55,7 @@ class GemmGlobals:
         return cls(a=a, b=b, c=c)
 
     def attach(self, rows: list[list]) -> "GemmGlobals":
-        """Attach per-CU instruction rows produced by `generators`."""
+        """Attach per-CU instruction rows produced by `emitters`."""
         stream = InstructionStream(rows) if not hasattr(rows, "words") else rows
         self.instructions = stream.tensor(device=self.a.device)
         self.num_instructions = stream.length

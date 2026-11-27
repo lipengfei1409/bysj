@@ -1,7 +1,7 @@
 """Opt-in accuracy test for the persistent GEMM (`csrc/dmk/gemm_launch.cpp`).
 
 The megakernel is launched with a GEMM-only op pack, so this is the whole
-persistent path under test: the host split (`python/dmk/generators.py`) produces the
+persistent path under test: the host split (`python/dmk/emitters.py`) produces the
 instruction rows, `ops::GemmOp` walks them, and the result must equal a dense
 `A @ B`.
 
@@ -11,7 +11,7 @@ import unittest
 
 import torch
 
-from dmk import dispatch, generators, mk
+from dmk import dispatch, emitters, mk
 
 try:  # the entry point comes with the default build
     from kernels.native import _extension
@@ -27,7 +27,7 @@ _SKIP = ("requires the built dmk_gemm entry point (csrc/dmk/gemm_launch.cpp) "
 
 def _run(m: int, n: int, k: int, cus: int, seed: int = 0):
     globals_ = mk.GemmGlobals.from_shapes(m, n, k, seed=seed)
-    globals_.attach(generators.gemm_queues(m, n, k, cus))
+    globals_.attach(emitters.gemm_queues(m, n, k, cus))
     dispatch.launch_gemm(globals_.instructions, globals_.a, globals_.b, globals_.c)
     torch.cuda.synchronize()
     return globals_.c, globals_.a @ globals_.b
@@ -60,7 +60,7 @@ class PersistentGemmAccuracyTests(unittest.TestCase):
 
     def test_a_shape_that_needs_an_edge_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            generators.gemm_instructions(33, 16, 16)
+            emitters.gemm_instructions(33, 16, 16)
 
 
 if __name__ == "__main__":
