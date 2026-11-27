@@ -36,6 +36,61 @@ ARCH = os.environ.get("PYTORCH_ROCM_ARCH") or DEFAULT_ARCH
 os.environ["PYTORCH_ROCM_ARCH"] = ARCH
 TARGETS = [a for a in re.split(r"[,;\s]+", ARCH) if a]
 
+def _patch_du_mma(source: str) -> tuple[str, int]:
+    """Insert `inline` into the host/device helpers DTK leaves non-inline.
+
+    `du_mma.h` defines `__du_float_to_tf32` as a plain `__host__ __device__` function.
+    One translation unit including it is fine, but this build has three kernels, and
+    the host link then reports a duplicate symbol.  The definitions are identical, so
+    `inline` is the semantics the header should have declared -- we cannot change the
+    installed header, so the build compiles against a patched copy that sits earlier
+    on the include path.
+
+    Returns the patched text and how many definitions were touched.
+    """
+    # Line-based on purpose: the header mixes K&R ("signature" then "{" on its own
+    # line) with one-liners, and a single regex treats the two differently.
+    count = 0
+    out: list[str] = []
+    for line in source.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if (
+            stripped.startswith("__host__ __device__")
+            and "inline" not in stripped
+            and not stripped.rstrip().endswith(";")
+        ):
+            line = line.replace("__host__ __device__ ",
+                                "__host__ __device__ inline ", 1)
+            count += 1
+        out.append(line)
+    return "".join(out), count
+
+
+def _patched_include_dir() -> str:
+    """Directory holding the patched `du_mma.h`, or "" when it cannot be produced."""
+    for root in (os.environ.get("HIP_PATH"), os.environ.get("ROCM_PATH"), "/opt/dtk"):
+        if not root:
+            continue
+        candidate = pathlib.Path(root) / "include" / "du_mma.h"
+        if not candidate.is_file():
+            continue
+        try:
+            patched, count = _patch_du_mma(candidate.read_text())
+        except OSError:
+            return ""
+        if count == 0:
+            return ""  # already inline: the installed header needs no help
+        out_dir = pathlib.Path(__file__).resolve().parent / "build" / "dtk-patched"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "du_mma.h").write_text(patched)
+        print(f"note: {candidate} defines {count} host/device helper(s) without "
+              f"`inline`; compiling against a patched copy in {out_dir}")
+        return str(out_dir)
+    return ""
+
+
+PATCHED_INCLUDE = _patched_include_dir()
+
 # `DPA4_GEMM_SCALAR=1` builds the persistent GEMM on the FP32 scalar loop instead
 # of DUMMA: the same pages, waves and split, a different inner loop.  It is the way
 # to run this on a card with no matrix unit, and the way to separate "is the
@@ -133,7 +188,8 @@ ext_modules = [CUDAExtension(
     sources=sources,
     # ops/ and dmk/ are addressed as "ops/..." and "dmk/..." from every
     # translation unit, including the headers they include from each other.
-    include_dirs=[str(CSRC)],
+    # The patched DTK header comes first, so `<du_mma.h>` resolves to it.
+    include_dirs=[*([PATCHED_INCLUDE] if PATCHED_INCLUDE else []), str(CSRC)],
     define_macros=[],
     # `-Wreturn-type` fires inside torch/pybind headers (830+ lines per build)
     # and drowns the log; the two below are what this tree actually needs to see.
@@ -141,13 +197,7 @@ ext_modules = [CUDAExtension(
         "cxx": ["-O3", "-std=c++17", "-Wno-return-type", *ARCH_FLAGS,
                 *CSCALAR_ARGS],
     },
-    # DTK's `du_mma.h` defines `du::dumma::__du_float_to_tf32` as a plain
-    # `__host__ __device__` function in a header -- not `inline`, not `static`.  One
-    # translation unit including it is fine; the moment two do (the scheduler kernel,
-    # the role-free one and the dense one), the host link reports a duplicate symbol.
-    # The bodies are identical, so letting the linker keep the first copy is exactly
-    # the semantics the header should have declared; it is scoped to this extension.
-    extra_ldflags=["-Wl,--allow-multiple-definition"],
+    extra_ldflags=[],
 )]
 #: Where the compiler's full output goes.  A hipcc build of this extension emits
 #: hundreds of warnings from torch/pybind headers, and printing them buries the

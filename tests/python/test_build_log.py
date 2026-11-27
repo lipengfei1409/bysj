@@ -91,13 +91,46 @@ class BuildLogTests(unittest.TestCase):
                       source)
         self.assertNotIn('if not _ARCH_ENV:', source)
 
-    def test_the_vendor_header_duplicate_is_allowed_but_scoped(self) -> None:
-        # `du_mma.h` defines a non-inline host function, so two TUs including it make
-        # the host link fail.  The flag is the narrow fix; the comment has to say why,
-        # because a linker flag with no reason invites more of them.
+    def test_the_vendor_header_is_patched_instead_of_the_linker(self) -> None:
+        # `du_mma.h` defines host/device helpers without `inline`, so three translation
+        # units including it fail the host link.  A build-local patched copy is the
+        # fix -- not `--allow-multiple-definition`, which would hide real duplicates.
         source = (ROOT / "setup.py").read_text()
-        self.assertIn('extra_ldflags=["-Wl,--allow-multiple-definition"]', source)
-        self.assertIn("__du_float_to_tf32", source)
+        start = source.index("def _patch_du_mma")
+        end = source.index("PATCHED_INCLUDE = _patched_include_dir()")
+        namespace = {"re": re}
+        exec(compile(source[start:end], "setup.py", "exec"), namespace)  # noqa: S102
+        patch = namespace["_patch_du_mma"]
+
+        header = "\n".join([
+            "  __host__ __device__ float __du_float_to_tf32(float in)",
+            "  {",
+            "      return in;",
+            "  }",
+            "",
+            "  static __device__ __inline__ void already_inline() {}",
+            "  __host__ __device__ inline float fine(float x) { return x; }",
+            "  __host__ __device__ float another(int a) { return a; }",
+        ])
+        patched, count = patch(header)
+        self.assertEqual(count, 2)
+        self.assertIn("__host__ __device__ inline float __du_float_to_tf32", patched)
+        self.assertIn("__host__ __device__ inline float another(int a)", patched)
+        # an already-inline helper is left alone, not double-patched
+        self.assertEqual(patched.count("inline inline"), 0)
+        self.assertIn("static __device__ __inline__ void already_inline", patched)
+
+    def test_a_header_that_needs_no_patch_is_left_alone(self) -> None:
+        source = (ROOT / "setup.py").read_text()
+        start = source.index("def _patch_du_mma")
+        end = source.index("PATCHED_INCLUDE = _patched_include_dir()")
+        namespace = {"re": re}
+        exec(compile(source[start:end], "setup.py", "exec"), namespace)  # noqa: S102
+        patched, count = namespace["_patch_du_mma"](
+            "__host__ __device__ inline float ok(float x) { return x; }"
+        )
+        self.assertEqual(count, 0)
+        self.assertEqual(patched, "__host__ __device__ inline float ok(float x) { return x; }")
 
     def test_the_arch_reaches_hipcc_as_a_flag(self) -> None:
         # The build log showed hipcc invoked with no `--offload-arch` at all: the

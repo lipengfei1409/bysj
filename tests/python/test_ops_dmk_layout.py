@@ -101,7 +101,7 @@ class BuildIncludePathTests(unittest.TestCase):
         # so `-Icsrc` points at nothing there and `csrc/dmk/*.cpp` cannot see
         # `ops.h` (or `ops/...` from any header).  It must be absolute.
         setup_py = (ROOT / "setup.py").read_text()
-        self.assertIn('include_dirs=[str(CSRC)]', setup_py)
+        self.assertIn("str(CSRC)]", setup_py)
         self.assertIn("CSRC = pathlib.Path(__file__).resolve().parent", setup_py)
         self.assertNotIn('include_dirs=["csrc"]', setup_py)
 
