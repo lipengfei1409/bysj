@@ -158,14 +158,10 @@ __device__ inline void mk_internal(const Globals& g) {
     __syncthreads();
 }
 
-template <typename Globals, typename... Ops>
-__global__ void mk(const Globals g) {
-    mk_internal<Globals, Ops...>(g);
-}
-
-// Launch the demo kernel (NoOp + ElementwiseOp). `blocks` CTAs each read their
-// own instruction row from g.instructions[blockIdx.x]. Returns false and reports
-// on stderr when the device or the LDS budget cannot support the launch.
+// Launch the all-ops demo kernel (defined in megakernel.cpp, used by the
+// standalone LDS test).  `blocks` CTAs each read their own instruction row from
+// g.instructions[blockIdx.x]; returns false when the globals or the LDS budget
+// cannot support the launch.
 bool launch_mk(const MkGlobals& g, uint32_t blocks,
                hipStream_t stream = nullptr);
 

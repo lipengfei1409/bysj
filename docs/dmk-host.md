@@ -111,6 +111,23 @@ opcode 是 C++ 侧的表（`ops::config`），镜像在 `kernels.mk_stream`。�
 露出来，且不需要卡。它验不了的是页、信号量、DUMMA 这些只存在于设备的语义，所以
 `tests/csrc/accuracy/test_persistent_gemm.py` 仍然保留。
 
+## 只有一处 launch 实现
+
+`mk_internal` 是模板，**没被实例化就发不出去**，所以"每个 op pack 一个具体 `__global__`"不可避免。
+除此之外的部分全部共享：
+
+```python
+Python  dmk.dispatch.launch_gemm(...)
+  → C++  dmk_gemm_hip        （每 pack 一个：校验形状、把 torch 张量装进 MkGlobals）
+  →      dmk::mk::launch_kernel   （唯一实现：预留动态 LDS + 每 instruction 行一个 block + 当前流）
+  →      mk_harness          （唯一实例化：mk_internal<MkGlobals, NoOp, GemmOp>）
+  →      mk_internal         （运行时：controller 发布、三波执行）
+```
+
+`launch.h` 还服务第二个 pack（`megakernel.cpp` 的 all-ops demo，供
+`tests/csrc/test_dmk_lds_megakernel.cpp` 验证页与流水），所以 LDS 预留、grid、stream 三件事
+在整棵树里只写了一遍。
+
 ## 持久化 GEMM 的完整链路
 
 ```

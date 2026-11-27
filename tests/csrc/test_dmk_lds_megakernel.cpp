@@ -6,10 +6,11 @@
 // re-launching the same kernel over fresh buffers.
 //
 // Build/run through: python tests/csrc/run_dmk_lds_test.py
+#include "dmk/megakernel.h"
 #include "ops/elementwise.h"
-#include "embedding.h"
-#include "gemm.h"
-#include "megakernel.h"
+#include "ops/embedding.h"
+#include "ops/gemm.h"
+#include "ops/noop.h"
 
 #include <cmath>
 #include <cstdio>
@@ -24,16 +25,17 @@ using dmk::mk::ElementwiseOp;
 using dmk::mk::EmbeddingOp;
 using dmk::mk::GemmOp;
 using dmk::mk::kDynamicBytes;
-using dmk::mk::kLaunchBytes;
+using dmk::mk::kLaunchBytes;   // re-exported from ops by megakernel.h
 using dmk::mk::kStaticBytes;
+using dmk::mk::launch_mk;
 using dmk::mk::MkGlobals;
-using dmk::tensor::HbmLayout;
-using dmk::tensor::MemorySpace;
-using dmk::tensor::Shape;
-using dmk::tensor::Tensor;
+using ops::config::kInstructionWidth;
+using ops::tensor::HbmLayout;
+using ops::tensor::MemorySpace;
+using ops::tensor::Shape;
+using ops::tensor::Tensor;
 
-constexpr int kInstructionWidth = config::kInstructionWidth;
-constexpr int kTileElements = ElementwiseOp<MkGlobals>::kTileElements;
+constexpr int kTileElements = ops::ElementwiseOp<MkGlobals>::kTileElements;
 
 [[noreturn]] void fail(const char* message) {
     std::fprintf(stderr, "FAIL: %s\n", message);
@@ -53,13 +55,13 @@ int float_bits(float value) {
 }
 
 void write_noop(int* words) {
-    for (int i = 0; i < kInstructionWidth; ++i) words[i] = 0;
+    for (int i = 0; i < ops::config::kInstructionWidth; ++i) words[i] = 0;
 }
 
 void write_elementwise(int* words, int tile, float scale, float bias,
                        int count) {
     write_noop(words);
-    words[0] = ElementwiseOp<MkGlobals>::opcode;
+    words[0] = ops::ElementwiseOp<MkGlobals>::opcode;
     words[1] = tile;
     words[2] = float_bits(scale);
     words[3] = float_bits(bias);
@@ -89,11 +91,11 @@ void run_case(const char* name, size_t elements, uint32_t blocks,
     }
 
     std::vector<int> words(static_cast<size_t>(blocks) * num_instructions *
-                           kInstructionWidth);
+                           ops::config::kInstructionWidth);
     for (uint32_t block = 0; block < blocks; ++block) {
         int* row =
             words.data() + static_cast<size_t>(block) * num_instructions *
-                               kInstructionWidth;
+                               ops::config::kInstructionWidth;
         write_noop(row);
         if (!all_noop) {
             const int first = static_cast<int>(block) * per_block;
@@ -106,11 +108,11 @@ void run_case(const char* name, size_t elements, uint32_t blocks,
                     remaining < static_cast<size_t>(kTileElements)
                         ? remaining
                         : kTileElements);
-                write_elementwise(row + (1 + tile - first) * kInstructionWidth,
+                write_elementwise(row + (1 + tile - first) * ops::config::kInstructionWidth,
                                   tile, scale, bias, count);
             }
         }
-        write_noop(row + (num_instructions - 1) * kInstructionWidth);
+        write_noop(row + (num_instructions - 1) * ops::config::kInstructionWidth);
     }
 
     int* device_instructions = nullptr;
@@ -137,7 +139,7 @@ void run_case(const char* name, size_t elements, uint32_t blocks,
 
     const Shape<3> instruction_shape{
         {blocks, static_cast<size_t>(num_instructions),
-         static_cast<size_t>(kInstructionWidth)}};
+         static_cast<size_t>(ops::config::kInstructionWidth)}};
     const Shape<1> data_shape{{elements}};
     const HbmLayout<1> data_layout = HbmLayout<1>::contiguous(data_shape);
     const MkGlobals globals{
@@ -151,7 +153,7 @@ void run_case(const char* name, size_t elements, uint32_t blocks,
         num_instructions,
     };
 
-    if (!dmk::mk::launch_mk(globals, blocks, nullptr))
+    if (!launch_mk(globals, blocks, nullptr))
         fail("launch_mk returned false");
     check_hip(hipDeviceSynchronize(), "hipDeviceSynchronize");
     check_hip(hipMemcpy(actual.data(), device_output, elements * sizeof(float),
@@ -216,14 +218,14 @@ void run_gemm_case() {
               "hipMemcpy(gemm C)");
 
     constexpr int kInstructions = 3;
-    std::vector<int> words(kInstructions * kInstructionWidth, 0);
+    std::vector<int> words(kInstructions * ops::config::kInstructionWidth, 0);
     write_noop(words.data());
-    write_noop(words.data() + kInstructionWidth);
-    words[kInstructionWidth + 0] = GemmOp<MkGlobals>::opcode;
-    words[kInstructionWidth + 1] = 0;  // m0
-    words[kInstructionWidth + 2] = 0;  // n0
-    words[kInstructionWidth + 3] = 1;  // k_tiles (16x16 matrices: one step)
-    write_noop(words.data() + 2 * kInstructionWidth);
+    write_noop(words.data() + ops::config::kInstructionWidth);
+    words[ops::config::kInstructionWidth + 0] = ops::GemmOp<MkGlobals>::opcode;
+    words[ops::config::kInstructionWidth + 1] = 0;  // m0
+    words[ops::config::kInstructionWidth + 2] = 0;  // n0
+    words[ops::config::kInstructionWidth + 3] = 1;  // k_tiles (16x16 matrices: one step)
+    write_noop(words.data() + 2 * ops::config::kInstructionWidth);
     check_hip(hipMalloc(reinterpret_cast<void**>(&device_instructions),
                         words.size() * sizeof(int)),
               "hipMalloc(gemm instructions)");
@@ -232,7 +234,7 @@ void run_gemm_case() {
               "hipMemcpy(gemm instructions)");
 
     const Shape<3> instruction_shape{
-        {1, kInstructions, static_cast<size_t>(kInstructionWidth)}};
+        {1, kInstructions, static_cast<size_t>(ops::config::kInstructionWidth)}};
     const Shape<2> matrix_shape{{N, N}};
     const Shape<1> empty_shape{{0}};
     const HbmLayout<1> empty_layout = HbmLayout<1>::contiguous(empty_shape);
@@ -252,7 +254,7 @@ void run_gemm_case() {
             device_c, matrix_shape, HbmLayout<2>::contiguous(matrix_shape)},
     };
 
-    if (!dmk::mk::launch_mk(globals, 1, nullptr))
+    if (!launch_mk(globals, 1, nullptr))
         fail("gemm launch_mk returned false");
     check_hip(hipDeviceSynchronize(), "hipDeviceSynchronize(gemm)");
     std::vector<float> actual(N * N, 0.0f);
@@ -307,13 +309,13 @@ void run_embedding_case() {
               "hipMemcpy(embedding out)");
 
     constexpr int kInstructions = 3;
-    std::vector<int> words(kInstructions * kInstructionWidth, 0);
+    std::vector<int> words(kInstructions * ops::config::kInstructionWidth, 0);
     write_noop(words.data());
-    words[kInstructionWidth + 0] = EmbeddingOp<MkGlobals>::opcode;
-    words[kInstructionWidth + 1] = 2;  // src row
-    words[kInstructionWidth + 2] = 1;  // dst row
-    words[kInstructionWidth + 3] = Width - 1;
-    write_noop(words.data() + 2 * kInstructionWidth);
+    words[ops::config::kInstructionWidth + 0] = ops::EmbeddingOp<MkGlobals>::opcode;
+    words[ops::config::kInstructionWidth + 1] = 2;  // src row
+    words[ops::config::kInstructionWidth + 2] = 1;  // dst row
+    words[ops::config::kInstructionWidth + 3] = Width - 1;
+    write_noop(words.data() + 2 * ops::config::kInstructionWidth);
     check_hip(hipMalloc(reinterpret_cast<void**>(&device_instructions),
                         words.size() * sizeof(int)),
               "hipMalloc(embedding instructions)");
@@ -322,7 +324,7 @@ void run_embedding_case() {
               "hipMemcpy(embedding instructions)");
 
     const Shape<3> instruction_shape{
-        {1, kInstructions, static_cast<size_t>(kInstructionWidth)}};
+        {1, kInstructions, static_cast<size_t>(ops::config::kInstructionWidth)}};
     const Shape<2> table_shape{{Rows, Width}};
     const Shape<1> empty_shape{{0}};
     const HbmLayout<1> empty_layout = HbmLayout<1>::contiguous(empty_shape);
@@ -343,7 +345,7 @@ void run_embedding_case() {
             device_out, table_shape, HbmLayout<2>::contiguous(table_shape)},
     };
 
-    if (!dmk::mk::launch_mk(globals, 1, nullptr))
+    if (!launch_mk(globals, 1, nullptr))
         fail("embedding launch_mk returned false");
     check_hip(hipDeviceSynchronize(), "hipDeviceSynchronize(embedding)");
     std::vector<float> actual(Rows * Width, 0.0f);

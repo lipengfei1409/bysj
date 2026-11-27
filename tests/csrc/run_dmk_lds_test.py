@@ -82,7 +82,7 @@ def main() -> int:
         hipcc,
         "-O2",
         "-std=c++17",
-        f"-I{root / 'csrc' / 'dmk'}",
+        f"-I{root / 'csrc'}",
         *(f"-I{path}" for path in include_paths()),
     ]
 
