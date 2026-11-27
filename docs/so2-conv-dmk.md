@@ -14,6 +14,39 @@
 
 这条方向由 `tests/python/test_ops_dmk_layout.py` 钉住（谁都不许裸 `#include "op.h"`，跨目录必须写全路径）。
 
+## 两种模式：编译期开关 `OPS_MODE`
+
+每个算子都要能以两种形态编译，形态由**编译期**参数选：
+
+| 开关 | 形态 | 依赖 | 入口 |
+| --- | --- | --- | --- |
+| `OPS_MODE_PERSISTENT`（默认，`0`） | `BaseOp` 子类，由 `dmk/` 的 VM 驱动 | `ops/op.h`、`ops/state.h` | op pack + instruction |
+| `OPS_MODE_ORDINARY`（`1`） | 普通 `__global__` kernel + 内联 launch 辅助 | 只有 `hip/hip_runtime.h` | `<<<>>>`，和其它 kernel 一样 |
+
+用法（翻译单元级）：
+
+```cpp
+#define OPS_MODE OPS_MODE_ORDINARY
+#include "ops/so2_conv_op.h"     // 只编普通形态
+```
+
+或整次构建：`-DOPS_MODE=OPS_MODE_ORDINARY`。默认是持久化形态，所以"没想过这件事"的
+翻译单元拿到的是它几乎肯定属于的那一种。定义在 [`csrc/ops/mode.h`](../csrc/ops/mode.h)，
+写错值会 `#error`。
+
+为什么必须是编译期的：两种形态在运行期没有任何共同点——持久化形态要 `State&` 与页契约，
+普通形态要 grid/block 几何。同一次构建里混用会让同一个类出现两份定义。
+
+**当前状态**：`OPS_MODE` 机制已就位；**SO(2) 卷积已两种形态齐备且共用一个头文件**
+（`ops/so2_conv_op.h`：`#if OPS_MODE == OPS_MODE_PERSISTENT` 段是 `So2ConvOp`，
+`#elif` 段是 `so2_conv_span_kernel`），`csrc/so2_conv.cpp` 现在只剩 torch 胶水（校验、
+分配、launch、stream），kernel 体已经搬回头文件。其余五个算子（elementwise / embedding /
+gemm / attention / noop）目前只有持久化形态，转换时照同一个模式加 `#if` 分支即可。
+
+`tests/python/test_ops_dmk_layout.py` 钉住四件事：开关是单一编译期定义（默认持久化、非法值
+`#error`）、SO(2) 头文件里两种形态都在、普通形态**看不到** `ops/state.h` / `ops/op.h`、
+`csrc/so2_conv.cpp` 里不再有 `__global__`。
+
 ## 同一份算术，两个入口（当前只接普通入口）
 
 ```

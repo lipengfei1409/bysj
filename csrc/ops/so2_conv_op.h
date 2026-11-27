@@ -62,19 +62,27 @@
 //     existing dpa4_wigner_runs op, so this op consumes a dense per-edge matrix
 //     instead of re-deriving the block-diagonal algebra.
 
-#include "ops/copy.h"
+#include "ops/mode.h"
 #include "ops/so2_conv_math.h"
-#include "ops/op.h"
-#include "ops/state.h"
 
 #include <cstddef>
 
+#if OPS_MODE == OPS_MODE_PERSISTENT
+#include "ops/copy.h"
+#include "ops/op.h"
+#include "ops/state.h"
+#else
+#include <hip/hip_runtime.h>
+#endif
+
 namespace ops::so2_conv {
 
+#if OPS_MODE == OPS_MODE_PERSISTENT
 // The interface lives one level up, in `ops`; this operator keeps its own
 // namespace so its helpers (table budget, instruction encoder) do not widen the
 // op library's surface.
 using ops::BaseOp;
+#endif
 
 //: Host-side pointers this op reads. The kernel's Globals must carry one.
 //
@@ -94,6 +102,8 @@ struct So2ConvTensorPack {
 //: 1 elementwise, 2 gemm, 3 embedding, 5 attention), and a free constant so the
 //: host encoder does not have to instantiate So2ConvOp<Globals> for its value.
 inline constexpr int kSo2ConvOpcode = 4;
+
+#if OPS_MODE == OPS_MODE_PERSISTENT
 
 template <typename Globals>
 class So2ConvOp final : public BaseOp<Globals> {
@@ -283,6 +293,8 @@ public:
     }
 };
 
+#endif  // OPS_MODE == OPS_MODE_PERSISTENT
+
 // --- host-side contract helpers -------------------------------------------
 //
 // The launch path (megakernel.cpp, another translation unit) has to build the
@@ -296,6 +308,8 @@ __host__ __device__ inline size_t so2_conv_table_bytes(int dim, int red,
     return sizeof(float) *
            static_cast<size_t>(2 * red * dim + 2 * layers * red * red + 1);
 }
+
+#if OPS_MODE == OPS_MODE_PERSISTENT
 
 //: Whether a shape fits the per-wave page. Checked at launch; the profiled shape
 //: is also pinned below so a config change cannot silently overrun a page.
@@ -327,5 +341,74 @@ inline void encode_so2_conv_instruction(int* words, int begin, int end, int dim,
     words[5] = layers;
     words[6] = channels;
 }
+
+#endif  // OPS_MODE == OPS_MODE_PERSISTENT
+
+#if OPS_MODE == OPS_MODE_ORDINARY
+
+// Ordinary mode: the same per-edge span as one plain launch.
+//
+// One wave per edge, lane of the wave = channel, so every HBM access is a full
+// coalesced row and the span stays in registers.  `kEdgeWaves` edges are in
+// flight per block; the loop strides by that so any edge count is covered --
+// the same tail behaviour the persistent form has, where the wave count plays
+// that role.
+//
+// The destination reduction is not part of this operator: `msg` is per edge and
+// summing it onto atoms is ops::segment_sum's job.
+
+//: Edges in flight per block: one per consumer wave of the persistent form, so
+//: the two modes exercise the same amount of parallelism per block.
+inline constexpr int kEdgeWaves = 4;
+
+//: One wave64 per edge, `kEdgeWaves` waves per block.
+inline constexpr int kBlockThreads = kEdgeWaves * 64;
+
+__global__ void so2_conv_span_kernel(
+    const So2ConvTensorPack pack, long edges, int dim, int red, int layers,
+    int channels) {
+    const int wave = static_cast<int>(threadIdx.x) / 64;
+    const int lane = static_cast<int>(threadIdx.x) % 64;
+    const int channel = lane;
+    const bool active = channel < channels;
+    const long stride = static_cast<long>(gridDim.x) * kEdgeWaves;
+
+    for (long edge = static_cast<long>(blockIdx.x) * kEdgeWaves + wave;
+         edge < edges; edge += stride) {
+        float y[ops::so2::kMaxDim];
+        float xl[ops::so2::kMaxRed];
+        float envelope = 0.0f;
+        if (active) {
+            const float* xrow = pack.x + static_cast<size_t>(pack.src[edge]) *
+                                             dim * channels;
+            float xv[ops::so2::kMaxDim];
+            for (int d = 0; d < dim; ++d)
+                xv[d] = xrow[static_cast<size_t>(d) * channels + channel];
+            const long rot_n = static_cast<long>(red) * dim;
+            const long block = static_cast<long>(red) * red;
+            envelope = pack.alpha[edge];
+            ops::so2::edge_span(xv, pack.rot + static_cast<size_t>(edge) * rot_n,
+                                pack.rot_t + static_cast<size_t>(edge) * rot_n,
+                                pack.kc + static_cast<size_t>(edge) * layers * 2 * block,
+                                dim, red, layers, y, xl);
+        }
+        // Idle lanes (channels < 64) write nothing, so a narrow focus cannot
+        // touch the next edge's message.
+        if (active) {
+            float* out = pack.msg + static_cast<size_t>(edge) * dim * channels;
+            for (int d = 0; d < dim; ++d)
+                out[static_cast<size_t>(d) * channels + channel] = envelope * y[d];
+        }
+    }
+}
+
+//: Grid for an edge count, clamped so a huge edge array still launches.
+__host__ inline unsigned so2_conv_span_blocks(long edges) {
+    const long needed = (edges + kEdgeWaves - 1) / kEdgeWaves;
+    const long limit = 65535;  // conservative grid.x bound across DCU parts
+    return static_cast<unsigned>(needed < limit ? needed : limit);
+}
+
+#endif  // OPS_MODE == OPS_MODE_ORDINARY
 
 }  // namespace ops

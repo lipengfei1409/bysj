@@ -100,12 +100,51 @@ class LayoutTests(unittest.TestCase):
 ORDINARY = ROOT / "csrc" / "so2_conv.cpp"
 
 
-class TwoEntryPointTests(unittest.TestCase):
-    def test_both_entries_share_one_math_header(self) -> None:
+class ModeSwitchTests(unittest.TestCase):
+    def test_the_switch_is_a_single_compile_time_define(self) -> None:
+        mode = (OPS / "mode.h").read_text()
+        self.assertIn("#define OPS_MODE_PERSISTENT 0", mode)
+        self.assertIn("#define OPS_MODE_ORDINARY 1", mode)
+        self.assertIn("#ifndef OPS_MODE", mode)
+        self.assertIn("#define OPS_MODE OPS_MODE_PERSISTENT", mode)  # default
+        self.assertIn('"OPS_MODE must be OPS_MODE_PERSISTENT (0) or OPS_MODE_ORDINARY (1)"', mode)
+        # The two forms must never be compiled into one translation unit.
+        self.assertIn("constexpr bool kPersistentMode", mode)
+
+    def test_the_converted_operator_has_both_forms_in_one_header(self) -> None:
         op = (OPS / "so2_conv_op.h").read_text()
-        kernel = ORDINARY.read_text()
-        for text, name in ((op, "so2_conv_op.h"), (kernel, "so2_conv.cpp")):
-            self.assertIn('#include "ops/so2_conv_math.h"', text, name)
+        self.assertIn("#if OPS_MODE == OPS_MODE_PERSISTENT", op)
+        self.assertIn("#if OPS_MODE == OPS_MODE_ORDINARY", op)
+        self.assertIn("class So2ConvOp final : public BaseOp<Globals>", op)
+        self.assertIn("__global__ void so2_conv_span_kernel", op)
+
+    def test_the_ordinary_mode_does_not_see_the_runtime_contract(self) -> None:
+        # Ordinary mode must compile without ops/state.h or ops/op.h: no pages,
+        # no hooks, no State.
+        op = (OPS / "so2_conv_op.h").read_text()
+        head = op[: op.index("namespace ops::so2_conv")]
+        self.assertIn("#if OPS_MODE == OPS_MODE_PERSISTENT", head)
+        self.assertIn('#include "ops/state.h"', head)
+        ordinary = head[head.index("#else") :]
+        self.assertIn("#include <hip/hip_runtime.h>", ordinary)
+        self.assertNotIn("ops/state.h", ordinary)
+
+    def test_the_ordinary_translation_unit_only_selects_a_mode(self) -> None:
+        kernel = (ROOT / "csrc" / "so2_conv.cpp").read_text()
+        self.assertIn("#define OPS_MODE OPS_MODE_ORDINARY", kernel)
+        self.assertIn('#include "ops/so2_conv_op.h"', kernel)
+        # The kernel body moved into the header, so the launcher has no __global__.
+        self.assertNotIn("__global__", kernel)
+
+
+class TwoEntryPointTests(unittest.TestCase):
+    def test_both_modes_share_one_math_header(self) -> None:
+        # Both forms live in one header now, so the invariant is checked once:
+        # the header pulls in the shared arithmetic and the torch glue only
+        # selects a mode.
+        op = (OPS / "so2_conv_op.h").read_text()
+        self.assertIn('#include "ops/so2_conv_math.h"', op)
+        self.assertIn("#define OPS_MODE OPS_MODE_ORDINARY", ORDINARY.read_text())
 
     def test_neither_entry_reimplements_the_span(self) -> None:
         # The gate expression exists exactly once, in the shared header.

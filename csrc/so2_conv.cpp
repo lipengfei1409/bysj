@@ -11,77 +11,27 @@
 //   xl           = stack of layers: xl += silu(K_l xl) * sigmoid(G_l xl),
 //                  entered from xl = R[e] @ x[src[e]][:, c]
 //
-// Thread mapping: lane of a wave <-> channel (C <= 64). One wave handles one
-// edge, so a 64-float row is a single coalesced 256 B access and the whole span
-// stays in registers. A block carries kEdgeWaves edges in parallel; edges inside
-// a block walk the range in strides of kEdgeWaves, which is the same tail
-// behaviour the persistent op has.
+// The kernel's thread mapping (one wave per edge, lane = channel) lives in the
+// op header next to the persistent form, so the two modes cannot disagree about
+// it.  This file selects ordinary mode and supplies the torch side.
 //
 // The destination reduction is not here either: `msg` is per edge, and summing
 // it onto atoms is SegmentSumOp's job (see docs/so2-conv-dmk.md).
 
 #include "ops.h"
 #include "checks.h"
-#include "ops/so2_conv_math.h"
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <hip/hip_runtime.h>
 #include <cstdint>
 
-namespace {
-
-//: One wave per edge: 64 lanes == 64 channels at the profiled focus width.
-constexpr int kEdgeWaves = 4;
-constexpr int kBlockThreads = kEdgeWaves * 64;
-
-__global__ void so2_conv_kernel(
-    const float* __restrict__ x, const long* __restrict__ src,
-    const float* __restrict__ rot, const float* __restrict__ rot_t,
-    const float* __restrict__ kc, const float* __restrict__ alpha,
-    float* __restrict__ msg, long edges, int dim, int red, int layers,
-    int channels) {
-    const int wave = static_cast<int>(threadIdx.x) / 64;
-    const int lane = static_cast<int>(threadIdx.x) % 64;
-    const int channel = lane;
-    const bool active = channel < channels;
-    const long stride = gridDim.x * static_cast<long>(kEdgeWaves);
-
-    for (long edge = static_cast<long>(blockIdx.x) * kEdgeWaves + wave;
-         edge < edges; edge += stride) {
-        const long src_node = src[edge];
-        const float* xrow = x + static_cast<size_t>(src_node) * dim * channels;
-        float xv[ops::so2::kMaxDim];
-        if (active) {
-            for (int d = 0; d < dim; ++d)
-                xv[d] = xrow[static_cast<size_t>(d) * channels + channel];
-        }
-
-        float xl[ops::so2::kMaxRed];
-        float y[ops::so2::kMaxDim];
-        float envelope = 0.0f;
-        if (active) {
-            const long rot_n = static_cast<long>(red) * dim;
-            const long block = static_cast<long>(red) * red;
-            const float* rot_e = rot + static_cast<size_t>(edge) * rot_n;
-            const float* rot_t_e = rot_t + static_cast<size_t>(edge) * rot_n;
-            const float* kc_e = kc + static_cast<size_t>(edge) * layers * 2 * block;
-            envelope = alpha[edge];
-            ops::so2::edge_span(xv, rot_e, rot_t_e, kc_e, dim, red, layers, y, xl);
-        }
-
-        // Every lane writes only its own channel; idle lanes (C < 64) write
-        // nothing, which is what keeps a narrow focus from corrupting the next
-        // edge's message.
-        if (active) {
-            float* out = msg + static_cast<size_t>(edge) * dim * channels;
-            for (int d = 0; d < dim; ++d)
-                out[static_cast<size_t>(d) * channels + channel] = envelope * y[d];
-        }
-    }
-}
-
-}  // namespace
+// The operator is in ops/so2_conv_op.h, built here in ordinary mode: the same
+// header that provides the persistent megakernel form provides this kernel, and
+// both call ops/so2_conv_math.h.  What is left below is the torch-facing part --
+// validation, allocation, the launch and the stream.
+#define OPS_MODE OPS_MODE_ORDINARY
+#include "ops/so2_conv_op.h"
 
 Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
                         Tensor kc, Tensor alpha) {
@@ -120,12 +70,14 @@ Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
   auto msg = torch::zeros({edges, dim, channels}, x.options());
   if (edges == 0) return msg;
 
-  const long blocks_needed = (edges + kEdgeWaves - 1) / kEdgeWaves;
-  const unsigned blocks = static_cast<unsigned>(blocks_needed);
-  so2_conv_kernel<<<blocks, kBlockThreads, 0, at::cuda::getCurrentCUDAStream()>>>(
-      x.data_ptr<float>(), src.data_ptr<long>(), rot.data_ptr<float>(),
-      rot_t.data_ptr<float>(), kc.data_ptr<float>(), alpha.data_ptr<float>(),
-      msg.data_ptr<float>(), edges, dim, red, layers, channels);
+  const ops::so2_conv::So2ConvTensorPack pack{
+      x.data_ptr<float>(), src.data_ptr<long>(),
+      rot.data_ptr<float>(), rot_t.data_ptr<float>(), kc.data_ptr<float>(),
+      alpha.data_ptr<float>(), msg.data_ptr<float>()};
+  so2_conv_span_kernel<<<ops::so2_conv::so2_conv_span_blocks(edges),
+                         ops::so2_conv::kBlockThreads, 0,
+                         at::cuda::getCurrentCUDAStream()>>>(
+      pack, edges, dim, red, layers, channels);
   launch_check();
   return msg;
 }
