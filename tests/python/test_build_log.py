@@ -91,6 +91,16 @@ class BuildLogTests(unittest.TestCase):
                       source)
         self.assertNotIn('if not _ARCH_ENV:', source)
 
+    def test_the_arch_reaches_hipcc_as_a_flag(self) -> None:
+        # The build log showed hipcc invoked with no `--offload-arch` at all: the
+        # env var is advisory on some torch versions, and hipcc then compiles its
+        # own default list, gfx906 included, which fails the whole unit.
+        source = (ROOT / "setup.py").read_text()
+        self.assertIn('ARCH_FLAGS = [f"--offload-arch={arch}" for arch in TARGETS]',
+                      source)
+        self.assertIn("*ARCH_FLAGS", source)
+        self.assertIn("extra_compile_args={", source)
+
     def test_the_agent_arch_is_read_from_rocminfo(self) -> None:
         # torch's gcnArchName reported gfx906 on a gfx928 host once, which is how a
         # DUMMA build got excluded by accident; rocminfo describes the agents.

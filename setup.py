@@ -54,6 +54,13 @@ if not BUILD_SCALAR:
         )
 CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if BUILD_SCALAR else []
 
+# `PYTORCH_ROCM_ARCH` alone does not reach hipcc on every torch version: the command
+# lines in the build log carried no `--offload-arch` at all, so hipcc fell back to
+# its own default target list -- which on DTK includes gfx906, and one failing
+# architecture fails the whole translation unit no matter what was asked for.
+# Passing the flag here makes the target explicit instead of advisory.
+ARCH_FLAGS = [f"--offload-arch={arch}" for arch in TARGETS] if TARGETS else []
+
 
 def _arch_from_rocminfo(text: str) -> str:
     """The first agent arch in `rocminfo` output, or "" when there is none."""
@@ -96,7 +103,8 @@ if __name__ == "__main__":
           + (" (from PYTORCH_ROCM_ARCH)" if EXPLICIT_ARCH
              else f" (default {DEFAULT_ARCH})")
           + (f"; this device is {_DEVICE}" if _DEVICE else "")
-          + ("; inner loop: scalar" if BUILD_SCALAR else "; inner loop: DUMMA"))
+          + ("; inner loop: scalar" if BUILD_SCALAR else "; inner loop: DUMMA")
+          + (f"; flags: {' '.join(ARCH_FLAGS)}" if ARCH_FLAGS else ""))
 if _DEVICE and _DEVICE not in TARGETS:
     print(
         f"note: the target ({ARCH}) is not this machine's agent ({_DEVICE}); the "
@@ -127,7 +135,10 @@ ext_modules = [CUDAExtension(
     define_macros=[],
     # `-Wreturn-type` fires inside torch/pybind headers (830+ lines per build)
     # and drowns the log; the two below are what this tree actually needs to see.
-    extra_compile_args={"cxx": ["-O3", "-std=c++17", "-Wno-return-type"] + CSCALAR_ARGS},
+    extra_compile_args={
+        "cxx": ["-O3", "-std=c++17", "-Wno-return-type", *ARCH_FLAGS,
+                *CSCALAR_ARGS],
+    },
 )]
 #: Where the compiler's full output goes.  A hipcc build of this extension emits
 #: hundreds of warnings from torch/pybind headers, and printing them buries the
