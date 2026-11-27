@@ -43,6 +43,11 @@
 
 namespace dmk::mk {
 
+// The fragment API lives in `ops::dumma`.  `megakernel.h` aliases `config`, `lds` and
+// `tensor`; the matrix-unit wrappers are only used by kernels like this one, so the
+// alias belongs here rather than in the runtime header.
+namespace dumma = ops::dumma;
+
 //: Worker waves: one output tile each per instruction.  Declared outside the
 //: anonymous namespace because the host entry needs the block size.
 constexpr int kFlatWaves = 4;

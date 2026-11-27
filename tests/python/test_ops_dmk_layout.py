@@ -87,7 +87,10 @@ class StandaloneKernelNamespaceTests(unittest.TestCase):
         # It lives in dmk::mk, where megakernel.h already aliases config/lds/tensor.
         flat = (DMK / "gemm_flat.cpp").read_text()
         self.assertIn("namespace dmk::mk {", flat)
+        # config comes from megakernel.h; the fragment API does not, because only a
+        # kernel uses it -- and using it without the alias was this file's first build
         self.assertNotIn("namespace config =", flat)
+        self.assertIn("namespace dumma = ops::dumma;", flat)
 
 
 class BuildIncludePathTests(unittest.TestCase):
