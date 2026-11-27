@@ -93,6 +93,23 @@ def _time_persistent(globals_, *, iterations: int, repeats: int,
     return _median(samples)
 
 
+def _time_dense(a, b, *, iterations: int, repeats: int) -> float:
+    for _ in range(_WARMUP):
+        dispatch.launch_dense(a, b)
+    torch.cuda.synchronize()
+    samples = []
+    for _ in range(repeats):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(iterations):
+            dispatch.launch_dense(a, b)
+        end.record()
+        end.synchronize()
+        samples.append(start.elapsed_time(end) / iterations)
+    return _median(samples)
+
+
 def _time_callable(call, *, iterations: int, repeats: int) -> float:
     for _ in range(_WARMUP):
         call()
@@ -147,6 +164,7 @@ class PersistentGemmLatenyTests(unittest.TestCase):
     def test_latency_against_rocblas(self) -> None:
         baseline, why = _rocblas_baseline()
         flat_available = dispatch.flat_available()
+        dense_available = dispatch.dense_available()
         if flat_available:
             print("also measuring the role-free kernel (DPA4_GEMM_FLAT engine)")
         if baseline is None:
@@ -163,6 +181,12 @@ class PersistentGemmLatenyTests(unittest.TestCase):
                     persistent_ms = _time_persistent(
                         globals_, iterations=_ITERATIONS, repeats=_REPEATS
                     )
+                    dense_ms = None
+                    if dense_available:
+                        dense_ms = _time_dense(
+                            globals_.a, globals_.b,
+                            iterations=_ITERATIONS, repeats=_REPEATS,
+                        )
                     flat_ms = None
                     if flat_available:
                         flat_ms = _time_persistent(
@@ -176,6 +200,9 @@ class PersistentGemmLatenyTests(unittest.TestCase):
                         "persistent_ms": persistent_ms,
                         "persistent_tflops": _tflops(m, n, k, persistent_ms),
                     }
+                    if dense_ms is not None:
+                        record["dense_ms"] = dense_ms
+                        record["dense_tflops"] = _tflops(m, n, k, dense_ms)
                     if flat_ms is not None:
                         record["flat_ms"] = flat_ms
                         record["flat_tflops"] = _tflops(m, n, k, flat_ms)
@@ -198,10 +225,15 @@ class PersistentGemmLatenyTests(unittest.TestCase):
                             f"({record['flat_tflops']:6.2f} TFLOP/s)"
                             if flat_ms is not None else ""
                         )
+                        dense_note = (
+                            f" | dense {record['dense_ms']:8.3f} ms "
+                            f"({record['dense_tflops']:6.2f} TFLOP/s)"
+                            if dense_ms is not None else ""
+                        )
                         print(
                             f"  cus {cus:3d}: persistent {persistent_ms:8.3f} ms "
                             f"({record['persistent_tflops']:6.2f} TFLOP/s)"
-                            f"{flat_note} | rocBLAS {baseline_ms:8.3f} ms "
+                            f"{flat_note}{dense_note} | rocBLAS {baseline_ms:8.3f} ms "
                             f"({record['rocblas_tflops']:6.2f} TFLOP/s) | "
                             f"{(record['ratio']):5.3f}x"
                         )

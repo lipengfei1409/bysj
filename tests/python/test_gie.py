@@ -58,7 +58,7 @@ class GIEBuildConfigurationTests(unittest.TestCase):
         self.assertEqual(
             extension_args["sources"],
             ["csrc/bindings_dmk.cpp", "csrc/dmk/megakernel.cpp",
-             "csrc/dmk/gemm_flat.cpp"],
+             "csrc/dmk/gemm_flat.cpp", "csrc/gemm.cpp"],
         )
         self.assertEqual(
             extension_args["include_dirs"],

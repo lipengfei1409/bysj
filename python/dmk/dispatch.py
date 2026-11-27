@@ -44,6 +44,25 @@ def launch_gemm(instructions: torch.Tensor, a: torch.Tensor, b: torch.Tensor,
     return _extension("dmk_gemm").dmk_gemm(instructions, a, b, c)
 
 
+def dense_available() -> bool:
+    """Whether the ordinary dense GEMM (`csrc/gemm.cpp`) is in this build."""
+    try:
+        _extension("gemm_dense")
+    except (ImportError, OSError, RuntimeError):
+        return False
+    return True
+
+
+def launch_dense(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Run the ordinary (non-persistent) dense GEMM; returns a new tensor."""
+    if not dense_available():
+        raise RuntimeError(
+            "the dense GEMM is not built: gemm_dense is part of kernels._C, so "
+            "`python setup.py build_ext --inplace` on a DCU provides it"
+        )
+    return _extension("gemm_dense").gemm_dense(a, b)
+
+
 def flat_available() -> bool:
     """Whether the role-free kernel is in this build."""
     return available(flat=True)
@@ -54,5 +73,5 @@ def emulate_available() -> bool:
     return True
 
 
-__all__ = ["available", "emulate_available", "flat_available",
-           "launch_gemm"]
+__all__ = ["available", "dense_available", "emulate_available",
+           "flat_available", "launch_dense", "launch_gemm"]

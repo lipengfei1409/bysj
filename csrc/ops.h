@@ -96,3 +96,8 @@ Tensor dmk_gemm_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,
 // a double-buffered k loop (`csrc/dmk/gemm_flat.cpp`).
 Tensor dmk_gemm_flat_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,
                          Tensor matrix_c);
+
+// The ordinary dense GEMM (`csrc/gemm.cpp`): a 64x64 block tile with an m16n16k8
+// DUMMA pipeline, no instruction stream -- the yardstick for what the persistent
+// kernels are worth.
+Tensor gemm_dense_hip(Tensor matrix_a, Tensor matrix_b);

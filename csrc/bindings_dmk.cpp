@@ -20,4 +20,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("b"), py::arg("c"));
   m.def("dmk_gemm_flat", &dmk_gemm_flat_hip, py::arg("instructions"),
         py::arg("a"), py::arg("b"), py::arg("c"));
+  m.def("gemm_dense", &gemm_dense_hip, py::arg("a"), py::arg("b"));
 }
