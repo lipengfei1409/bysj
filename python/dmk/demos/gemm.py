@@ -29,9 +29,13 @@ class GemmDemo:
     k: int
     cus: int = 4
 
+    def generator(self) -> generators.GemmGenerator:
+        """This model's operator generator (one op, so one generator)."""
+        return generators.GemmGenerator(self.m, self.n, self.k)
+
     def rows(self):
         """The per-CU instruction rows for this shape."""
-        return generators.gemm_queues(self.m, self.n, self.k, self.cus)
+        return self.generator().queues(self.cus)
 
     def globals(self, *, seed: int = 0, device="cuda") -> mk.GemmGlobals:
         """Allocate the operands and attach this shape's schedule."""

@@ -38,6 +38,56 @@ python -m dmk.scripts.run_gemm 256 256 256 --cus 4
 #   persistent GEMM: max |C - A@B| = ..., ... ms/iter
 ```
 
+## 新增算子：写一个 Generator 子类
+
+`generators.py` 里每个算子是一个 `OperatorGenerator` 子类，分片（shard）逻辑在基类里，子类只写
+"怎么把一段范围变成指令"：
+
+```python
+class OperatorGenerator:
+    kind: str                                  # gemm / embedding / attention / elementwise
+    def units(self) -> int                     # 原生单位（元素 / tile / 行 / query 行）
+    def slots(self) -> int                     # 可寻址槽位，默认等于 units
+    def work(self) -> Work                     # 交给 utils.plan_cus 的工作量
+    def emit(self, tiles, start, cover)        # ← 子类唯一必须实现的方法
+    def slots_per_instruction(self, tiles)     # 默认 1，按 tile 覆盖多个槽位时重写
+    def instructions(self) -> list[Instruction]  # 整段给一个 CU 时的指令（基类派生）
+    def queues(self, cus) -> list[list[Instruction]]  # 分片，基类派生
+```
+
+`queues()` 是所有算子**共用**的一条路径：工作量 → `utils.plan_cus`（按份额定每 CU 的 tile）→
+`utils.instruction_counts`（ceil(份额/tile)）→ 每个 CU 调自己的 `emit` 覆盖自己的份额。所以新增算子
+不会碰分片、补 NoOp、CU 边界这些容易写错的地方。
+
+一个最小实现（Embedding）：
+
+```python
+class EmbeddingGenerator(OperatorGenerator):
+    kind = EMBEDDING
+    def __init__(self, rows, *, elem_per_row):
+        super().__init__(rows); self.elem_per_row = elem_per_row
+    def work(self) -> Work:
+        return Work(embedding_rows=self.units(), embedding_tile=1)  # 一条指令一行
+    def emit(self, tiles, start, cover) -> Embedding:
+        del tiles, cover
+        return Embedding(src_row=start, dst_row=start, count=self.elem_per_row)
+```
+
+模型 = 一组 Generator：`ModelGenerator([...]).rows(cus)` 按模型顺序把每个算子的每 CU 行拼起来
+（一个 CU 从前往后走自己那一行，所以顺序必须是"算子 1 的份额 → 算子 2 的份额"）。
+
+**加一个算子要动的四处**：
+
+| 位置 | 改什么 | 忘了会被谁抓 |
+| --- | --- | --- |
+| `csrc/ops/<op>.h` | `BaseOp` 子类（页、信号量、指令字） | 编译 |
+| `csrc/ops/config.h` | `kOp<X>` 加进 `enum Opcode`（不改已用值） | `test_opcodes_are_declared_once_in_config` |
+| `csrc/dmk/*_launch.cpp` | op pack 加类型、Globals 加张量 | 编译（字段名要对得上） |
+| `python/dmk/generators.py` | 一个 `OperatorGenerator` 子类 + 注册进 `GENERATORS` | `test_each_kind_has_a_generator_and_a_registry_entry` |
+
+`instructions.py` 里通常已经有对应的 dataclass；没有就加一个（**字段顺序 = 线格式**，会被双编码器
+逐字比对的测试抓到）。
+
 ## 指令编码与线格式
 
 `instructions.py` 里每个算子是 dataclass，`serialize()` 按**字段声明顺序**填字，所以字段顺序就是
