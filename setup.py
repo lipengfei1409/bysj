@@ -31,6 +31,7 @@ DUMMA_ARCHES = ("gfx926", "gfx928", "gfx936", "gfx938")
 #: even when the machine running the build has an older one -- cross-compiling for
 #: the target is the normal case here.  An explicit `PYTORCH_ROCM_ARCH` wins.
 DEFAULT_ARCH = "gfx928"
+EXPLICIT_ARCH = bool(os.environ.get("PYTORCH_ROCM_ARCH"))
 ARCH = os.environ.get("PYTORCH_ROCM_ARCH") or DEFAULT_ARCH
 os.environ["PYTORCH_ROCM_ARCH"] = ARCH
 TARGETS = [a for a in re.split(r"[,;\s]+", ARCH) if a]
@@ -46,9 +47,10 @@ if not BUILD_SCALAR:
         raise SystemExit(
             f"PYTORCH_ROCM_ARCH={ARCH} contains {', '.join(unsupported)}, which "
             "DTK's du_mma.h does not support (" + ", ".join(DUMMA_ARCHES) + ").\n"
-            f"Leave it at the default ({DEFAULT_ARCH}) to build for the deployment "
-            "card, or set DPA4_GEMM_SCALAR=1 to build the scalar GEMM for any "
-            "architecture."
+            "If an old shell exported it, clear it:  unset PYTORCH_ROCM_ARCH\n"
+            f"  (the default is {DEFAULT_ARCH}; this build may have been started "
+            "with a stale value)\n"
+            "or build the scalar GEMM for any architecture:  DPA4_GEMM_SCALAR=1"
         )
 CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if BUILD_SCALAR else []
 
@@ -88,11 +90,19 @@ def _device_arch() -> str:
 
 
 _DEVICE = _device_arch()
+
+if __name__ == "__main__":
+    print(f"arch: building for {ARCH}"
+          + (" (from PYTORCH_ROCM_ARCH)" if EXPLICIT_ARCH
+             else f" (default {DEFAULT_ARCH})")
+          + (f"; this device is {_DEVICE}" if _DEVICE else "")
+          + ("; inner loop: scalar" if BUILD_SCALAR else "; inner loop: DUMMA"))
 if _DEVICE and _DEVICE not in TARGETS:
     print(
-        f"note: building for {ARCH}; this device is {_DEVICE}.  The extension "
-        "will compile for the target and will not run here -- "
-        f"set PYTORCH_ROCM_ARCH={_DEVICE} to build for this machine."
+        f"note: the target ({ARCH}) is not this machine's agent ({_DEVICE}); the "
+        "extension will compile for the target and will not run here.  "
+        f"\n      unset PYTORCH_ROCM_ARCH   (uses the default {DEFAULT_ARCH})"
+        f"\n      or  PYTORCH_ROCM_ARCH={_DEVICE} for this machine."
     )
 
 if not torch.version.hip:

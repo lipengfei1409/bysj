@@ -113,6 +113,15 @@ class BuildLogTests(unittest.TestCase):
         self.assertIn("rocminfo reports", source)
         self.assertIn("return listed or reported", source)
 
+    def test_the_effective_arch_is_printed(self) -> None:
+        # One line at the top of every build, because "which arch did this compile
+        # for" was ambiguous for several rounds and is the first thing to check.
+        source = (ROOT / "setup.py").read_text()
+        self.assertIn('print(f"arch: building for {ARCH}"', source)
+        self.assertIn('if __name__ == "__main__":', source)
+        self.assertIn("EXPLICIT_ARCH = bool(os.environ.get(\"PYTORCH_ROCM_ARCH\"))",
+                      source)
+
     def test_a_build_for_another_card_says_so(self) -> None:
         # Cross-compiling is allowed, but the binary will not run on this machine;
         # saying it here is cheaper than a HIP "no binary for GPU" later.
