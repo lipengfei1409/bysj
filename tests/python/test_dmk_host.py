@@ -177,6 +177,22 @@ class MainTests(unittest.TestCase):
         self.assertEqual(len(payload["tiles"]), 2)
         self.assertIn(config.GEMM, payload["counts"])
 
+    def test_the_gemm_flow_rejects_untileable_shapes(self) -> None:
+        with self.assertRaises(ValueError):
+            main.build_gemm_flow(m=17, n=16, k=16)
+        flow = main.build_gemm_flow(m=32, n=48, k=64)
+        work = flow.work()
+        self.assertEqual(work.slots(config.GEMM), (32 // 16) * (48 // 16))
+        self.assertEqual(work.gemm_k_tiles, 4)  # 64 / 16
+
+    def test_the_gemm_flow_dry_runs_through_the_same_split(self) -> None:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            self.assertEqual(
+                main.main(["--gemm", "64x64x64", "--cus", "4", "--dry-run"]), 0
+            )
+        self.assertIn("gemm=", buffer.getvalue())
+
     def test_a_zero_cu_count_is_a_usage_error(self) -> None:
         with self.assertRaises(SystemExit):
             with contextlib.redirect_stderr(io.StringIO()):

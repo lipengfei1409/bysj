@@ -4,10 +4,17 @@
 
 ```
 python/dmk/
-  config.py   每个 CU 的算子配置：各类 tile size，以及把总工作量切成每 CU 的份额
-  shard.py    把计算图（DataFlow）按 CU 切开，返回每 CU 一个指令队列
-  main.py     入口：build_flow → shard → launch
+  instructions.py  指令对象（每个算子一个 dataclass）：serialize() → 32 字，cost() → 调度代价
+  scheduler.py     把指令分给各 CU：DAG 堆分配（按代价、尊重依赖）或 round-robin
+  config.py        每个 CU 的算子配置：各类 tile size，以及把总工作量切成每 CU 的份额
+  shard.py         把计算图（DataFlow）按 CU 切开，用 instructions 编码成队列
+  mk.py            模型 kernel：Globals + launch（对应参考实现的 mk.py）
+  main.py          入口：build_flow → shard → launch
 ```
+
+结构对齐参考实现 `Megakernels/megakernels/`（`instructions.py` / `scheduler.py` /
+`mk.py`），区别只在于"SM"在这里叫 CU（一个 DCU workgroup），代价模型是每指令的 FLOP 估计而不是
+实测核时间。
 
 ## 为什么按"可寻址槽位"计数
 
@@ -23,6 +30,30 @@ python/dmk/
 这样"每 CU 的 tile 不一样"就有了实际含义：份额小于默认 tile 的 CU 用**更小的 tile**，只发一条
 指令，而不是发一条大半空闲的指令。elementwise 例外——它的地址粒度就是页，所以只能靠**最后一条
 指令的 count** 收尾。
+
+## instructions：指令就是对象
+
+每个算子一个 dataclass，`serialize()` 按**字段声明顺序**填字，所以字段顺序就是线格式：
+
+```python
+Elementwise(tile, scale, bias, count)   # word 1=page, 2=scale, 3=bias, 4=count
+Gemm(m0, n0, k_tiles)                   # word 1=m0, 2=n0, 3=k_tiles
+```
+
+`cost()` 给调度器排序（GEMM 是按 FLOP 估的、逐元素按元素数估）。这条容易写错——我第一版把
+`Elementwise` 的字段写成 `(tile, count, scale, bias)`，与 `kernels.mk_stream` 的线格式
+（1=page, 2=scale, 3=bias, 4=count）不一致，一条"两个编码器逐字比对"的测试立刻失败。
+
+## scheduler：把指令分给 CU
+
+```python
+nodes, end = scheduler.linear_chain(instructions)   # 一条扁平流的 DAG
+queues     = scheduler.assign_dag_to_cus(nodes, cus)  # 依赖感知的堆分配
+queues     = scheduler.round_robin_assign(instructions, cus)  # 或平均发牌
+```
+
+堆分配按"哪个 CU 先空出来"派活（`heapq` 按结束时间），就绪指令优先放重的，避免长 GEMM 排在
+一串短指令后面。有环会直接报错而不是悄悄少排。
 
 ## config：份额与 tile
 

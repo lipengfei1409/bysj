@@ -82,3 +82,11 @@ Tensor blockdiag_gemm_backward_hip(Tensor grad_out, Tensor weights, Tensor offse
 // generic operators).
 Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
                         Tensor kc, Tensor alpha);
+
+// --- persistent GEMM -------------------------------------------------------
+//
+// `csrc/dmk/gemm_launch.cpp`: the megakernel with a GEMM-only op pack.  Consumes
+// the instruction rows `python/dmk/shard.py` produces and computes
+// `C = A @ B` in 16x16 tiles; M, N, K must be multiples of 16.
+Tensor dmk_gemm_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,
+                    Tensor matrix_c);

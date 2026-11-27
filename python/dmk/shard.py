@@ -22,9 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from kernels import mk_stream
-
-from . import config
+from . import config, instructions
 
 
 @dataclass
@@ -89,7 +87,7 @@ class DataFlow:
 class Queues:
     """One instruction row per CU, plus what the split decided."""
 
-    stream: mk_stream.InstructionStream
+    stream: instructions.InstructionStream
     plans: list[config.CuPlan]
     counts: dict[str, list[int]]
     work: config.Work
@@ -107,6 +105,9 @@ class Queues:
         return self.stream.tensor(device=device)
 
     def describe(self) -> str:
+        return self.stream.describe()
+
+    def _describe_legacy(self) -> str:
         lines = [f"{self.blocks} CUs, at most {self.length} instructions each"]
         for plan in self.plans:
             issued = " ".join(
@@ -142,7 +143,7 @@ def shard(flow: DataFlow, cus: int, **work_options) -> Queues:
     plans = config.plan_cus(work, cus)
     counts = config.instruction_counts(work, plans)
 
-    stream = mk_stream.InstructionStream(blocks=cus)
+    rows: list[list[instructions.Instruction]] = [[] for _ in range(cus)]
     for kind in work.kinds():
         shares = config.shares_of(work, kind, cus)
         first = 0
@@ -153,25 +154,26 @@ def shard(flow: DataFlow, cus: int, **work_options) -> Queues:
                 for index in range(counts[kind][plan.cu]):
                     start = first + index * step
                     cover = min(step, share - index * step)
-                    stream.emit(plan.cu, _instruction(kind, plan, work, start, cover))
+                    rows[plan.cu].append(
+                        _instruction(kind, plan, work, start, cover)
+                    )
             first += share
+    stream = instructions.InstructionStream(rows)
     return Queues(stream=stream, plans=plans, counts=counts, work=work)
 
 
 def _instruction(kind: str, plan: config.CuPlan, work: config.Work, start: int,
-                 cover: int):
-    """Encode one instruction covering ``cover`` slots from absolute ``start``."""
+                 cover: int) -> instructions.Instruction:
+    """One instruction covering ``cover`` slots from absolute ``start``."""
     if kind == config.ELEMENTWISE:
-        return mk_stream.elementwise(tile=start, count=cover * config.ELEMENTWISE_PAGE
-                                     if cover * config.ELEMENTWISE_PAGE <= work.elementwise
-                                     else work.elementwise - start * config.ELEMENTWISE_PAGE)
+        return instructions.Elementwise(tile=start, count=cover)
     if kind == config.GEMM:
-        return mk_stream.gemm(m0=start, n0=plan.tiles.gemm_n, k_tiles=work.gemm_k_tiles)
+        return instructions.Gemm(m0=0, n0=start, k_tiles=work.gemm_k_tiles)
     if kind == config.EMBEDDING:
-        return mk_stream.embedding(src_row=start, dst_row=start, count=cover)
+        return instructions.Embedding(src_row=start, dst_row=start, count=cover)
     if kind == config.ATTENTION:
-        return mk_stream.attention(query_tile=start, num_keys=cover,
-                                   dim=plan.tiles.attention_query)
+        return instructions.Attention(query_tile=start, num_keys=cover,
+                                      dim=plan.tiles.attention_query)
     raise ValueError(f"unknown operator kind {kind!r}")
 
 

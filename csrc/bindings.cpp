@@ -34,6 +34,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("coeff"));
   m.def("monomial_runs_backward", &monomial_runs_backward_hip,
         py::arg("grad_runs"), py::arg("q"), py::arg("dexp"), py::arg("dcoeff"));
+  m.def("dmk_gemm", &dmk_gemm_hip, py::arg("instructions"), py::arg("a"),
+        py::arg("b"), py::arg("c"));
   m.def("so2_conv", &so2_conv_hip, py::arg("x"), py::arg("src"),
         py::arg("rot"), py::arg("rot_t"), py::arg("kc"), py::arg("alpha"));
   m.def("blockdiag_gemm", &blockdiag_gemm_hip, py::arg("x"),

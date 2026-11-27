@@ -24,8 +24,24 @@ import argparse
 import json
 import sys
 
-from . import config
+from . import config, mk
 from .shard import DataFlow, OpCall, Queues, shard as shard_flow
+
+
+def build_gemm_flow(*, m: int, n: int, k: int) -> DataFlow:
+    """A GEMM-only flow: one instruction per 16x16 output tile.
+
+    This is the flow the persistent runtime can run today -- the op pack it
+    launches contains `GemmOp` and `NoOp` only -- so `--gemm` uses it and the
+    launch path is a real one.
+    """
+    if m % 16 or n % 16 or k % 16:
+        raise ValueError(
+            "the persistent GEMM tiles by 16 and has no edge path, so M, N and K "
+            f"must be multiples of 16 (got {m}x{n}x{k})"
+        )
+    return DataFlow([OpCall(config.GEMM, (m // 16) * (n // 16),
+                            {"k_tiles": k // 16, "m": m, "n": n, "k": k})])
 
 
 #: The reference flow: the shape of the profiled 3000-atom box, in the units
@@ -45,6 +61,19 @@ def build_flow(*, elementwise_elements: int = 181_838 * 640,
             OpCall(config.ATTENTION, attention_queries, {"dim": head_dim}),
         ]
     )
+
+
+def launch_gemm(m: int, n: int, k: int, *, cus: int = 4, seed: int = 0,
+                iterations: int = 1) -> tuple[float, float]:
+    """Run the persistent GEMM end to end: (max error, ms per iteration)."""
+    flow = build_gemm_flow(m=m, n=n, k=k)
+    queues = shard_flow(flow, cus)
+    globals_ = mk.GemmGlobals.from_shapes(m, n, k, seed=seed)
+    globals_.instructions = queues.tensor(device="cuda").contiguous()
+    globals_.num_instructions = queues.length
+    mk.run_gemm(globals_)
+    error = mk.verify_gemm(globals_)
+    return error, mk.time_gemm(globals_, iterations)
 
 
 def launch(queues: Queues, *, iterations: int = 1, device=None):
@@ -80,6 +109,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="build and split the queues, print them, run nothing")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument("--gemm", default=None, metavar="MxNxK",
+                        help="run the persistent GEMM on this shape instead of the "
+                             "reference flow (needs a DCU and the built extension)")
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default=None,
                         help="device for the instruction tensor, e.g. cuda or cpu")
     args = parser.parse_args(argv)
@@ -87,7 +120,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.cus < 1:
         parser.error("--cus must be at least 1")
 
-    flow = build_flow()
+    if args.gemm:
+        try:
+            m, n, k = (int(part) for part in args.gemm.lower().split("x"))
+        except ValueError:
+            parser.error("--gemm expects MxNxK, e.g. 256x256x256")
+        flow = build_gemm_flow(m=m, n=n, k=k)
+    else:
+        flow = build_flow()
     queues = shard_flow(flow, args.cus)
     work = flow.work()
 
@@ -114,6 +154,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         return 0
+
+    if args.gemm:
+        try:
+            first = next(call for call in flow.calls if call.kind == config.GEMM)
+            error, milliseconds = launch_gemm(
+                first.extra["m"], first.extra["n"], first.extra["k"],
+                cus=args.cus, seed=args.seed, iterations=args.iterations,
+            )
+        except (RuntimeError, ImportError) as failure:
+            print(f"\nlaunch unavailable: {failure}", file=sys.stderr)
+            return 2
+        print(f"\npersistent GEMM: max |C - A@B| = {error:.3e}, "
+              f"{milliseconds:.3f} ms/iter")
+        return 0 if error < 1e-3 else 1
 
     try:
         launch(queues, iterations=args.iterations, device=args.device)
