@@ -18,6 +18,7 @@
 // virtual hooks directly; no op-type switch appears here.
 
 #include "dmk/state.h"
+#include "ops/op.h"
 #include "ops/tensor.h"
 
 #include <cassert>
@@ -30,6 +31,8 @@ namespace lds = ops::lds;
 namespace tensor = ::ops::tensor;
 using ops::BaseOp;
 using ops::InstructionState;
+using ops::ring_advance;
+using ops::ring_retreat;
 using ops::make_op;
 namespace controller {
 

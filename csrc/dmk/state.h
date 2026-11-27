@@ -8,6 +8,7 @@
 // must not reach into dmk/.  What is left here is what only the runtime does:
 // pick a role for a wave and drive the op hooks.
 
+#include "ops/op.h"
 #include "ops/state.h"
 
 #include <cstdint>
@@ -18,6 +19,8 @@ namespace config = ops::config;
 namespace lds = ops::lds;
 using ops::BaseOp;
 using ops::InstructionState;
+using ops::ring_advance;
+using ops::ring_retreat;
 using ops::Page;
 using ops::State;
 

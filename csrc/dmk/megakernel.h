@@ -32,6 +32,7 @@ using tensor::Tensor;
 // The dynamic-LDS request a launch must make; it sits in `ops` rather than in
 // `ops::config` because it is a total, not a knob.
 using ops::kLaunchBytes;
+using ops::kStaticBytes;
 
 struct MkGlobals {
     // [blocks][num_instructions][kInstructionWidth]
@@ -68,7 +69,7 @@ struct MkGlobals {
 
 template <typename Globals, typename... Ops>
 __device__ inline void mk_internal(const Globals& g) {
-    __shared__ alignas(128)
+    __shared__ __attribute__((aligned(128)))
         InstructionState instruction_states[config::kStages];
     __shared__ lds::Semaphore instruction_arrived[config::kStages];
     __shared__ lds::Semaphore instruction_finished[config::kStages];

@@ -64,6 +64,11 @@ public:
     //: Elements one wave's staged A or B copy occupies in its page.
     static constexpr int kSliceElements = kTile * kTile;
 
+    //: Build-time switch.  DUMMA is the real path; defining `DPA4_GEMM_SCALAR`
+    //: compiles the FP32 scalar loop instead, which needs no matrix-unit API and
+    //: is what to use when the installed DTK's `du_mma.h` does not expose the
+    //: fragment API this file was written against.
+#if !defined(DPA4_GEMM_SCALAR)
     using AFragment = ::du::dumma::DUFragment<::du::dumma::matrix_a, kTile, kTile,
                                               kStep, float,
                                               ::du::dumma::row_major>;
@@ -72,6 +77,7 @@ public:
                                               ::du::dumma::row_major>;
     using Accumulator = ::du::dumma::DUFragment<::du::dumma::accumulator, kTile,
                                                 kTile, kStep, float>;
+#endif
 
     struct Instruction {
         int m0;
@@ -183,6 +189,34 @@ public:
                         static_cast<size_t>(wave) * kSliceElements;
         float* c_page = static_cast<float*>(s.pages[s.pid(2 + wave)].ptr());
 
+#if defined(DPA4_GEMM_SCALAR)
+        if (column >= 0) {
+            // The DUMMA path writes the page whole in its epilogue; this one
+            // accumulates, so it owns the zeroing.
+            for (int index = lane; index < kTileElements;
+                 index += config::kWaveSize)
+                c_page[index] = 0.0f;
+            lds::wave_barrier();
+            for (int k = 0; k < inst.k_tiles; ++k) {
+                stage_slices(s, g, inst, k, wave, lane);
+                lds::wave_barrier();
+                __threadfence_block();
+                for (int index = lane; index < kTileElements;
+                     index += config::kWaveSize) {
+                    const int row = index / kTile;
+                    const int col = index % kTile;
+                    float sum = 0.0f;
+#pragma unroll
+                    for (int step = 0; step < kTile; ++step)
+                        sum += a_page[row * kTile + step] *
+                               b_page[step * kTile + col];
+                    c_page[index] += sum;
+                }
+                lds::wave_barrier();
+                __threadfence_block();
+            }
+        }
+#else
         Accumulator current;
         Accumulator next;
         AFragment a_fragment;
@@ -220,6 +254,7 @@ public:
             lds::wave_barrier();
             __threadfence_block();
         }
+#endif
         if (lane == 0) s.semaphores()[1].arrive();
     }
 

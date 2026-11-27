@@ -24,8 +24,23 @@ export HIP_VISIBLE_DEVICES=0
 ## 1. 编译扩展（`kernels._C`，含 `csrc/dmk/gemm_launch.cpp`）
 
 ```bash
+export PYTORCH_ROCM_ARCH=gfx928        # 必须是实际卡的架构，见下
 MAX_JOBS=8 python3 setup.py build_ext --inplace
 ```
+
+**`PYTORCH_ROCM_ARCH` 是必须的**：DTK 的 `du_mma.h` 只支持 `gfx926 / gfx928 / gfx936 /
+gfx938`，而默认会编 gfx906，后者触发头文件里的 `#error`，于是整个扩展永远编不过。先用
+`rocminfo | grep gfx` 查本机架构。
+
+如果本机 DTK 的 `du_mma.h` 不提供 fragment API（`DUFragment` 只有声明、没有
+`du_load_matrix_sync` / `du_mma_sync` / `du_store_matrix_sync`），先用标量分支把调度侧跑通：
+
+```bash
+DPA4_GEMM_SCALAR=1 MAX_JOBS=8 python3 setup.py build_ext --inplace
+```
+
+标量分支与 DUMMA 分支共享同一套页/波/切分逻辑，只是内层换成 FFMA；它用来验证"调度对不对"，
+不用来比性能。
 
 `setup.py` 会检查 `torch.version.hip`，在非 HIP 的 torch 上直接报错退出——那时是环境没 source。
 

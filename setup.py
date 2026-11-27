@@ -19,6 +19,13 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 # "'ops.h' file not found".
 CSRC = pathlib.Path(__file__).resolve().parent / "csrc"
 
+# `DPA4_GEMM_SCALAR=1` builds the persistent GEMM against the FP32 scalar loop
+# instead of DUMMA.  It exists because the matrix-unit API in `du_mma.h` differs
+# between DTK releases: when the installed header does not expose the fragment
+# API, the kernel can still be built, run and measured, and the scheduling side
+# (pages, waves, split) can be validated on its own.
+CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if os.environ.get("DPA4_GEMM_SCALAR") == "1" else []
+
 if not torch.version.hip:
     raise RuntimeError("native build requires a ROCm/DTK PyTorch installation")
 
@@ -43,7 +50,7 @@ ext_modules = [CUDAExtension(
     # translation unit, including the headers they include from each other.
     include_dirs=[str(CSRC)],
     define_macros=[],
-    extra_compile_args={"cxx": ["-O3", "-std=c++17"]},
+    extra_compile_args={"cxx": ["-O3", "-std=c++17"] + CSCALAR_ARGS},
 )]
 cmdclass = {"build_ext": BuildExtension}
 

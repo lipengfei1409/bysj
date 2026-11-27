@@ -61,9 +61,10 @@ struct GemmGlobals {
 };
 
 __global__ void gemm_mk(const GemmGlobals g) {
-    mk_internal<GemmGlobals, NoOp<GemmGlobals>, GemmOp<GemmGlobals>>(g);
+    mk_internal<GemmGlobals, ops::NoOp<GemmGlobals>, ops::GemmOp<GemmGlobals>>(g);
 }
 
+#ifndef __HIP_DEVICE_COMPILE__
 bool report(const char* message) {
     std::fprintf(stderr, "dmk::gemm: %s\n", message);
     return false;
@@ -89,9 +90,11 @@ bool request_dynamic_lds() {
     return true;
 }
 
+#endif  // __HIP_DEVICE_COMPILE__
 }  // namespace
 }  // namespace dmk::mk
 
+#ifndef __HIP_DEVICE_COMPILE__
 namespace {
 
 using namespace dmk;
@@ -107,7 +110,7 @@ Tensor dmk_gemm_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,
                     Tensor matrix_c) {
     TORCH_CHECK(instructions.scalar_type() == torch::kInt &&
                     instructions.is_contiguous() && instructions.dim() == 3 &&
-                    instructions.size(2) == config::kInstructionWidth,
+                    instructions.size(2) == ops::config::kInstructionWidth,
                 "instructions must be a contiguous int32 (blocks, length, 32) tensor");
     f32(matrix_a);
     f32(matrix_b);
@@ -152,3 +155,4 @@ Tensor dmk_gemm_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,
     launch_check();
     return matrix_c;
 }
+#endif  // __HIP_DEVICE_COMPILE__
