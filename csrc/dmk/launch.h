@@ -7,7 +7,8 @@
 // launched through a template that was never instantiated.  Everything *around*
 // that pointer is the same for every kernel, which is what this header holds:
 //
-//   * ask the driver how much static LDS the instantiation already uses,
+//   * ask the driver how much static LDS the instantiation already uses, and that
+//     it can host the block the design needs,
 //   * reserve the dynamic remainder (the page array) as one request,
 //   * launch with one block per CU row and the current stream.
 //
@@ -43,6 +44,20 @@ inline bool reserve_dynamic_lds(const void* kernel) {
     hipFuncAttributes attributes{};
     if (hipFuncGetAttributes(&attributes, kernel) != hipSuccess)
         return launch_detail::fail("hipFuncGetAttributes failed");
+    // The block is kThreads wide (consumer waves plus the three service waves).  A
+    // kernel compiled without that launch bound gets the compiler's default of 256,
+    // and the driver then *clamps* the launch: the last waves silently do not exist,
+    // which is invisible on a one-tile shape and wrong on every other.  Fail loudly
+    // instead of launching a kernel that cannot host its own roles.
+    if (static_cast<uint32_t>(attributes.maxThreadsPerBlock) <
+        static_cast<uint32_t>(config::kThreads)) {
+        std::fprintf(stderr,
+                     "dmk::launch: kernel compiled for at most %d threads per "
+                     "block but the design needs %d -- add "
+                     "__launch_bounds__(config::kThreads) to the kernel\n",
+                     attributes.maxThreadsPerBlock, config::kThreads);
+        return false;
+    }
     if (static_cast<size_t>(attributes.sharedSizeBytes) >=
         config::kLdsBytesPerCu)
         return launch_detail::fail("static LDS already fills the CU's 64 KiB");
