@@ -121,15 +121,18 @@ class SpecificOptimisationTests(unittest.TestCase):
             },
         )
 
-    def test_gemm_has_exactly_one_class(self) -> None:
-        # The DUMMA-fragment GEMM used to live beside GemmOp and was never called
-        # by it; two implementations of one operator is one too many.
+    def test_gemm_has_one_class_and_runs_on_dumma(self) -> None:
+        # One class, and the arithmetic is the matrix unit -- a second standalone
+        # GEMM would be two implementations again, whichever one it wraps.
         gemm = (OPS / "gemm.h").read_text()
         self.assertIn("class GemmOp final : public BaseOp<Globals>", gemm)
-        for gone in ("GemmWaveT", "GemmSharedT", "GemmParamsT", "run_gemm_wave",
-                     "mma_supported", "dumma"):
-            self.assertNotIn(gone, gemm, gone)
         self.assertEqual(gemm.count("class "), 1)
+        for gone in ("GemmWaveT", "GemmSharedT", "GemmParamsT", "run_gemm_wave"):
+            self.assertNotIn(gone, gemm, gone)
+        for used in ("dumma::ld_matrix", "dumma::mma", "dumma::store_matrix",
+                     "dumma::fill_fragment", "DFragment"):
+            self.assertIn(used.replace("DFragment", "DUFragment"), gemm.replace(
+                "DFragment", "DUFragment"), used)
 
     def test_opcodes_are_declared_once_in_config(self) -> None:
         # words[0] is a wire format shared by the runtime, the host encoder and

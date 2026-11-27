@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ops/dumma.h"
 #include "ops/tensor.h"
 #include "ops/copy.h"
 #include "ops/dtype.h"
@@ -12,11 +13,26 @@
 // Page-based GEMM operator -- the only GEMM in this tree.
 //
 // One instruction is one whole output tile over the full K of the matrix:
-// load() stages the first A/B k-tile and clears C, run() walks every k-tile and
-// accumulates into the C page, store() writes C.  The tile arithmetic is a
-// straightforward scalar loop: a DUMMA-fragment version lived here too, but two
-// implementations of one operator is one too many, and the persistent op never
-// called it.
+// load() stages the first A/B k-tile, run() walks every k-tile accumulating in a
+// DUMMA register fragment, store() writes the tile out.  The arithmetic is the
+// hardware matrix unit (`ops/dumma.h`), not scalar FFMA: its ceiling is the
+// tensor-core rate rather than the ~18 TFLOP/s an FFMA loop can reach.
+//
+// Tile arithmetic, for the float32 path:
+//
+//   accumulator : DUFragment<accumulator, 16, 16, 4, float>   (registers)
+//   per k-step  : four m16n16k4 mma, each reading a 16x4 slice of A and a 4x16
+//                 slice of B straight out of the staged pages (leading
+//                 dimension = kTile, so no packing is needed)
+//   epilogue    : store_matrix -> C page -> HBM (store())
+//
+// Two accumulator fragments alternate because `du_mma_sync` writes a different
+// destination than it reads; the pair is the same trick the deleted standalone
+// kernel used.
+//
+// One consumer wave computes, and that is not an oversight: DUMMA is a
+// whole-wave instruction, so four waves cannot split one 16x16 tile the way
+// scalar lanes could.
 // Pages: lid 0 = A k-tile, lid 1 = B k-tile, lid 2 = C tile; the pages the
 // operator does not own are released by load().
 namespace ops {
@@ -28,6 +44,18 @@ public:
     static constexpr int kTile = 16;
     static constexpr int kTileElements = kTile * kTile;
     static constexpr tile::TileShape<2> kTileShape{{kTile, kTile}};
+
+    //: K width of one DUMMA step in the float32 path (m16n16k4).
+    static constexpr int kStep = 4;
+
+    using AFragment = ::du::dumma::DUFragment<::du::dumma::matrix_a, kTile, kTile,
+                                              kStep, float,
+                                              ::du::dumma::row_major>;
+    using BFragment = ::du::dumma::DUFragment<::du::dumma::matrix_b, kTile, kTile,
+                                              kStep, float,
+                                              ::du::dumma::row_major>;
+    using Accumulator = ::du::dumma::DUFragment<::du::dumma::accumulator, kTile,
+                                                kTile, kStep, float>;
 
     struct Instruction {
         int m0;
@@ -80,16 +108,13 @@ public:
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int pid_a = s.pid(0);
         const int pid_b = s.pid(1);
-        const int pid_c = s.pid(2);
         s.wait_page_ready(pid_a);
         s.wait_page_ready(pid_b);
-        s.wait_page_ready(pid_c);
+        // The C page needs no wait or clear here: run()'s `store_matrix` writes
+        // all 256 elements, and every instruction takes at least one k-step.
+        s.wait_page_ready(s.pid(2));
 
         stage_operands(s, g, inst, 0, lane);
-        tile::fill_tile(
-            tile::make_lds_view(static_cast<float*>(s.pages[pid_c].ptr()),
-                                tensor::Shape<2>{{kTile, kTile}}),
-            0.0f, lane, config::kWaveSize);
 
         lds::wave_barrier();
         __threadfence_block();
@@ -103,22 +128,32 @@ public:
         }
     }
 
-    // The whole GEMM for this output tile: every k-tile, accumulating into C.
+    // The whole GEMM for this output tile: every k-tile, accumulated in a DUMMA
+    // register fragment.
+    //
+    // Only the first consumer wave takes part -- DUMMA is a whole-wave
+    // instruction, so the tile cannot be split across waves the way a scalar
+    // loop could.
     __device__ void run(State& s, const Globals& g) const override {
         const Instruction inst(this->instruction());
         const int lane = static_cast<int>(threadIdx.x % config::kWaveSize);
         const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
+        const int pid_a = s.pid(0);
+        const int pid_b = s.pid(1);
+        const int pid_c = s.pid(2);
 
         s.semaphores()[0].wait(0);
         if (wave == 0) {
-            const int pid_a = s.pid(0);
-            const int pid_b = s.pid(1);
-            const int pid_c = s.pid(2);
-            const float* a_page =
-                static_cast<const float*>(s.pages[pid_a].ptr());
-            const float* b_page =
-                static_cast<const float*>(s.pages[pid_b].ptr());
+            const float* a_page = static_cast<const float*>(s.pages[pid_a].ptr());
+            const float* b_page = static_cast<const float*>(s.pages[pid_b].ptr());
             float* c_page = static_cast<float*>(s.pages[pid_c].ptr());
+
+            Accumulator current;
+            Accumulator next;
+            dumma::fill_fragment(current, 0.0f);
+            dumma::fill_fragment(next, 0.0f);
+            AFragment a_fragment;
+            BFragment b_fragment;
 
             for (int k = 0; k < inst.k_tiles; ++k) {
                 if (k > 0) {
@@ -126,19 +161,25 @@ public:
                     lds::wave_barrier();
                     __threadfence_block();
                 }
-                for (int i = lane; i < kTileElements; i += config::kWaveSize) {
-                    const int row = i / kTile;
-                    const int col = i % kTile;
-                    float sum = 0.0f;
+                // One k-tile is 16 wide; the float path consumes it in four
+                // m16n16k4 steps, reading the slices straight out of the pages
+                // (leading dimension kTile, so no repacking).
 #pragma unroll
-                    for (int kk = 0; kk < kTile; ++kk)
-                        sum += a_page[row * kTile + kk] *
-                               b_page[kk * kTile + col];
-                    c_page[i] += sum;
+                for (int step = 0; step < kTile; step += kStep) {
+                    dumma::ld_matrix(a_fragment, a_page + step,
+                                     static_cast<unsigned>(kTile));
+                    dumma::ld_matrix(b_fragment, b_page + step * kTile,
+                                     static_cast<unsigned>(kTile));
+                    dumma::mma(next, a_fragment, b_fragment, current);
+                    Accumulator previous = current;
+                    current = next;
+                    next = previous;
                 }
                 lds::wave_barrier();
                 __threadfence_block();
             }
+            dumma::store_matrix(c_page, current, static_cast<unsigned>(kTile),
+                                dumma::native::mem_row_major);
         }
         lds::wave_barrier();
         __threadfence_block();

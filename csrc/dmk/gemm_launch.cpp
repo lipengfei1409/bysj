@@ -2,7 +2,9 @@
 //
 // This is the smallest end-to-end path through the persistent runtime -- an
 // instruction stream in, a dense product out -- and the only operator the host
-// driver (`python/dmk`) can launch today.
+// driver (`python/dmk`) can launch today.  The arithmetic inside is DUMMA
+// (`ops/gemm.h` -> `ops/dumma.h`), so the kernel is limited by the matrix unit
+// rather than by an FFMA loop.
 //
 // Layout matches `ops/gemm.h`: one instruction computes a 16x16 output tile of
 // `C = A @ B` by walking `k_tiles` k-steps of 16,
