@@ -117,6 +117,51 @@ PYTHONPATH=python python3 -m unittest tests.csrc.latency.test_persistent_gemm_la
 的 SGEMM 在 gfx906 上也是 VALU/FFMA 实现，所以 `ratio` 比的是**两套标量调度的差距**，不是"标量 vs
 tensor core"——判断"要不要上矩阵单元"要换到支持 DUMMA 的卡上测。
 
+## 定位 dense GEMM 的瓶颈
+
+先拿到"差多少"，再拿"差在哪"。三个引擎与 rocBLAS 的同一形状：
+
+```bash
+# 计划（不跑）：形状、指令数、FLOP
+PYTHONPATH=python python3 -m dmk.scripts.bench_gemm dense --shape 2048x2048x2048
+
+# 一个引擎的实测
+PYTHONPATH=python python3 -m dmk.scripts.bench_gemm dense --shape 2048x2048x2048 --iterations 20
+PYTHONPATH=python python3 -m dmk.scripts.bench_gemm scheduled --shape 2048x2048x2048 --cus 4 --iterations 20
+```
+
+`DPA4_DEBUG_GEMM=1` 会打印决定 occupancy 的三个数（不用 profiler）：
+
+```bash
+DPA4_DEBUG_GEMM=1 PYTHONPATH=python python3 -m dmk.scripts.bench_gemm dense --shape 2048x2048x2048 --iterations 1
+# dense gemm: regs=… static_lds=24576 B threads=256 grid=(32,32) kMT=64 kNT=64 kKT=8
+```
+
+`static_lds=24576`（24 KiB）意味着 **最多 2 个 block/CU**；`regs` 再决定能否真的放 2 个
+（`2 × 256 × regs ≤ 65536`，即 `regs ≤ 128`）。放不下 2 个 → 每步 stage 都在吃满 HBM 延迟。
+
+### 计数器
+
+```bash
+rocprofv3 --kernel-trace -f csv -o /tmp/dense_k -- \
+  env PYTHONPATH=python python3 -m dmk.scripts.bench_gemm dense --shape 2048x2048x2048 --iterations 5
+
+rocprofv3 --list-pmc | grep -iE "bank|mfma|lds|tcc|gui"
+rocprofv3 --pmc SQ_LDS_BANK_CONFLICT,SQ_INSTS_LDS,SQ_INSTS_MFMA,SQ_WAVES,\
+GRBM_GUI_ACTIVE,TCP_TCC_READ_REQ,TCC_HIT -f csv -o /tmp/dense_pmc -- \
+  env PYTHONPATH=python python3 -m dmk.scripts.bench_gemm dense --shape 2048x2048x2048 --iterations 5
+```
+
+判读表：
+
+| 观测 | 结论 | 改法 |
+| --- | --- | --- |
+| `SQ_LDS_BANK_CONFLICT` 与 `SQ_INSTS_LDS` 同量级 | **LDS 冲突**：A 的 stride=8、B 的 stride=64 都是 32 bank 的整数倍，fragment 读每次都撞同一批 bank | stage 行距加 padding（A 8→36、B 64→68，`ld` 跟着改） |
+| `SQ_WAVES` 只有 4（一个 block）且 `GRBM_GUI_ACTIVE` 很低 | occupancy = 1，stage 与计算串行 | 砍 LDS（C 用 4 KiB 分块）到 ≤16 KiB，或加预取 |
+| `SQ_INSTS_MFMA × 4096 FLOP / duration ≪ 实测 TFLOP/s` | 矩阵单元在等数据 | 加大 k-step（8 → 32）减少屏障与分批次数 |
+| `TCP_TCC_READ_REQ` 高、`TCC_HIT` 低 | 每个输出 tile 都重读 A/B | 加大 block tile（64→128）或做 L2 分块 |
+| A 的装载只有 32 B/行（`kKT=8`）| 每行一段独立事务 | `kKT=32` → 128 B/行 |
+
 ## 一条经验
 
 先跑 §1 与 §2 各 **一次**（约两分钟），再决定改哪一项。不要在没有计数器的前提下直接写 P1/P2——那正是上一轮我差点做的：三个 consumer wave 空转是**读代码看出来的猜测**，而 `SQ_WAVES` 会直接告诉你是 4 还是 8。

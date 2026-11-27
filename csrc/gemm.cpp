@@ -34,6 +34,8 @@
 #include <hip/hip_runtime.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 
 namespace {
 
@@ -213,6 +215,24 @@ Tensor gemm_dense_hip(Tensor matrix_a, Tensor matrix_b) {
 
     const dim3 grid(static_cast<unsigned>((n + kNT - 1) / kNT),
                     static_cast<unsigned>((m + kMT - 1) / kMT));
+
+    // `DPA4_DEBUG_GEMM=1` prints what decides occupancy for this kernel -- the facts a
+    // profiler would show first, available without one.  LDS per block is the tile
+    // staging (A, B, C); registers decide how many blocks fit next to it.
+    if (std::getenv("DPA4_DEBUG_GEMM") != nullptr) {
+        hipFuncAttributes attributes{};
+        if (hipFuncGetAttributes(&attributes,
+                                 reinterpret_cast<const void*>(dense_gemm_kernel)) ==
+            hipSuccess) {
+            std::printf(
+                "dense gemm: regs=%d static_lds=%zu B threads=%d grid=(%u,%u) "
+                "kMT=%d kNT=%d kKT=%d\n",
+                attributes.numRegs,
+                static_cast<size_t>(attributes.sharedSizeBytes), kThreads,
+                grid.x, grid.y, kMT, kNT, kKT);
+            std::fflush(stdout);
+        }
+    }
     dense_gemm_kernel<<<grid, kThreads, 0, at::cuda::getCurrentCUDAStream()>>>(g);
     launch_check();
     return matrix_c;
