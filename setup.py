@@ -1,5 +1,6 @@
 """Build the DPA4 native HIP operators by default."""
 import os
+import pathlib
 
 from setuptools import find_packages, setup
 
@@ -10,6 +11,13 @@ os.environ["CXX"] = hip_cxx
 
 import torch
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
+# Absolute, because a relative `-Icsrc` is resolved against whatever working
+# directory the build tool runs the compiler in -- under torch's ninja backend
+# that is the build temp dir, not the project root, so the flag silently points
+# at nothing and every `#include "ops/..."` from a subdirectory fails with
+# "'ops.h' file not found".
+CSRC = pathlib.Path(__file__).resolve().parent / "csrc"
 
 if not torch.version.hip:
     raise RuntimeError("native build requires a ROCm/DTK PyTorch installation")
@@ -33,7 +41,7 @@ ext_modules = [CUDAExtension(
     sources=sources,
     # ops/ and dmk/ are addressed as "ops/..." and "dmk/..." from every
     # translation unit, including the headers they include from each other.
-    include_dirs=["csrc"],
+    include_dirs=[str(CSRC)],
     define_macros=[],
     extra_compile_args={"cxx": ["-O3", "-std=c++17"]},
 )]

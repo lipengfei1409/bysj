@@ -22,6 +22,27 @@ def _headers(directory: Path) -> list[Path]:
     return sorted(p for p in directory.glob("*.h"))
 
 
+class BuildIncludePathTests(unittest.TestCase):
+    """A cwd-relative include dir breaks every header include from a subdirectory."""
+
+    def test_the_csrc_include_dir_is_absolute(self) -> None:
+        # torch's ninja backend runs the compiler from the build temp directory,
+        # so `-Icsrc` points at nothing there and `csrc/dmk/*.cpp` cannot see
+        # `ops.h` (or `ops/...` from any header).  It must be absolute.
+        setup_py = (ROOT / "setup.py").read_text()
+        self.assertIn('include_dirs=[str(CSRC)]', setup_py)
+        self.assertIn("CSRC = pathlib.Path(__file__).resolve().parent", setup_py)
+        self.assertNotIn('include_dirs=["csrc"]', setup_py)
+
+    def test_the_launcher_reaches_the_operator_headers(self) -> None:
+        launcher = (DMK / "gemm_launch.cpp").read_text()
+        for used in ('#include "ops/gemm.h"', '#include "ops/noop.h"'):
+            self.assertIn(used, launcher)
+        # `#include "ops.h"` resolves only through the include dir, which is the
+        # path the build above guarantees.
+        self.assertIn('#include "checks.h"', launcher)
+
+
 class GemmWaveContractTests(unittest.TestCase):
     """The host and the kernel must agree on how many tiles one instruction covers."""
 
