@@ -113,12 +113,22 @@ full output: /…/build/build.log
 `ops/gemm.h` 的 fragment 声明、`dmk/launch.h` 的 LDS 预留、`ops/dumma.h` 的名字解析。
 报 `unsupported DUMMA (dtype, K) pair` 或 `has no DUMMA` 就回第 0 步。
 
-## 2. 主机侧回归（不需要卡，10 秒）
+## 2. 主机侧回归 + 设备套件（一条命令）
 
 ```bash
-python3 tests/run_python_tests.py
-#   期望：Ran 262 tests ... OK (skipped=2)
+python3 tests/run_python_tests.py                # 主机 287 项（不需要卡）
+python3 tests/run_python_tests.py --dcu          # + 精度套件（主机上自动 skip）
+python3 tests/run_python_tests.py --dcu --latency  # + 与 rocBLAS 的计时
+python3 tests/run_python_tests.py --dcu -k dense   # 只跑名字含 dense 的
 ```
+
+三个引擎现在各有一套精度测试，`--dcu` 会一起跑：
+
+| 套件 | 引擎 | 形状 |
+| --- | --- | --- |
+| `tests/csrc/accuracy/test_persistent_gemm.py` | 分角色 `dmk_gemm` + 无角色 `dmk_gemm_flat` | 11 形状 × CU{1,4,32}，且两者**逐位一致** |
+| `tests/csrc/accuracy/test_dense_gemm.py` | 普通 `gemm_dense` | 9 个满 tile + 5 个 partial（含 `1×1×1`） |
+| `tests/csrc/accuracy/test_persistent_gemm_smoke.py` | 冒烟六形状 | 单 tile / 两 tile / 四 tile / 短 run / 深 K |
 
 ## 3. 冒烟：五个形状，各隔离一个机制（**最先跑的卡上测试**）
 

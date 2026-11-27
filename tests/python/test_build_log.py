@@ -183,6 +183,14 @@ class BuildLogTests(unittest.TestCase):
         self.assertIn("--dry-run", tool)
         self.assertIn("would remove", tool)
 
+    def test_the_runner_can_add_the_device_suites(self) -> None:
+        # One command for "everything that can run here": the device suites skip
+        # themselves on a host, so the flag is safe either way.
+        runner = (ROOT / "tests" / "run_python_tests.py").read_text()
+        self.assertIn('"--dcu": ("tests/csrc/accuracy", "test_*.py")', runner)
+        self.assertIn('"--latency": ("tests/csrc/latency", "test_*.py")', runner)
+        self.assertIn("skips on a host", runner)
+
     def test_the_effective_arch_is_printed(self) -> None:
         # One line at the top of every build, because "which arch did this compile
         # for" was ambiguous for several rounds and is the first thing to check.
