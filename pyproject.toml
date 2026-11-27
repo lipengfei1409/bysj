@@ -1,3 +1,11 @@
 [build-system]
 requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+# The packages live under `python/`; without this, `pytest` collects the suite
+# and then fails on `import dmk` -- the one failure that looks like a broken test
+# rather than a missing path.  `python3 tests/run_python_tests.py` does the same
+# for unittest.
+pythonpath = ["python", "tests/dcu"]
+testpaths = ["tests/python", "tests/csrc"]
