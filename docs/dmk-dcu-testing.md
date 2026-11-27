@@ -13,10 +13,20 @@ source /opt/dtk/env.sh
 rocminfo | grep -o "gfx[0-9]*" | sort -u
 ```
 
-| 查到的架构 | 走哪条路 |
+**默认目标架构是 `gfx928`**（部署卡），不是"编译机是什么就编什么"：
+
+```python
+DEFAULT_ARCH = "gfx928"
+ARCH = os.environ.get("PYTORCH_ROCM_ARCH") or DEFAULT_ARCH
+```
+
+于是三种情形：
+
+| 情形 | 行为 |
 | --- | --- |
-| `gfx926` / `gfx928` / `gfx936` / `gfx938` | **DUMMA**（矩阵单元），`PYTORCH_ROCM_ARCH` 由 `setup.py` 自动取本卡架构 |
-| 其它（如 `gfx906`） | 这张卡**没有**矩阵单元。`setup.py` 会自动退回标量并打印一行说明；性能预期改成标量上限 |
+| 编译机就是 gfx928 | 直接用，DUMMA 路径可用 |
+| 编译机是别的卡（如 gfx906） | 照 `gfx928` 编，并打印 `note: building for gfx928; this device is gfx906 ... will not run here`；**产物只能在 928 上跑** |
+| 想在本机跑 | `export PYTORCH_ROCM_ARCH=gfx906`，但 gfx906 没有矩阵单元 → 必须再加 `DPA4_GEMM_SCALAR=1` |
 
 `gfx906` 上还有一个重要事实：**rocBLAS 的 SGEMM 在 gfx906 上同样是 VALU/FFMA 实现**（这张卡没有
 MFMA/DUMMA）。所以那边的对比是"同样用标量单元，谁的调度更好"，不是"标量 vs 矩阵单元"——差距会落在

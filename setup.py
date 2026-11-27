@@ -22,58 +22,51 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 # "'ops.h' file not found".
 CSRC = pathlib.Path(__file__).resolve().parent / "csrc"
 
-# `DPA4_GEMM_SCALAR=1` builds the persistent GEMM against the FP32 scalar loop
-# instead of DUMMA.  It exists because the matrix-unit API in `du_mma.h` differs
-# between DTK releases: when the installed header does not expose the fragment
-# API, the kernel can still be built, run and measured, and the scheduling side
-# (pages, waves, split) can be validated on its own.
-CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if os.environ.get("DPA4_GEMM_SCALAR") == "1" else []
+# DTK's du_mma.h supports exactly these four architectures and hard-errors on
+# anything else, so a build for another target cannot contain the DUMMA path.
+DUMMA_ARCHES = ("gfx926", "gfx928", "gfx936", "gfx938")
 
-# DTK's du_mma.h hard-errors on anything outside gfx926/gfx928/gfx936/gfx938, and
-# torch compiles for every target in PYTORCH_ROCM_ARCH (defaulting to all the
-# arches the toolkit knows, gfx906 included).  Fail here, with the fix in the
-# message, instead of as "undefined template DUFragment" deep in a device pass.
-_DUMMA_ARCHES = ("gfx926", "gfx928", "gfx936", "gfx938")
-_ARCH_ENV = os.environ.get("PYTORCH_ROCM_ARCH", "")
-if not _ARCH_ENV:
-    # No explicit arch: ask the device.  Otherwise torch compiles for the default
-    # list of the installed ROCm version, which on this host included gfx906 --
-    # and DTK's du_mma.h hard-errors on anything outside its four.
-    try:
-        _detected = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
-    except Exception:  # noqa: BLE001 - no device visible; leave it to the build
-        _detected = ""
-    if _detected:
-        os.environ["PYTORCH_ROCM_ARCH"] = _detected
-        _ARCH_ENV = _detected
+#: Where this builds *for*.  gfx928 is the deployment card, so it is the default
+#: even when the machine running the build has an older one -- cross-compiling for
+#: the target is the normal case here.  An explicit `PYTORCH_ROCM_ARCH` wins.
+DEFAULT_ARCH = "gfx928"
+ARCH = os.environ.get("PYTORCH_ROCM_ARCH") or DEFAULT_ARCH
+os.environ["PYTORCH_ROCM_ARCH"] = ARCH
+TARGETS = [a for a in re.split(r"[,;\s]+", ARCH) if a]
 
-if not CSCALAR_ARGS and _ARCH_ENV and _ARCH_ENV not in _DUMMA_ARCHES:
-    # This card has no matrix unit, so the DUMMA path cannot exist on it.  Building
-    # the scalar GEMM is the only thing that can run here, and asking for it in an
-    # error message would just be a riddle: do it, and say so.
-    if not os.environ.get("DPA4_GEMM_SCALAR"):
-        print(
-            f"note: {_ARCH_ENV} has no DUMMA (supported: "
-            + ", ".join(_DUMMA_ARCHES)
-            + "); building the scalar GEMM.  The persistent scheduling, pages and"
-            " waves are the same -- only the inner loop is FFMA."
-        )
-    os.environ["DPA4_GEMM_SCALAR"] = "1"
-    CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"]
-if not CSCALAR_ARGS and _ARCH_ENV:
-    # torch accepts a semicolon- or comma-separated list ("gfx906;gfx928"), and
-    # people also paste it space-separated; split on all three.
-    _targets = [a for a in re.split(r"[,;\s]+", _ARCH_ENV) if a]
-    _bad = [a for a in _targets if a not in _DUMMA_ARCHES]
-    if _bad:
+# `DPA4_GEMM_SCALAR=1` builds the persistent GEMM on the FP32 scalar loop instead
+# of DUMMA: the same pages, waves and split, a different inner loop.  It is the way
+# to run this on a card with no matrix unit, and the way to separate "is the
+# scheduling right" from "is the fragment layout right".
+BUILD_SCALAR = os.environ.get("DPA4_GEMM_SCALAR") == "1"
+if not BUILD_SCALAR:
+    unsupported = [a for a in TARGETS if a not in DUMMA_ARCHES]
+    if unsupported:
         raise SystemExit(
-            "PYTORCH_ROCM_ARCH=" + _ARCH_ENV + " contains "
-            + ", ".join(_bad)
-            + ", which DTK's du_mma.h does not support ("
-            + ", ".join(_DUMMA_ARCHES)
-            + ").\nSet PYTORCH_ROCM_ARCH to this card's arch (rocminfo | grep gfx), "
-            "or build the scalar GEMM with DPA4_GEMM_SCALAR=1."
+            f"PYTORCH_ROCM_ARCH={ARCH} contains {', '.join(unsupported)}, which "
+            "DTK's du_mma.h does not support (" + ", ".join(DUMMA_ARCHES) + ").\n"
+            f"Leave it at the default ({DEFAULT_ARCH}) to build for the deployment "
+            "card, or set DPA4_GEMM_SCALAR=1 to build the scalar GEMM for any "
+            "architecture."
         )
+CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if BUILD_SCALAR else []
+
+
+def _device_arch() -> str:
+    """The arch of the visible card, or "" when there is none."""
+    try:
+        return torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+    except Exception:  # noqa: BLE001 - no device visible
+        return ""
+
+
+_DEVICE = _device_arch()
+if _DEVICE and _DEVICE not in TARGETS:
+    print(
+        f"note: building for {ARCH}; this device is {_DEVICE}.  The extension "
+        "will compile for the target and will not run here -- "
+        f"set PYTORCH_ROCM_ARCH={_DEVICE} to build for this machine."
+    )
 
 if not torch.version.hip:
     raise RuntimeError("native build requires a ROCm/DTK PyTorch installation")

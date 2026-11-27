@@ -74,20 +74,35 @@ class BuildLogTests(unittest.TestCase):
 
     def test_the_arch_list_is_split_on_every_separator(self) -> None:
         # PYTORCH_ROCM_ARCH accepts "gfx906;gfx928" and people also paste commas or
-        # spaces; a single-target list must not be mistaken for one weird target.
+        # spaces; a multi-target list must not become one bogus target.
         source = (ROOT / "setup.py").read_text()
-        self.assertIn(r're.split(r"[,;\s]+", _ARCH_ENV)', source)
+        self.assertIn('re.split(r"[,;\\s]+", ARCH)', source)
         splitter = __import__("re").compile(r"[,;\s]+")
         for value in ("gfx906;gfx928", "gfx906,gfx928", "gfx906 gfx928"):
             self.assertEqual([a for a in splitter.split(value) if a],
                              ["gfx906", "gfx928"], value)
 
-    def test_the_arch_defaults_to_the_device_and_widens_only_on_request(self) -> None:
+    def test_the_arch_defaults_to_the_deployment_card(self) -> None:
+        # gfx928 is what the model runs on; a dev box may have an older card, and
+        # a build for the deployment target is the normal case.
         source = (ROOT / "setup.py").read_text()
-        # detection runs only when nothing was exported, so an explicit multi-arch
-        # list always wins
-        self.assertIn("if not _ARCH_ENV:", source)
-        self.assertIn("gcnArchName", source)
+        self.assertIn('DEFAULT_ARCH = "gfx928"', source)
+        self.assertIn('ARCH = os.environ.get("PYTORCH_ROCM_ARCH") or DEFAULT_ARCH',
+                      source)
+        self.assertNotIn('if not _ARCH_ENV:', source)
+
+    def test_a_build_for_another_card_says_so(self) -> None:
+        # Cross-compiling is allowed, but the binary will not run on this machine;
+        # saying it here is cheaper than a HIP "no binary for GPU" later.
+        source = (ROOT / "setup.py").read_text()
+        self.assertIn("_device_arch()", source)
+        self.assertIn("will not run here", source)
+
+    def test_an_unsupported_arch_is_refused_unless_the_GEMM_is_scalar(self) -> None:
+        source = (ROOT / "setup.py").read_text()
+        self.assertIn("DUMMA_ARCHES = (", source)
+        self.assertIn("does not support", source)
+        self.assertIn('BUILD_SCALAR = os.environ.get("DPA4_GEMM_SCALAR") == "1"', source)
 
     def test_the_log_path_is_inside_build(self) -> None:
         source = (ROOT / "setup.py").read_text()
