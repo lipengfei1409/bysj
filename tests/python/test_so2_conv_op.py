@@ -22,7 +22,9 @@ class TemplateConformanceTests(unittest.TestCase):
         self.text = OP.read_text()
 
     def test_it_derives_from_the_base_op_with_a_static_opcode(self) -> None:
-        self.assertIn("class So2ConvOp final : public BaseOp<Globals>", self.text)
+        # One class holds both forms; the persistent one is the nested Op.
+        self.assertIn("struct So2Conv {", self.text)
+        self.assertIn("class Op final : public BaseOp<Globals>", self.text)
         self.assertIn("static constexpr int opcode", self.text)
         self.assertIn("inline constexpr int kSo2ConvOpcode", self.text)
 
@@ -41,10 +43,10 @@ class TemplateConformanceTests(unittest.TestCase):
 
     def test_it_is_trivially_destructible_like_the_template_requires(self) -> None:
         # No user-declared destructor, and no owning member.
-        self.assertNotIn("~So2ConvOp", self.text)
+        self.assertNotIn("~Op", self.text)
 
     def test_the_constructor_takes_the_instruction_words(self) -> None:
-        self.assertIn("explicit So2ConvOp(const int* instruction)", self.text)
+        self.assertIn("explicit Op(const int* instruction)", self.text)
 
     def test_opcode_is_free_in_the_dmk_table(self) -> None:
         # The instruction word's opcode is what the runtime dispatches on, so the

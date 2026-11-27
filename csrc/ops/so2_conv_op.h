@@ -86,8 +86,8 @@ using ops::BaseOp;
 
 //: Host-side pointers this op reads. The kernel's Globals must carry one.
 //
-// The host has to add a member of this type to its Globals struct; the op is
-// then instantiated as So2ConvOp<Globals> and reaches it as g.so2.
+// The host has to add a member of this type to its Globals struct; the persistent
+// form is then instantiated as So2Conv::Op<Globals> and reaches it as g.so2.
 struct So2ConvTensorPack {
     const float* x;      // (n_node, dim, channels) node features
     const long* src;     // (n_edge,) source node of each edge
@@ -100,13 +100,51 @@ struct So2ConvTensorPack {
 
 //: Opcode of this operator. 4 is the free slot in the dmk table (0 noop,
 //: 1 elementwise, 2 gemm, 3 embedding, 5 attention), and a free constant so the
-//: host encoder does not have to instantiate So2ConvOp<Globals> for its value.
+//: host encoder does not have to instantiate So2Conv::Op<Globals> for its value.
 inline constexpr int kSo2ConvOpcode = 4;
+
+#if OPS_MODE == OPS_MODE_ORDINARY
+// Declared here, defined below: So2Conv::launch() names both.
+__global__ void so2_conv_span_kernel(const So2ConvTensorPack pack, long edges,
+                                     int dim, int red, int layers, int channels);
+__host__ inline unsigned so2_conv_span_blocks(long edges);
+#endif
+
+//: The operator: one class, two forms.
+//:
+//:   So2Conv::Op<Globals>  persistent form, a BaseOp subclass the megakernel VM
+//:                         drives (compiled in persistent mode only -- it needs
+//:                         the runtime's BaseOp and State)
+//:   So2Conv::launch()     ordinary form, one kernel launch (ordinary mode only)
+//:
+//: Both call the same ops::so2::* math and the same table helpers, so the forms
+//: cannot disagree about the arithmetic, the layouts or the budgets.  The kernel
+//: itself stays a free function: whether a static member can be `__global__` is a
+//: compiler detail not worth betting the build on, and `launch()` gives the class
+//: its entry point either way.
+struct So2Conv {
+    static constexpr int kEdgeWaves = kSo2ConvEdgeWaves;
+    static constexpr int kBlockThreads = kSo2ConvBlockThreads;
+
+    //: Grid for an edge count, clamped so a huge edge array still launches.
+    __host__ inline static unsigned blocks(long edges) {
+        return so2_conv_span_blocks(edges);
+    }
+
+#if OPS_MODE == OPS_MODE_ORDINARY
+    //: Ordinary entry point: one launch of so2_conv_span_kernel.
+    __host__ inline static void launch(const So2ConvTensorPack& pack, long edges,
+                                       int dim, int red, int layers,
+                                       int channels, hipStream_t stream) {
+        so2_conv_span_kernel<<<blocks(edges), kSo2ConvBlockThreads, 0, stream>>>(
+            pack, edges, dim, red, layers, channels);
+    }
+#endif
 
 #if OPS_MODE == OPS_MODE_PERSISTENT
 
-template <typename Globals>
-class So2ConvOp final : public BaseOp<Globals> {
+    template <typename Globals>
+    class Op final : public BaseOp<Globals> {
 public:
     static constexpr int opcode = kSo2ConvOpcode;
     static constexpr int kLaneChannels = config::kWaveSize;  // 64
@@ -134,7 +172,7 @@ public:
               channels(words[6]) {}
     };
 
-    __device__ explicit So2ConvOp(const int* instruction)
+    __device__ explicit Op(const int* instruction)
         : BaseOp<Globals>(instruction) {}
 
     __device__ int release_lid(int query) const override { return query; }
@@ -294,6 +332,7 @@ public:
 };
 
 #endif  // OPS_MODE == OPS_MODE_PERSISTENT
+};
 
 // --- host-side contract helpers -------------------------------------------
 //
@@ -349,7 +388,7 @@ inline void encode_so2_conv_instruction(int* words, int begin, int end, int dim,
 // Ordinary mode: the same per-edge span as one plain launch.
 //
 // One wave per edge, lane of the wave = channel, so every HBM access is a full
-// coalesced row and the span stays in registers.  `kEdgeWaves` edges are in
+// coalesced row and the span stays in registers.  `kSo2ConvEdgeWaves` edges are in
 // flight per block; the loop strides by that so any edge count is covered --
 // the same tail behaviour the persistent form has, where the wave count plays
 // that role.
@@ -359,10 +398,10 @@ inline void encode_so2_conv_instruction(int* words, int begin, int end, int dim,
 
 //: Edges in flight per block: one per consumer wave of the persistent form, so
 //: the two modes exercise the same amount of parallelism per block.
-inline constexpr int kEdgeWaves = 4;
+inline constexpr int kSo2ConvEdgeWaves = 4;
 
-//: One wave64 per edge, `kEdgeWaves` waves per block.
-inline constexpr int kBlockThreads = kEdgeWaves * 64;
+//: One wave64 per edge, `kSo2ConvEdgeWaves` waves per block.
+inline constexpr int kSo2ConvBlockThreads = kSo2ConvEdgeWaves * 64;
 
 __global__ void so2_conv_span_kernel(
     const So2ConvTensorPack pack, long edges, int dim, int red, int layers,
@@ -371,9 +410,9 @@ __global__ void so2_conv_span_kernel(
     const int lane = static_cast<int>(threadIdx.x) % 64;
     const int channel = lane;
     const bool active = channel < channels;
-    const long stride = static_cast<long>(gridDim.x) * kEdgeWaves;
+    const long stride = static_cast<long>(gridDim.x) * kSo2ConvEdgeWaves;
 
-    for (long edge = static_cast<long>(blockIdx.x) * kEdgeWaves + wave;
+    for (long edge = static_cast<long>(blockIdx.x) * kSo2ConvEdgeWaves + wave;
          edge < edges; edge += stride) {
         float y[ops::so2::kMaxDim];
         float xl[ops::so2::kMaxRed];
@@ -404,7 +443,7 @@ __global__ void so2_conv_span_kernel(
 
 //: Grid for an edge count, clamped so a huge edge array still launches.
 __host__ inline unsigned so2_conv_span_blocks(long edges) {
-    const long needed = (edges + kEdgeWaves - 1) / kEdgeWaves;
+    const long needed = (edges + kSo2ConvEdgeWaves - 1) / kSo2ConvEdgeWaves;
     const long limit = 65535;  // conservative grid.x bound across DCU parts
     return static_cast<unsigned>(needed < limit ? needed : limit);
 }

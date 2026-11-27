@@ -37,10 +37,24 @@
 为什么必须是编译期的：两种形态在运行期没有任何共同点——持久化形态要 `State&` 与页契约，
 普通形态要 grid/block 几何。同一次构建里混用会让同一个类出现两份定义。
 
-**当前状态**：`OPS_MODE` 机制已就位；**SO(2) 卷积已两种形态齐备且共用一个头文件**
-（`ops/so2_conv_op.h`：`#if OPS_MODE == OPS_MODE_PERSISTENT` 段是 `So2ConvOp`，
-`#elif` 段是 `so2_conv_span_kernel`），`csrc/so2_conv.cpp` 现在只剩 torch 胶水（校验、
-分配、launch、stream），kernel 体已经搬回头文件。其余五个算子（elementwise / embedding /
+**当前状态**：`OPS_MODE` 机制已就位；**SO(2) 卷积的两种形态收在同一个类里**：
+
+```cpp
+struct So2Conv {                                  // 一个类，两种形态
+    static constexpr int kEdgeWaves, kBlockThreads;
+    static unsigned blocks(long edges);
+#if OPS_MODE == OPS_MODE_ORDINARY
+    static void launch(pack, edges, dim, red, layers, channels, stream);
+#endif
+#if OPS_MODE == OPS_MODE_PERSISTENT
+    template <typename Globals> class Op final : public BaseOp<Globals> { ... };
+#endif
+};
+```
+
+`csrc/so2_conv.cpp` 只剩 torch 胶水（校验、分配、`So2Conv::launch(...)`），kernel 体与几何
+参数都在类里。`__global__` 函数仍是命名空间级自由函数——"静态成员能否是 `__global__`"是编译器的
+细节，不值得拿构建去赌；`launch()` 已经把入口收进类里。其余五个算子（elementwise / embedding /
 gemm / attention / noop）目前只有持久化形态，转换时照同一个模式加 `#if` 分支即可。
 
 `tests/python/test_ops_dmk_layout.py` 钉住四件事：开关是单一编译期定义（默认持久化、非法值

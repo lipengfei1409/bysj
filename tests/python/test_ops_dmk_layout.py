@@ -115,8 +115,11 @@ class ModeSwitchTests(unittest.TestCase):
         op = (OPS / "so2_conv_op.h").read_text()
         self.assertIn("#if OPS_MODE == OPS_MODE_PERSISTENT", op)
         self.assertIn("#if OPS_MODE == OPS_MODE_ORDINARY", op)
-        self.assertIn("class So2ConvOp final : public BaseOp<Globals>", op)
+        self.assertIn("class Op final : public BaseOp<Globals>", op)
         self.assertIn("__global__ void so2_conv_span_kernel", op)
+        # Both forms on one class.
+        self.assertIn("struct So2Conv {", op)
+        self.assertIn("static void launch(", op)
 
     def test_the_ordinary_mode_does_not_see_the_runtime_contract(self) -> None:
         # Ordinary mode must compile without ops/state.h or ops/op.h: no pages,
