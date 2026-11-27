@@ -50,9 +50,9 @@ DCU 每个 CU 只有 **64 KiB LDS**（DTK 26.04 HIP 编程指南 §2.2），wave
 
 | 项 | 值 |
 | --- | --- |
-| `kConsumerWaves` | 2 |
+| `kConsumerWaves` | 1 |
 | 服务波 | loader / storer / controller，共 3 |
-| `kTotalWaves` | 5，即 320 threads/block |
+| `kTotalWaves` | 4，即 256 threads/block |
 | `kPageSize` | 8 KiB |
 | `kNumPages` | 6 |
 | `kStages` | 2（instruction pipeline） |
@@ -279,7 +279,7 @@ wait(0) 在 ticket=4 之后返回；wait(1) 在 ticket=8 之后返回。
 
 | wave | 角色 | 数量 |
 | --- | --- | --- |
-| 0 .. `kConsumerWaves-1` | consumer | 2 |
+| 0 .. `kConsumerWaves-1` | consumer | 1 |
 | `kConsumerWaves` | loader | 1 |
 | `+1` | storer | 1 |
 | `+2` | controller | 1 |

@@ -127,10 +127,11 @@ class EmulatedProductTests(unittest.TestCase):
         globals_.instructions = torch.tensor(words, dtype=torch.int32)
         self.assertGreater(mk.verify(globals_, emulated=True), 1e-3)
         counts = python_vm.count_tiles(globals_.instructions, globals_.b.shape[1])
-        # 32x32 is two rows of one run (two tiles each).  Copying row 1's
-        # instruction from row 0 leaves row 1 unwritten and writes row 0 twice.
+        # 32x32 is a 2x2 tile grid.  Overwriting the last instruction with the first
+        # writes one tile twice and leaves another unwritten -- that is the split
+        # failure the audit exists for, and the emulated product must disagree too.
         self.assertEqual(max(counts.values()), 2)
-        self.assertEqual(len(counts), 2)
+        self.assertEqual(len(counts), (32 // 16) ** 2 - 1)
 
     def test_the_result_does_not_depend_on_the_cu_count(self) -> None:
         m, n, k = 64, 64, 32

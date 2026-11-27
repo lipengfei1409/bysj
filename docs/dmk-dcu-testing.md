@@ -130,7 +130,7 @@ PYTHONPATH=python python3 -m unittest tests.csrc.accuracy.test_persistent_gemm_s
 | --- | --- |
 | 16³ | 单 tile、单 k-step、只有 wave 0：页 / stage / fragment / 尾声 |
 | 16×32 | 一条指令两个 tile：wave 0 与 1 |
-| 16×64 | 两条指令各覆盖两个 tile：两个 consumer wave + 两个 C 页 + storer 遍历 |
+| 16×64 | 四条指令各覆盖一个 tile：consumer 波连续工作四次，storer 多次写回 |
 | 16×48 | 最后一个 run 只有三个 tile：**wave 3 必须完全不动**（越界裁剪） |
 | 64×256 | 四行 tile，每行一个满 run |
 | 128³ | 深 K：每波跨 8 个 k-tile 累加 |

@@ -53,9 +53,11 @@ inline constexpr int kEvents = 8;
 //
 // A consumer wave owns one 16x16 output tile per instruction and holds a DUMMA
 // accumulator in registers, so the consumer count is a register-pressure knob as
-// much as a parallelism one.  Two is the current step: one instruction covers two
-// tiles, and `kThreads` (5 waves = 320) follows.
-inline constexpr int kConsumerWaves = 2;
+// much as a parallelism one.  One is the current step: one instruction covers one
+// tile, exactly one accumulator is live, and `kThreads` (4 waves = 256) follows --
+// which is also the compiler's default launch bound, so nothing is clamped even if
+// the attribute is ever lost.
+inline constexpr int kConsumerWaves = 1;
 inline constexpr int kServiceWaves = 3;  // loader, storer, controller
 inline constexpr int kWaveSize = 64;
 inline constexpr int kWorkerWaves = 2 + kConsumerWaves;

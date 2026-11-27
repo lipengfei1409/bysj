@@ -93,13 +93,16 @@ class WorkTests(unittest.TestCase):
 
 class EmitterTests(unittest.TestCase):
     def test_one_instruction_per_run_of_tiles(self) -> None:
-        # 64x48 is 4 tile rows x 3 tile columns, so two runs of two per row (the
-        # second run is short when the run length does not divide the row).
+        # 64x48 is 4 tile rows x 3 tile columns: one instruction per run of
+        # GEMM_TILES_PER_INSTRUCTION tiles.
         instructions = emitters.gemm_instructions(64, 48, 32)
-        self.assertEqual(len(instructions), 8)
+        self.assertEqual(len(instructions),
+                         (64 // 16) * -(-(48 // 16) // GEMM_TILES_PER_INSTRUCTION))
         self.assertTrue(all(item.k_tiles == 2 for item in instructions))
+        step = GEMM_TILES_PER_INSTRUCTION * 16
         self.assertEqual({(i.m0, i.n0) for i in instructions},
-                         {(m, n) for m in (0, 16, 32, 48) for n in (0, 32)})
+                         {(m, n) for m in (0, 16, 32, 48)
+                          for n in range(0, 48, step)})
 
     def test_a_wide_matrix_needs_several_runs_per_row(self) -> None:
         # 16 tile columns of 16, GEMM_TILES_PER_INSTRUCTION per run.
@@ -186,10 +189,11 @@ class EmitterClassTests(unittest.TestCase):
         )
 
     def test_combined_work_adds_the_emitters_together(self) -> None:
-        gemm = emitters.GemmEmitter(32, 32, 16)          # 2 rows x 1 run
+        gemm = emitters.GemmEmitter(32, 32, 16)
+        runs = (32 // 16) * -(-(32 // 16) // GEMM_TILES_PER_INSTRUCTION)
         embedding = emitters.EmbeddingEmitter(3, elem_per_row=8)
         combined = emitters.combined_work([gemm, embedding])
-        self.assertEqual(combined.slots(GEMM), 2)
+        self.assertEqual(combined.slots(GEMM), runs)
         self.assertEqual(combined.slots("embedding"), 3)
         self.assertEqual(combined.gemm_k_tiles, 1)
 
@@ -215,7 +219,8 @@ class ModelScheduleTests(unittest.TestCase):
 
     def test_every_operator_contributes_its_own_slots(self) -> None:
         work = self._model().work()
-        self.assertEqual(work.slots("gemm"), 2)
+        self.assertEqual(work.slots("gemm"),
+                         (32 // 16) * -(-(32 // 16) // GEMM_TILES_PER_INSTRUCTION))
         self.assertEqual(work.slots("embedding"), 5)
         self.assertEqual(work.slots("attention"), 3)
 

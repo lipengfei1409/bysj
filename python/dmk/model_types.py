@@ -37,7 +37,7 @@ GEMM_TILE = 16
 #: Consumer waves per block, i.e. output tiles one GEMM instruction covers along
 #: N.  Mirrors `config::kConsumerWaves` in `csrc/ops/config.h`; a host test reads
 #: that header and fails if the two drift.
-GEMM_TILES_PER_INSTRUCTION = 2
+GEMM_TILES_PER_INSTRUCTION = 1
 
 
 @dataclass(frozen=True)
