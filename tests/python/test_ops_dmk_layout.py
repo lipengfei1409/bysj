@@ -22,6 +22,30 @@ def _headers(directory: Path) -> list[Path]:
     return sorted(p for p in directory.glob("*.h"))
 
 
+class NamespaceTests(unittest.TestCase):
+    """Which namespace each shared name lives in -- the mistake that cost two builds."""
+
+    def test_the_launcher_qualifies_every_shared_name(self) -> None:
+        launcher = (DMK / "gemm_launch.cpp").read_text()
+        # `tensor` and `config` are aliases inside dmk::mk, not members of dmk;
+        # kLaunchBytes is in ops, not in ops::config.
+        for wrong in ("dmk::tensor::", "dmk::config::", "dmk::mk::config::kLaunchBytes"):
+            self.assertNotIn(wrong, launcher, wrong)
+        self.assertIn("ops::tensor::from_torch", launcher)
+        self.assertIn("dmk::mk::config::kThreads", launcher)
+        self.assertIn("dmk::mk::kLaunchBytes", launcher)
+
+    def test_k_launch_bytes_is_defined_in_ops_not_config(self) -> None:
+        config = (OPS / "config.h").read_text()
+        marker = config.index("kLaunchBytes =")
+        before = config[:marker]
+        # the nearest preceding namespace close tells which namespace we are in
+        self.assertGreater(before.rindex("}  // namespace ops::config"),
+                           before.rfind("namespace ops::config {"),
+                           "kLaunchBytes unexpectedly moved inside ops::config")
+        self.assertIn("using ops::kLaunchBytes;", (DMK / "megakernel.h").read_text())
+
+
 class BuildIncludePathTests(unittest.TestCase):
     """A cwd-relative include dir breaks every header include from a subdirectory."""
 

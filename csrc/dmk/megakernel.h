@@ -29,6 +29,9 @@ namespace tensor = ::ops::tensor;
 using tensor::MemorySpace;
 using tensor::Shape;
 using tensor::Tensor;
+// The dynamic-LDS request a launch must make; it sits in `ops` rather than in
+// `ops::config` because it is a total, not a knob.
+using ops::kLaunchBytes;
 
 struct MkGlobals {
     // [blocks][num_instructions][kInstructionWidth]

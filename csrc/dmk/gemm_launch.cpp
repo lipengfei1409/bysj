@@ -79,11 +79,11 @@ bool request_dynamic_lds() {
     const auto status = hipFuncSetAttribute(
         reinterpret_cast<const void*>(gemm_mk),
         hipFuncAttributeMaxDynamicSharedMemorySize,
-        static_cast<int>(config::kLaunchBytes));
+        static_cast<int>(kLaunchBytes));
     if (status != hipSuccess) {
         std::fprintf(stderr,
                      "dmk::gemm: cannot reserve %zu B of dynamic LDS: %s\n",
-                     config::kLaunchBytes, hipGetErrorString(status));
+                     kLaunchBytes, hipGetErrorString(status));
         return false;
     }
     return true;
@@ -139,15 +139,15 @@ Tensor dmk_gemm_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,
     at::Tensor a_handle = matrix_a;
     at::Tensor b_handle = matrix_b;
     at::Tensor c_handle = matrix_c;
-    dmk::tensor::from_torch(instructions_handle, g.instructions);
-    dmk::tensor::from_torch(a_handle, g.matrix_a);
-    dmk::tensor::from_torch(b_handle, g.matrix_b);
-    dmk::tensor::from_torch(c_handle, g.matrix_c);
+    ops::tensor::from_torch(instructions_handle, g.instructions);
+    ops::tensor::from_torch(a_handle, g.matrix_a);
+    ops::tensor::from_torch(b_handle, g.matrix_b);
+    ops::tensor::from_torch(c_handle, g.matrix_c);
     g.num_instructions = static_cast<int>(instructions.size(1));
     TORCH_CHECK(g.valid(), "the persistent GEMM globals are not valid");
 
     const uint32_t blocks = static_cast<uint32_t>(instructions.size(0));
-    dmk::mk::gemm_mk<<<blocks, dmk::config::kThreads, dmk::config::kLaunchBytes,
+    dmk::mk::gemm_mk<<<blocks, dmk::mk::config::kThreads, dmk::mk::kLaunchBytes,
                        at::cuda::getCurrentCUDAStream()>>>(g);
     launch_check();
     return matrix_c;
