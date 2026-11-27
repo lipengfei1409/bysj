@@ -120,7 +120,7 @@ opcode 是 C++ 侧的表（`ops::config`），镜像在 `kernels.mk_stream`。�
 Python  dmk.dispatch.launch_gemm(...)
   → C++  dmk_gemm_hip        （每 pack 一个：校验形状、把 torch 张量装进 MkGlobals）
   →      dmk::mk::launch_kernel   （唯一实现：预留动态 LDS + 每 instruction 行一个 block + 当前流）
-  →      mk_harness          （唯一实例化：mk_internal<MkGlobals, NoOp, GemmOp>）
+  →      mk_all              （唯一实例化：mk_internal<MkGlobals, NoOp, Elementwise, Gemm, Embedding>）
   →      mk_internal         （运行时：controller 发布、三波执行）
 ```
 
@@ -136,7 +136,7 @@ demos/gemm.py            GemmDemo(m, n, k, cus)
   → instructions.InstructionStream   补 NoOp 成矩形 → (cus, length, 32) int32
   → mk.GemmGlobals.attach       指令张量 + A/B/C
   → dispatch.launch_gemm        kernels._C.dmk_gemm
-  → csrc/dmk/mk_harness.cpp    __global__ mk_harness
+  → csrc/dmk/megakernel.cpp     __global__ mk_all
   → mk_internal<GemmGlobals, NoOp, GemmOp>  → ops/gemm.h
 ```
 

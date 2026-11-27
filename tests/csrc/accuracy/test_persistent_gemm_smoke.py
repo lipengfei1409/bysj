@@ -25,7 +25,7 @@ except Exception:  # noqa: BLE001 - a host build has no extension
     _AVAILABLE = False
 
 _SKIP = ("requires the built persistent GEMM (kernels._C.dmk_gemm from "
-         "csrc/dmk/mk_harness.cpp) and a supported DCU")
+         "csrc/dmk/megakernel.cpp) and a supported DCU")
 
 
 def _check(m: int, n: int, k: int, cus: int = 1, seed: int = 0) -> None:

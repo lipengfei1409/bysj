@@ -27,7 +27,7 @@ using dmk::mk::GemmOp;
 using dmk::mk::kDynamicBytes;
 using dmk::mk::kLaunchBytes;   // re-exported from ops by megakernel.h
 using dmk::mk::kStaticBytes;
-using dmk::mk::launch_mk;
+using dmk::mk::launch;
 using dmk::mk::MkGlobals;
 using ops::config::kInstructionWidth;
 using ops::tensor::HbmLayout;
@@ -153,7 +153,7 @@ void run_case(const char* name, size_t elements, uint32_t blocks,
         num_instructions,
     };
 
-    if (!launch_mk(globals, blocks, nullptr))
+    if (!launch(globals, blocks, nullptr))
         fail("launch_mk returned false");
     check_hip(hipDeviceSynchronize(), "hipDeviceSynchronize");
     check_hip(hipMemcpy(actual.data(), device_output, elements * sizeof(float),
@@ -254,7 +254,7 @@ void run_gemm_case() {
             device_c, matrix_shape, HbmLayout<2>::contiguous(matrix_shape)},
     };
 
-    if (!launch_mk(globals, 1, nullptr))
+    if (!launch(globals, 1, nullptr))
         fail("gemm launch_mk returned false");
     check_hip(hipDeviceSynchronize(), "hipDeviceSynchronize(gemm)");
     std::vector<float> actual(N * N, 0.0f);
@@ -345,7 +345,7 @@ void run_embedding_case() {
             device_out, table_shape, HbmLayout<2>::contiguous(table_shape)},
     };
 
-    if (!launch_mk(globals, 1, nullptr))
+    if (!launch(globals, 1, nullptr))
         fail("embedding launch_mk returned false");
     check_hip(hipDeviceSynchronize(), "hipDeviceSynchronize(embedding)");
     std::vector<float> actual(Rows * Width, 0.0f);

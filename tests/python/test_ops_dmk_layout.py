@@ -26,7 +26,7 @@ class NamespaceTests(unittest.TestCase):
     """Which namespace each shared name lives in -- the mistake that cost two builds."""
 
     def test_the_launcher_qualifies_every_shared_name(self) -> None:
-        launcher = (DMK / "mk_harness.cpp").read_text()
+        launcher = (DMK / "megakernel.cpp").read_text()
         # `tensor` and `config` are aliases inside dmk::mk, not members of dmk;
         # kLaunchBytes is in ops, not in ops::config.
         for wrong in ("dmk::tensor::", "dmk::config::", "dmk::mk::config::kLaunchBytes"):
@@ -63,7 +63,7 @@ class BuildIncludePathTests(unittest.TestCase):
         self.assertNotIn('include_dirs=["csrc"]', setup_py)
 
     def test_the_launcher_reaches_the_operator_headers(self) -> None:
-        launcher = (DMK / "mk_harness.cpp").read_text()
+        launcher = (DMK / "megakernel.cpp").read_text()
         for used in ('#include "ops/gemm.h"', '#include "ops/noop.h"'):
             self.assertIn(used, launcher)
         # `#include "ops.h"` resolves only through the include dir, which is the
@@ -72,7 +72,8 @@ class BuildIncludePathTests(unittest.TestCase):
         # the launch itself is shared, not re-implemented here
         self.assertIn('#include "dmk/launch.h"', launcher)
         self.assertNotIn('hipFuncSetAttribute', launcher)
-        self.assertIn("launch_kernel(mk::mk_harness, g, blocks", launcher)
+        self.assertIn("launch_kernel(mk_all, g, blocks", launcher)
+        self.assertIn("bool launch(const MkGlobals& g", launcher)
 
 
 class GemmWaveContractTests(unittest.TestCase):

@@ -60,7 +60,7 @@ sources = [
     "csrc/monomial.cpp",
     "csrc/blockdiag.cpp",
     "csrc/so2_conv.cpp",
-    "csrc/dmk/mk_harness.cpp",
+    "csrc/dmk/megakernel.cpp",
 ]
 ext_modules = [CUDAExtension(
     "kernels._C",

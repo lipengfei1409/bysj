@@ -65,7 +65,7 @@ class GIEBuildConfigurationTests(unittest.TestCase):
     "csrc/monomial.cpp",
     "csrc/blockdiag.cpp",
     "csrc/so2_conv.cpp",
-    "csrc/dmk/mk_harness.cpp",
+    "csrc/dmk/megakernel.cpp",
             ],
         )
         self.assertEqual(extension_args["define_macros"], [])
