@@ -85,7 +85,7 @@ Tensor so2_conv_hip(Tensor x, Tensor src, Tensor rot, Tensor rot_t,
 
 // --- persistent GEMM -------------------------------------------------------
 //
-// `csrc/dmk/gemm_launch.cpp`: the megakernel with a GEMM-only op pack.  Consumes
+// `csrc/dmk/mk_harness.cpp`: the megakernel with the shipped op pack.  Consumes
 // the instruction rows `python/dmk/shard.py` produces and computes
 // `C = A @ B` in 16x16 tiles; M, N, K must be multiples of 16.
 Tensor dmk_gemm_hip(Tensor instructions, Tensor matrix_a, Tensor matrix_b,

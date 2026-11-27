@@ -52,13 +52,29 @@ struct MkGlobals {
 
     DMK_HOST_DEVICE size_t elements() const { return input.shape.dims[0]; }
 
-    DMK_HOST_DEVICE bool valid(uint32_t blocks) const {
-        if (num_instructions <= 0) return false;
-        if (instructions.data == nullptr) return false;
-        if (instructions.shape.dims[0] < blocks ||
-            instructions.shape.dims[1] < static_cast<size_t>(num_instructions) ||
-            instructions.shape.dims[2] != config::kInstructionWidth)
+    //: Shape of the dense GEMM this launch computes, as (M, N, K).
+    DMK_HOST_DEVICE bool gemm_shapes(size_t& m, size_t& n, size_t& k) const {
+        if (matrix_a.data == nullptr || matrix_b.data == nullptr ||
+            matrix_c.data == nullptr)
             return false;
+        m = matrix_c.shape.dims[0];
+        n = matrix_c.shape.dims[1];
+        k = matrix_a.shape.dims[1];
+        return matrix_a.shape.dims[0] == m && matrix_b.shape.dims[0] == k &&
+               matrix_b.shape.dims[1] == n && m != 0 && n != 0 && k != 0;
+    }
+
+    //: The instruction stream is what every op pack needs; the rest is per pack.
+    DMK_HOST_DEVICE bool valid_instructions(uint32_t blocks) const {
+        return num_instructions > 0 && instructions.data != nullptr &&
+               instructions.shape.dims[0] >= blocks &&
+               instructions.shape.dims[1] >=
+                   static_cast<size_t>(num_instructions) &&
+               instructions.shape.dims[2] == config::kInstructionWidth;
+    }
+
+    DMK_HOST_DEVICE bool valid(uint32_t blocks) const {
+        if (!valid_instructions(blocks)) return false;
         const size_t count = elements();
         if (output.shape.dims[0] != count) return false;
         if (count == 0) return true;

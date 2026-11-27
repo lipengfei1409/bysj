@@ -119,7 +119,7 @@ demos/gemm.py            GemmDemo(m, n, k, cus)
   → instructions.InstructionStream   补 NoOp 成矩形 → (cus, length, 32) int32
   → mk.GemmGlobals.attach       指令张量 + A/B/C
   → dispatch.launch_gemm        kernels._C.dmk_gemm
-  → csrc/dmk/gemm_launch.cpp    __global__ gemm_mk
+  → csrc/dmk/mk_harness.cpp    __global__ mk_harness
   → mk_internal<GemmGlobals, NoOp, GemmOp>  → ops/gemm.h
 ```
 

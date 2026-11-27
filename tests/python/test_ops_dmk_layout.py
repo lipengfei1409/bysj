@@ -26,14 +26,18 @@ class NamespaceTests(unittest.TestCase):
     """Which namespace each shared name lives in -- the mistake that cost two builds."""
 
     def test_the_launcher_qualifies_every_shared_name(self) -> None:
-        launcher = (DMK / "gemm_launch.cpp").read_text()
+        launcher = (DMK / "mk_harness.cpp").read_text()
         # `tensor` and `config` are aliases inside dmk::mk, not members of dmk;
         # kLaunchBytes is in ops, not in ops::config.
         for wrong in ("dmk::tensor::", "dmk::config::", "dmk::mk::config::kLaunchBytes"):
             self.assertNotIn(wrong, launcher, wrong)
         self.assertIn("ops::tensor::from_torch", launcher)
-        self.assertIn("dmk::mk::config::kThreads", launcher)
-        self.assertIn("dmk::mk::kLaunchBytes", launcher)
+        self.assertIn("ops::config::kInstructionWidth", launcher)
+        # the launch mechanics moved to dmk/launch.h, which is where the LDS
+        # request and the grid size now live
+        shared = (DMK / "launch.h").read_text()
+        self.assertIn("config::kThreads", shared)
+        self.assertIn("kLaunchBytes", shared)
 
     def test_k_launch_bytes_is_defined_in_ops_not_config(self) -> None:
         config = (OPS / "config.h").read_text()
@@ -59,12 +63,16 @@ class BuildIncludePathTests(unittest.TestCase):
         self.assertNotIn('include_dirs=["csrc"]', setup_py)
 
     def test_the_launcher_reaches_the_operator_headers(self) -> None:
-        launcher = (DMK / "gemm_launch.cpp").read_text()
+        launcher = (DMK / "mk_harness.cpp").read_text()
         for used in ('#include "ops/gemm.h"', '#include "ops/noop.h"'):
             self.assertIn(used, launcher)
         # `#include "ops.h"` resolves only through the include dir, which is the
         # path the build above guarantees.
         self.assertIn('#include "checks.h"', launcher)
+        # the launch itself is shared, not re-implemented here
+        self.assertIn('#include "dmk/launch.h"', launcher)
+        self.assertNotIn('hipFuncSetAttribute', launcher)
+        self.assertIn("launch_kernel(mk::mk_harness, g, blocks", launcher)
 
 
 class GemmWaveContractTests(unittest.TestCase):
@@ -100,7 +108,8 @@ class LayoutTests(unittest.TestCase):
 
     def test_dmk_holds_only_the_persistent_runtime(self) -> None:
         names = {p.name for p in _headers(DMK)}
-        self.assertEqual(names, {"megakernel.h", "state.h", "controller.h"})
+        self.assertEqual(names,
+                         {"megakernel.h", "state.h", "controller.h", "launch.h"})
         self.assertTrue((DMK / "megakernel.cpp").is_file())
 
     def test_ops_never_include_anything_under_dmk(self) -> None:

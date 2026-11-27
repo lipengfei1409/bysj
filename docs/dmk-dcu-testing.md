@@ -21,7 +21,7 @@ python3 -c "import torch; print(torch.__version__, torch.version.hip, torch.cuda
 export HIP_VISIBLE_DEVICES=0
 ```
 
-## 1. 编译扩展（`kernels._C`，含 `csrc/dmk/gemm_launch.cpp`）
+## 1. 编译扩展（`kernels._C`，含 `csrc/dmk/mk_harness.cpp`）
 
 ```bash
 export PYTORCH_ROCM_ARCH=gfx928        # 必须是实际卡的架构，见下
