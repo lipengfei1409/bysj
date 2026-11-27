@@ -15,6 +15,7 @@ the cheapest way to catch a scheduling bug: numerically it is not a tolerance qu
 `torch.matmul` is rocBLAS on the device, so the comparison is against the vendor
 implementation rather than a hand-written reference.
 """
+import inspect
 import unittest
 
 import torch
@@ -24,7 +25,13 @@ from dmk.model_types import GEMM_TILE, GEMM_TILES_PER_INSTRUCTION
 
 try:  # both engines come with the default build
     _AVAILABLE = dispatch.available(flat=False)
-    _FLAT_AVAILABLE = dispatch.flat_available()
+    # The kernel comes from `csrc/`, the tests from `tests/`, so a checkout can hold
+    # an older `python/dmk` than the tests expect: detect the switch instead of
+    # passing it and failing with a TypeError.
+    _FLAT_AVAILABLE = (
+        "flat" in inspect.signature(dispatch.launch_gemm).parameters
+        and dispatch.flat_available()
+    )
 except Exception:  # noqa: BLE001 - a host build simply has no extension
     _AVAILABLE = _FLAT_AVAILABLE = False
 

@@ -20,6 +20,7 @@ Run on a DCU::
 `DPA4_PERSISTENT_GEMM_JSON=<path>` writes the records; `DPA4_ROCBLAS=0` skips the
 baseline (the accuracy part still runs).
 """
+import inspect
 import json
 import os
 import sys
@@ -127,6 +128,19 @@ def _time_callable(call, *, iterations: int, repeats: int) -> float:
     return _median(samples)
 
 
+def _supports_flat() -> bool:
+    """Whether the installed `dispatch.launch_gemm` takes the `flat` switch.
+
+    A DCU checkout can hold an older `python/dmk` than the tests (the kernel is built
+    from `csrc/`, the tests come from `tests/`), and a missing keyword should downgrade
+    the measurement instead of turning the run into eight identical TypeErrors.
+    """
+    try:
+        return "flat" in inspect.signature(dispatch.launch_gemm).parameters
+    except (TypeError, ValueError):  # pragma: no cover - exotic wrappers
+        return False
+
+
 def _tflops(m: int, n: int, k: int, milliseconds: float) -> float:
     return 2 * m * n * k / (milliseconds * 1e9) if milliseconds else 0.0
 
@@ -163,8 +177,8 @@ class PersistentGemmLatenyTests(unittest.TestCase):
 
     def test_latency_against_rocblas(self) -> None:
         baseline, why = _rocblas_baseline()
-        flat_available = dispatch.flat_available()
-        dense_available = dispatch.dense_available()
+        flat_available = _supports_flat() and dispatch.flat_available()
+        dense_available = hasattr(dispatch, "launch_dense") and dispatch.dense_available()
         if flat_available:
             print("also measuring the role-free kernel (DPA4_GEMM_FLAT engine)")
         if baseline is None:

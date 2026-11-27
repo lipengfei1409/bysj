@@ -183,6 +183,15 @@ class BuildLogTests(unittest.TestCase):
         self.assertIn("--dry-run", tool)
         self.assertIn("would remove", tool)
 
+    def test_the_device_tests_detect_engine_support(self) -> None:
+        # `csrc/` and `tests/` can be at different revisions on a host that pulls
+        # nothing but the kernel: a missing `flat` keyword must downgrade the
+        # measurement, not raise TypeError once per shape.
+        for name in ("tests/csrc/latency/test_persistent_gemm_latency.py",
+                     "tests/csrc/accuracy/test_persistent_gemm.py"):
+            text = (ROOT / name).read_text()
+            self.assertIn("inspect.signature(dispatch.launch_gemm)", text, name)
+
     def test_the_runner_can_add_the_device_suites(self) -> None:
         # One command for "everything that can run here": the device suites skip
         # themselves on a host, so the flag is safe either way.
