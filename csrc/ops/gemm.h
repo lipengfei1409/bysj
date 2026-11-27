@@ -68,6 +68,10 @@ public:
     //: compiles the FP32 scalar loop instead, which needs no matrix-unit API and
     //: is what to use when the installed DTK's `du_mma.h` does not expose the
     //: fragment API this file was written against.
+#if !defined(DPA4_GEMM_SCALAR) && !DPA4_DUMMA_AVAILABLE
+#error "this compile target has no DUMMA (see du_mma.h: gfx926/928/936/938 only); build with DPA4_GEMM_SCALAR=1"
+#endif
+
 #if !defined(DPA4_GEMM_SCALAR)
     using AFragment = ::du::dumma::DUFragment<::du::dumma::matrix_a, kTile, kTile,
                                               kStep, float,

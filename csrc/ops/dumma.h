@@ -2,6 +2,25 @@
 
 #include "ops/utils.h"
 
+// Whether the installed DTK exposes the matrix-unit API for this compile target.
+//
+// `du_mma.h` gates every fragment specialisation and every load/mma/store
+// function on the architecture, and hard-errors on anything outside
+// gfx926/gfx928/gfx936/gfx938.  Without this check a wrong `PYTORCH_ROCM_ARCH`
+// surfaces as "implicit instantiation of undefined template DUFragment<...>",
+// which reads like a bug in this file rather than an unsupported target.
+#if defined(__HIP_DEVICE_COMPILE__)
+#if defined(__gfx926__) || defined(__gfx928__) || defined(__gfx936__) || \
+    defined(__gfx938__)
+#define DPA4_DUMMA_AVAILABLE 1
+#else
+#define DPA4_DUMMA_AVAILABLE 0
+#endif
+#else
+// Host pass: the header exposes everything, so the declarations below compile.
+#define DPA4_DUMMA_AVAILABLE 1
+#endif
+
 namespace ops::dumma {
 
 // Native DUMMA types and layout tags remain available through native::.

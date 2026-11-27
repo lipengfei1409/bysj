@@ -28,9 +28,19 @@ export PYTORCH_ROCM_ARCH=gfx928        # 必须是实际卡的架构，见下
 MAX_JOBS=8 python3 setup.py build_ext --inplace
 ```
 
-**`PYTORCH_ROCM_ARCH` 是必须的**：DTK 的 `du_mma.h` 只支持 `gfx926 / gfx928 / gfx936 /
-gfx938`，而默认会编 gfx906，后者触发头文件里的 `#error`，于是整个扩展永远编不过。先用
-`rocminfo | grep gfx` 查本机架构。
+**`PYTORCH_ROCM_ARCH` 是必须的**：DTK 的 `du_mma.h` 把每个 fragment 偏特化和每个
+load/mma/store 函数都按架构 gate（只允许 `gfx926 / gfx928 / gfx936 / gfx938`），而 torch 默认会
+把 gfx906 也算进去。表现是两层：
+
+* gfx906 的 device pass 撞上 `#error "Only support ..."`；
+* 于是报错里还会漂出 `implicit instantiation of undefined template DUFragment<...>` —— **那不是
+  `ops/dumma.h` 写错了**，是这个架构根本没有偏特化。
+
+先用 `rocminfo | grep gfx` 查本机架构。`setup.py` 现在会在 `PYTORCH_ROCM_ARCH` 含不支持的架构时
+直接退出并给出这条提示；`ops/dumma.h` 也会在 device pass 里用 `DPA4_DUMMA_AVAILABLE` 把
+"不支持的架构"变成一条明确的 `#error`。
+
+**如果本卡就是 gfx906**，DUMMA 在这张卡上不存在（这是硬件事实），只能走标量分支。
 
 如果本机 DTK 的 `du_mma.h` 不提供 fragment API（`DUFragment` 只有声明、没有
 `du_load_matrix_sync` / `du_mma_sync` / `du_store_matrix_sync`），先用标量分支把调度侧跑通：

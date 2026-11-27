@@ -26,6 +26,25 @@ CSRC = pathlib.Path(__file__).resolve().parent / "csrc"
 # (pages, waves, split) can be validated on its own.
 CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if os.environ.get("DPA4_GEMM_SCALAR") == "1" else []
 
+# DTK's du_mma.h hard-errors on anything outside gfx926/gfx928/gfx936/gfx938, and
+# torch compiles for every target in PYTORCH_ROCM_ARCH (defaulting to all the
+# arches the toolkit knows, gfx906 included).  Fail here, with the fix in the
+# message, instead of as "undefined template DUFragment" deep in a device pass.
+_DUMMA_ARCHES = ("gfx926", "gfx928", "gfx936", "gfx938")
+_ARCH_ENV = os.environ.get("PYTORCH_ROCM_ARCH", "")
+if not CSCALAR_ARGS and _ARCH_ENV:
+    _targets = [a.strip() for a in _ARCH_ENV.replace(";", " ").split(",") if a.strip()]
+    _bad = [a for a in _targets if a not in _DUMMA_ARCHES]
+    if _bad:
+        raise SystemExit(
+            "PYTORCH_ROCM_ARCH=" + _ARCH_ENV + " contains "
+            + ", ".join(_bad)
+            + ", which DTK's du_mma.h does not support ("
+            + ", ".join(_DUMMA_ARCHES)
+            + ").\nSet PYTORCH_ROCM_ARCH to this card's arch (rocminfo | grep gfx), "
+            "or build the scalar GEMM with DPA4_GEMM_SCALAR=1."
+        )
+
 if not torch.version.hip:
     raise RuntimeError("native build requires a ROCm/DTK PyTorch installation")
 
