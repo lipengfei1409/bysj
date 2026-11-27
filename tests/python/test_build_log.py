@@ -72,6 +72,23 @@ class BuildLogTests(unittest.TestCase):
                                       "ninja: build stopped: subcommand failed."])
         self.assertFalse(any("warning:" in line or "note:" in line for line in lines))
 
+    def test_the_arch_list_is_split_on_every_separator(self) -> None:
+        # PYTORCH_ROCM_ARCH accepts "gfx906;gfx928" and people also paste commas or
+        # spaces; a single-target list must not be mistaken for one weird target.
+        source = (ROOT / "setup.py").read_text()
+        self.assertIn(r're.split(r"[,;\s]+", _ARCH_ENV)', source)
+        splitter = __import__("re").compile(r"[,;\s]+")
+        for value in ("gfx906;gfx928", "gfx906,gfx928", "gfx906 gfx928"):
+            self.assertEqual([a for a in splitter.split(value) if a],
+                             ["gfx906", "gfx928"], value)
+
+    def test_the_arch_defaults_to_the_device_and_widens_only_on_request(self) -> None:
+        source = (ROOT / "setup.py").read_text()
+        # detection runs only when nothing was exported, so an explicit multi-arch
+        # list always wins
+        self.assertIn("if not _ARCH_ENV:", source)
+        self.assertIn("gcnArchName", source)
+
     def test_the_log_path_is_inside_build(self) -> None:
         source = (ROOT / "setup.py").read_text()
         self.assertIn('BUILD_LOG = pathlib.Path(__file__).resolve().parent / "build" / "build.log"',

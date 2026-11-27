@@ -22,6 +22,17 @@ rocminfo | grep -o "gfx[0-9]*" | sort -u
 MFMA/DUMMA）。所以那边的对比是"同样用标量单元，谁的调度更好"，不是"标量 vs 矩阵单元"——差距会落在
 2–4 倍的量级，而不是 10 倍以上。
 
+**为什么只编一个架构**：`PYTORCH_ROCM_ARCH` 没设时，torch 会按套件默认编**全部**已知架构（早先那次
+就是 gfx906+gfx926+gfx928 三个一起编），每个架构都要完整跑一遍 device 编译；而且只要其中有一个不受支持
+的架构，整个构建就失败。`setup.py` 因此在未显式设置时取**本卡架构**这一个。想编多个（要在多张不同卡上
+跑）就显式给：
+
+```bash
+export PYTORCH_ROCM_ARCH="gfx906;gfx928"     # 逗号或空格分隔也认
+```
+
+显式值永远优先于自动探测；但开 DUMMA 时列表里**每个**架构都必须是 gfx926/928/936/938 之一。
+
 `PYTORCH_ROCM_ARCH` 必须设：DTK 的 `du_mma.h` 把每个 fragment 偏特化和每个 load/mma/store 都按架构
 gate，torch 默认还会编 gfx906，那会触发 `#error`，并在错误里漂出
 `undefined template DUFragment<...>`（看着像代码 bug，其实是目标不支持）。`setup.py` 现在会在

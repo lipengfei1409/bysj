@@ -36,9 +36,9 @@ CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if os.environ.get("DPA4_GEMM_SCALAR") == "
 _DUMMA_ARCHES = ("gfx926", "gfx928", "gfx936", "gfx938")
 _ARCH_ENV = os.environ.get("PYTORCH_ROCM_ARCH", "")
 if not _ARCH_ENV:
-    # No explicit arch: ask the device.  torch otherwise compiles for every arch
-    # the toolkit knows -- gfx906 among them -- and DTK's du_mma.h hard-errors on
-    # anything outside the four it supports.
+    # No explicit arch: ask the device.  Otherwise torch compiles for the default
+    # list of the installed ROCm version, which on this host included gfx906 --
+    # and DTK's du_mma.h hard-errors on anything outside its four.
     try:
         _detected = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
     except Exception:  # noqa: BLE001 - no device visible; leave it to the build
@@ -61,7 +61,9 @@ if not CSCALAR_ARGS and _ARCH_ENV and _ARCH_ENV not in _DUMMA_ARCHES:
     os.environ["DPA4_GEMM_SCALAR"] = "1"
     CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"]
 if not CSCALAR_ARGS and _ARCH_ENV:
-    _targets = [a.strip() for a in _ARCH_ENV.replace(";", " ").split(",") if a.strip()]
+    # torch accepts a semicolon- or comma-separated list ("gfx906;gfx928"), and
+    # people also paste it space-separated; split on all three.
+    _targets = [a for a in re.split(r"[,;\s]+", _ARCH_ENV) if a]
     _bad = [a for a in _targets if a not in _DUMMA_ARCHES]
     if _bad:
         raise SystemExit(
