@@ -6,19 +6,24 @@
 // gets, which is the whole reason a library GEMM is faster.  This file is the plain
 // kernel to measure against:
 //
-//   block tile   64 x 64         (8 MAC/byte, four times the persistent tiling)
-//   wave         16 rows of it, all four column groups -> four accumulators per lane
-//   k step       8               (DUMMA m16n16k8, the widest float32 fragment)
-//   staging      static LDS: A 64x8, B 8x64, C 64x64 = 24 KiB
-//   threads      256 (four waves), __launch_bounds__ so nothing is clamped
+//   block tile   128x64 (10.7 MAC/byte) or 64x64 (8 MAC/byte), chosen per shape
+//   wave         32 rows of the tile: two 16-row halves by four 16-wide column groups,
+//                i.e. eight accumulators, which is what gives the scheduler something to
+//                hide the fragment loads behind
+//   k step       8     (DUMMA m16n16k8; float32 has no k16 fragment)
+//   staging      two buffers of A and B, filled one k-block ahead through registers, so
+//                the global reads overlap the mma instead of preceding it
+//   epilogue     one wave's rows through a small C stage, so the whole-tile buffer does
+//                not cost the second block per CU
 //
-// 24 KiB of static LDS also leaves room for two blocks per CU, which is the ordinary
-// way to hide the staging latency that the persistent kernel hides with a software
-// pipeline.
+// Two tiles are instantiated because one does not fit all shapes: a 128x64 tile halves
+// the grid, and a 512^3 product only has 32 such blocks against 120 CUs -- it runs at
+// 27% occupancy of the part while the same kernel at 4096^3 reaches 0.52x rocBLAS.
+// Picking the tile from the shape costs one branch at launch.
 //
 // Edges are handled by predicate rather than by requiring multiples of the tile: the
-// stage zero-fills what is out of bounds and the epilogue skips it, so M, N and K may
-// be anything (performance is only claimed for shapes that fill the tile).
+// stage zero-fills what is out of bounds and the epilogue skips it, so M, N and K may be
+// anything (performance is only claimed for shapes that fill the tile).
 
 #include "ops/config.h"
 #include "ops/dumma.h"
@@ -26,8 +31,6 @@
 
 #include "checks.h"
 #include "ops.h"
-
-#include <cstdio>
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -44,40 +47,12 @@ namespace {
 namespace config = ops::config;
 namespace dumma = ops::dumma;
 
-// Block tile 128x64: arithmetic intensity 128*64 / (4*(128+64)) = 10.7 MAC/byte
-// (21 FLOP/byte) against the 8 MAC/byte of a 64x64 tile, and eight 16x16 fragments per
-// wave instead of four -- eight independent accumulator chains is what gives the
-// scheduler something to hide the two fragment loads behind.
-constexpr int kMT = 128;  // block tile rows
-constexpr int kNT = 64;   // block tile cols
-constexpr int kKT = 8;    // k step: m16n16k8 for float32
-constexpr int kWaves = 4;
-constexpr int kRowsPerWave = kMT / kWaves;      // 32 rows per wave
-constexpr int kRowHalves = kRowsPerWave / 16;   // two 16-row fragments
-constexpr int kThreads = kWaves * config::kWaveSize;
-constexpr int kGroups = kNT / 16;               // four 16-wide column groups
-constexpr int kFragments = kRowHalves * kGroups; // eight 16x16 accumulators per wave
-
-// Row padding, and the reason it is padding rather than swizzling:
-// `du_load_matrix_sync(fragment&, const T* p, unsigned ldm)` carries no layout except
-// a leading dimension -- it reads `p + row * ldm`, so the tile it consumes must be
-// plain row-major.  `ops/tensor.h` has `ShmemSwizzleLayout` (the XOR-by-row one), but
-// wiring it in means either a DTK loader that takes a swizzle mode or hand-rolled
-// `ds_read` fragment packing; padding keeps the layout the loader understands and only
-// changes the stride, so it cannot be silently wrong.
-//
-// The numbers: a row of the A stage is kKT = 8 floats = 32 B, so rows start 8 banks
-// apart and only four distinct bank offsets exist -> rows alias.  A stride of 12
-// (48 B, still 16 B aligned) gives eight distinct offsets before repeating.  The B
-// stage row is kNT = 64 floats = 256 B, exactly a multiple of the 128 B bank cycle, so
-// *every* row starts at the same bank; a stride of 68 shifts by four banks per row and
-// spreads eight rows across the cycle.
-// Build-time knobs, so the machine can answer "which of these four costs what"
-// without a profiler: each one changes exactly one decision, and the others stay put.
+// Build-time knobs, so the machine can answer "which of these costs what" without a
+// profiler: each one changes exactly one decision, and the others stay put.
 //
 //   DPA4_DENSE_PAD      row padding in floats (0 disables: the conflict hypothesis)
 //   DPA4_DENSE_KSTAGE   k8 steps staged per buffer (1 = a barrier every 8 of k)
-//   DPA4_DENSE_CCHUNK   0 = whole-tile epilogue buffer (32 KiB) instead of per-wave
+//   DPA4_DENSE_CCHUNK   0 = whole-tile epilogue buffer instead of one wave's rows
 #ifndef DPA4_DENSE_PAD
 #define DPA4_DENSE_PAD 4
 #endif
@@ -87,25 +62,13 @@ constexpr int kFragments = kRowHalves * kGroups; // eight 16x16 accumulators per
 #ifndef DPA4_DENSE_CCHUNK
 #define DPA4_DENSE_CCHUNK 1
 #endif
-constexpr int kPad = DPA4_DENSE_PAD;   // floats per row, keeps every stride 16 B aligned
-constexpr int kSteps = DPA4_DENSE_KSTAGE;   // k8 steps staged per buffer
-constexpr int kStageK = kKT * kSteps;       // k values staged per buffer
-constexpr int kStrideA = kStageK + kPad;    // 12 with the defaults
-constexpr int kStrideB = kNT + kPad;        // 68
-constexpr int kStageA = kMT * kStrideA;
-constexpr int kStageB = kStageK * kStrideB;
-// The epilogue buffer is the largest single LDS allocation at a 128-row tile (32 KiB
-// whole), so by default it holds exactly one wave's 32 rows and is written four times.
-// That keeps the kernel at 2 blocks per CU; `DPA4_DENSE_CCHUNK=0` allocates the whole
-// tile and takes the occupancy hit.
-constexpr int kChunk = DPA4_DENSE_CCHUNK ? kRowsPerWave : kMT;
-constexpr int kStageC = kChunk * kNT;
 
-static_assert(kWaves * kRowsPerWave == kMT, "the waves must cover the tile rows");
-static_assert(kRowsPerWave % 16 == 0, "a wave owns whole 16-row fragments");
-static_assert(kGroups == 4, "four column groups per wave");
-static_assert(kFragments == 8, "eight accumulators per wave is the point of this tile");
-static_assert(kThreads == 256, "the staging scheme assumes one element per thread");
+constexpr int kPad = DPA4_DENSE_PAD;
+constexpr int kSteps = DPA4_DENSE_KSTAGE;
+constexpr int kKT = 8;   // m16n16k8: the widest float32 fragment
+constexpr int kWaves = 4;
+constexpr int kThreads = kWaves * config::kWaveSize;
+constexpr int kStageK = kKT * kSteps;   // k values per stage buffer
 
 using AFragment = ::du::dumma::DUFragment<::du::dumma::matrix_a, 16, 16, kKT, float,
                                           ::du::dumma::row_major>;
@@ -130,37 +93,72 @@ struct DenseGemm {
     }
 };
 
-//: Elements of the A and B stages, and how many each thread carries in registers.
-constexpr int kSlotsA = kMT * kStageK;
-constexpr int kSlotsB = kStageK * kNT;
-constexpr int kRegsA = (kSlotsA + kThreads - 1) / kThreads;
-constexpr int kRegsB = (kSlotsB + kThreads - 1) / kThreads;
+//: Everything about one tile size, derived from (MT, NT) in one place.
+//:
+//: Row padding, and why it is padding rather than swizzling:
+//: `du_load_matrix_sync(fragment&, const T* p, unsigned ldm)` carries no layout except a
+//: leading dimension -- it reads `p + row * ldm`, so the tile it consumes must be plain
+//: row-major.  `ops/tensor.h` has `ShmemSwizzleLayout` (the XOR-by-row one), but wiring it
+//: in means either a DTK loader that takes a swizzle mode or hand-rolled `ds_read`
+//: fragment packing; padding keeps the layout the loader understands and only changes the
+//: stride, so it cannot be silently wrong.
+template <int MT, int NT>
+struct Tile {
+    static constexpr int mt = MT;
+    static constexpr int nt = NT;
+    static constexpr int rows_per_wave = MT / kWaves;
+    static constexpr int row_halves = rows_per_wave / 16;
+    static constexpr int groups = NT / 16;
+    static constexpr int fragments = row_halves * groups;
 
-// `kStageK` counts k values, which *are* the columns of the A stage and the rows of the
-// B stage -- treating it as anything else silently misaddresses the tile.
-static_assert(kStrideA == kStageK + kPad, "an A row holds its k columns plus padding");
-static_assert(kStageB == kStageK * kStrideB, "B rows are k values");
-static_assert(kSlotsA == kMT * kStageK, "A stage is kMT rows of kStageK columns");
-static_assert(kSlotsB == kStageK * kNT, "B stage is kStageK rows of kNT columns");
-static_assert(kRegsA * kThreads >= kSlotsA, "the register split must cover the stage");
-static_assert(kRegsB * kThreads >= kSlotsB, "the register split must cover the stage");
+    //: A row is kStageK k values plus padding (48 B / 80 B, both 16 B aligned); a B row is
+    //: NT plus padding, which shifts each row by four banks instead of the whole cycle.
+    static constexpr int stride_a = kStageK + kPad;
+    static constexpr int stride_b = NT + kPad;
+
+    static constexpr int stage_a = MT * stride_a;
+    static constexpr int stage_b = kStageK * stride_b;
+    //: The epilogue buffer is the largest single allocation at a tall tile (MT*NT floats),
+    //: so by default it holds one wave's rows and is written `kWaves` times.
+    static constexpr int chunk_rows = DPA4_DENSE_CCHUNK ? rows_per_wave : MT;
+    static constexpr int stage_c = chunk_rows * NT;
+
+    static constexpr int slots_a = MT * kStageK;
+    static constexpr int slots_b = kStageK * NT;
+    static constexpr int regs_a = (slots_a + kThreads - 1) / kThreads;
+    static constexpr int regs_b = (slots_b + kThreads - 1) / kThreads;
+
+    static constexpr int lds_bytes = (2 * stage_a + 2 * stage_b + stage_c) * 4;
+
+    static_assert(kWaves * rows_per_wave == MT, "the waves must cover the tile rows");
+    static_assert(rows_per_wave % 16 == 0, "a wave owns whole 16-row fragments");
+    static_assert(NT % 16 == 0, "the tile width must be whole 16-wide groups");
+    static_assert(stride_a * 4 % 16 == 0 && stride_b * 4 % 16 == 0,
+                  "a padded row must stay 16 B aligned for the fragment loader");
+    static_assert(stage_b == kStageK * stride_b, "B rows are k values");
+    static_assert(slots_a == MT * kStageK, "A stage is MT rows of kStageK columns");
+    static_assert(slots_b == kStageK * NT, "B stage is kStageK rows of NT columns");
+    static_assert(regs_a * kThreads >= slots_a, "the register split must cover the stage");
+    static_assert(regs_b * kThreads >= slots_b, "the register split must cover the stage");
+};
 
 //: Read the next k-block of A and B into registers.
 //:
-//: Two buffers and this split are what turn two barriers per k-block into one: the
-//: global reads are issued *before* the mma of the current block, the LDS writes land
-//: in the other buffer, and a single `__syncthreads()` then covers both "the buffer I
-//: am about to read is complete" and "the buffer I just read may be reused".
-__device__ __forceinline__ void load_block(float (&regs_a)[kRegsA],
-                                           float (&regs_b)[kRegsB],
+//: Two stage buffers plus this split are what turn two barriers per k-block into one: the
+//: global reads are issued *before* the mma of the current block, the LDS writes land in
+//: the other buffer, and a single `__syncthreads()` then covers both "the buffer I am
+//: about to read is complete" and "the buffer I just read may be reused".
+template <class G>
+__device__ __forceinline__ void load_block(float (&regs_a)[G::regs_a],
+                                           float (&regs_b)[G::regs_b],
                                            const DenseGemm& g, size_t m0, size_t n0,
                                            size_t k0) {
     const size_t stride_a = g.a.layout.strides[0];
     const size_t stride_b = g.b.layout.strides[0];
 #pragma unroll
-    for (int chunk = 0; chunk < kRegsA; ++chunk) {
+    for (int chunk = 0; chunk < G::regs_a; ++chunk) {
         const int slot = static_cast<int>(threadIdx.x) + chunk * kThreads;
-        if (slot >= kSlotsA) break;
+        if (slot >= G::slots_a) break;
         const int row = slot / kStageK;
         const int col = slot % kStageK;
         const size_t absolute_row = m0 + static_cast<size_t>(row);
@@ -172,11 +170,11 @@ __device__ __forceinline__ void load_block(float (&regs_a)[kRegsA],
                 : 0.0f;
     }
 #pragma unroll
-    for (int chunk = 0; chunk < kRegsB; ++chunk) {
+    for (int chunk = 0; chunk < G::regs_b; ++chunk) {
         const int slot = static_cast<int>(threadIdx.x) + chunk * kThreads;
-        if (slot >= kSlotsB) break;
-        const int row = slot / kNT;
-        const int col = slot % kNT;
+        if (slot >= G::slots_b) break;
+        const int row = slot / G::nt;
+        const int col = slot % G::nt;
         const size_t absolute_row = k0 + static_cast<size_t>(row);
         const size_t absolute_col = n0 + static_cast<size_t>(col);
         regs_b[chunk] =
@@ -188,33 +186,35 @@ __device__ __forceinline__ void load_block(float (&regs_a)[kRegsA],
 }
 
 //: Write those registers into a stage buffer (padded rows).
+template <class G>
 __device__ __forceinline__ void store_block(float* dst_a, float* dst_b,
-                                            const float (&regs_a)[kRegsA],
-                                            const float (&regs_b)[kRegsB]) {
+                                            const float (&regs_a)[G::regs_a],
+                                            const float (&regs_b)[G::regs_b]) {
 #pragma unroll
-    for (int chunk = 0; chunk < kRegsA; ++chunk) {
+    for (int chunk = 0; chunk < G::regs_a; ++chunk) {
         const int slot = static_cast<int>(threadIdx.x) + chunk * kThreads;
-        if (slot >= kSlotsA) break;
-        dst_a[static_cast<size_t>(slot / kStageK) * kStrideA +
+        if (slot >= G::slots_a) break;
+        dst_a[static_cast<size_t>(slot / kStageK) * G::stride_a +
               slot % kStageK] = regs_a[chunk];
     }
 #pragma unroll
-    for (int chunk = 0; chunk < kRegsB; ++chunk) {
+    for (int chunk = 0; chunk < G::regs_b; ++chunk) {
         const int slot = static_cast<int>(threadIdx.x) + chunk * kThreads;
-        if (slot >= kSlotsB) break;
-        dst_b[static_cast<size_t>(slot / kNT) * kStrideB + slot % kNT] =
+        if (slot >= G::slots_b) break;
+        dst_b[static_cast<size_t>(slot / G::nt) * G::stride_b + slot % G::nt] =
             regs_b[chunk];
     }
 }
 
-//: Copy `kChunk` rows of the C stage out to HBM, one thread per element.
+//: Copy the C stage out to HBM, one thread per element.
+template <class G>
 __device__ __forceinline__ void write_chunk(const DenseGemm& g, const float* stage,
                                             size_t m0, size_t n0) {
     const size_t stride = g.c.layout.strides[0];
-    for (int slot = static_cast<int>(threadIdx.x); slot < kStageC;
+    for (int slot = static_cast<int>(threadIdx.x); slot < G::stage_c;
          slot += kThreads) {
-        const int row = slot / kNT;
-        const int col = slot % kNT;
+        const int row = slot / G::nt;
+        const int col = slot % G::nt;
         const size_t absolute_row = m0 + static_cast<size_t>(row);
         const size_t absolute_col = n0 + static_cast<size_t>(col);
         if (absolute_row < g.c.shape.dims[0] && absolute_col < g.c.shape.dims[1])
@@ -222,78 +222,76 @@ __device__ __forceinline__ void write_chunk(const DenseGemm& g, const float* sta
     }
 }
 
+template <class G>
 __global__ void __launch_bounds__(kThreads)
-dense_gemm_kernel(const DenseGemm g) {
-    // Two of each: the k-block being computed and the one being filled.  With one
-    // buffer an iteration needs two barriers (wrote-then-read, read-then-overwrite);
-    // with two, a single barrier orders both, and the global reads for k+1 sit in
-    // registers while the mma of k runs.
-    __shared__ float stage_a_buffer[2][kStageA];
-    __shared__ float stage_b_buffer[2][kStageB];
-    __shared__ float stage_c_buffer[kStageC];
+dense_kernel(const DenseGemm g) {
+    // Two of each: the k-block being computed and the one being filled.  With one buffer
+    // an iteration needs two barriers (wrote-then-read, read-then-overwrite); with two, a
+    // single barrier orders both, and the global reads for k+1 sit in registers while the
+    // mma of k runs.
+    __shared__ float stage_a_buffer[2][G::stage_a];
+    __shared__ float stage_b_buffer[2][G::stage_b];
+    __shared__ float stage_c_buffer[G::stage_c];
 
     const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
-    const size_t m0 = static_cast<size_t>(blockIdx.y) * kMT;
-    const size_t n0 = static_cast<size_t>(blockIdx.x) * kNT;
+    const size_t m0 = static_cast<size_t>(blockIdx.y) * G::mt;
+    const size_t n0 = static_cast<size_t>(blockIdx.x) * G::nt;
     const size_t k_total = g.a.shape.dims[1];
 
     // Two accumulator sets, alternating: `du_mma_sync` writes a destination other than
-    // the one it reads, and a pair per column group is 32 registers -- affordable.
-    Accumulator current[kFragments];
-    Accumulator spare[kFragments];
-    // Every fragment a k-step needs, materialised up front: the four B loads and the two
-    // A loads are independent, so the scheduler issues them together and the first mma
-    // starts while the rest are still in flight.  Loading one group at a time inside the
-    // mma loop makes each load wait for the one before it.
-    AFragment a_fragment[kRowHalves];
-    BFragment b_fragment[kGroups];
+    // the one it reads, and a pair per fragment is what that costs.
+    Accumulator current[G::fragments];
+    Accumulator spare[G::fragments];
+    // Every fragment a k-step needs, materialised up front: the B loads and the A loads
+    // are independent, so the scheduler issues them together and the first mma starts
+    // while the rest are still in flight.  Loading one group at a time inside the mma
+    // loop makes each load wait for the one before it.
+    AFragment a_fragment[G::row_halves];
+    BFragment b_fragment[G::groups];
 #pragma unroll
-    for (int index = 0; index < kFragments; ++index) {
+    for (int index = 0; index < G::fragments; ++index) {
         dumma::fill_fragment(current[index], 0.0f);
         dumma::fill_fragment(spare[index], 0.0f);
     }
 
     // Prologue: fill buffer 0, then the loop's single barrier is all that is needed.
-    float regs_a[kRegsA];
-    float regs_b[kRegsB];
-    load_block(regs_a, regs_b, g, m0, n0, 0);
-    store_block(stage_a_buffer[0], stage_b_buffer[0], regs_a, regs_b);
+    float regs_a[G::regs_a];
+    float regs_b[G::regs_b];
+    load_block<G>(regs_a, regs_b, g, m0, n0, 0);
+    store_block<G>(stage_a_buffer[0], stage_b_buffer[0], regs_a, regs_b);
     __syncthreads();
 
-    for (size_t k0 = 0, buffer = 0; k0 < k_total;
-         k0 += kStageK, buffer ^= 1) {
+    for (size_t k0 = 0, buffer = 0; k0 < k_total; k0 += kStageK, buffer ^= 1) {
         const size_t next = k0 + kStageK;
-        // Issue the next block's global reads now: their latency overlaps the mma
-        // below instead of being paid at the top of the next iteration.
-        if (next < k_total) load_block(regs_a, regs_b, g, m0, n0, next);
+        // Issue the next block's global reads now: their latency overlaps the mma below
+        // instead of being paid at the top of the next iteration.
+        if (next < k_total) load_block<G>(regs_a, regs_b, g, m0, n0, next);
 
-        // This wave owns rows [wave*16, wave*16+16); its A fragment is shared by the
-        // four column groups, which is where the reuse comes from.  With more than one
-        // k8 step staged, the barrier count per k drops by that factor.
         const float* a_stage = stage_a_buffer[buffer];
         const float* b_stage = stage_b_buffer[buffer];
 #pragma unroll
         for (int step = 0; step < kSteps; ++step) {
 #pragma unroll
-            for (int half = 0; half < kRowHalves; ++half) {
+            for (int half = 0; half < G::row_halves; ++half) {
                 dumma::ld_matrix(a_fragment[half],
                                  const_cast<float*>(a_stage) +
-                                     (wave * kRowsPerWave + half * 16) * kStrideA +
+                                     (wave * G::rows_per_wave + half * 16) *
+                                         G::stride_a +
                                      step * kKT,
-                                 static_cast<unsigned>(kStrideA));
+                                 static_cast<unsigned>(G::stride_a));
             }
 #pragma unroll
-            for (int group = 0; group < kGroups; ++group) {
+            for (int group = 0; group < G::groups; ++group) {
                 dumma::ld_matrix(b_fragment[group],
                                  const_cast<float*>(b_stage) +
-                                     step * kKT * kStrideB + group * 16,
-                                 static_cast<unsigned>(kStrideB));
+                                     step * kKT * G::stride_b + group * 16,
+                                 static_cast<unsigned>(G::stride_b));
             }
 #pragma unroll
-            for (int half = 0; half < kRowHalves; ++half) {
+            for (int half = 0; half < G::row_halves; ++half) {
 #pragma unroll
-                for (int group = 0; group < kGroups; ++group) {
-                    const int index = half * kGroups + group;
+                for (int group = 0; group < G::groups; ++group) {
+                    const int index = half * G::groups + group;
                     dumma::mma(spare[index], a_fragment[half], b_fragment[group],
                                current[index]);
                     Accumulator previous = current[index];
@@ -306,57 +304,98 @@ dense_gemm_kernel(const DenseGemm g) {
         // One barrier: every thread has finished reading this buffer *and* finished
         // writing the other one, which is what the next iteration reads.
         if (next < k_total) {
-            store_block(stage_a_buffer[buffer ^ 1], stage_b_buffer[buffer ^ 1],
-                        regs_a, regs_b);
+            store_block<G>(stage_a_buffer[buffer ^ 1], stage_b_buffer[buffer ^ 1],
+                           regs_a, regs_b);
         }
         __syncthreads();
     }
 
-    // Epilogue through LDS: the accumulator lives in registers and the copy out is a
-    // plain vectorised store, which also lets one wave write rows another block owns.
+    // Epilogue through LDS: the accumulator lives in registers and the copy out is a plain
+    // store.  With the chunked buffer one wave writes its rows at a time, which is what
+    // keeps a tall tile at two blocks per CU.
 #if DPA4_DENSE_CCHUNK
-    // One wave's rows at a time through an eighth-of-the-tile buffer: four barriers per
-    // instruction in exchange for 24 KiB of LDS, which is the occupancy the tile needs.
     for (int owner = 0; owner < kWaves; ++owner) {
         if (wave == owner) {
 #pragma unroll
-            for (int half = 0; half < kRowHalves; ++half) {
+            for (int half = 0; half < G::row_halves; ++half) {
 #pragma unroll
-                for (int group = 0; group < kGroups; ++group) {
-                    const int index = half * kGroups + group;
-                    dumma::store_matrix(
-                        stage_c_buffer + (half * 16) * kNT + group * 16,
-                        current[index], static_cast<unsigned>(kNT),
-                        dumma::native::mem_row_major);
+                for (int group = 0; group < G::groups; ++group) {
+                    const int index = half * G::groups + group;
+                    dumma::store_matrix(stage_c_buffer + (half * 16) * G::nt +
+                                            group * 16,
+                                        current[index],
+                                        static_cast<unsigned>(G::nt),
+                                        dumma::native::mem_row_major);
                 }
             }
         }
         __syncthreads();
-        write_chunk(g, stage_c_buffer,
-                    m0 + static_cast<size_t>(owner) * kRowsPerWave, n0);
+        write_chunk<G>(g, stage_c_buffer,
+                       m0 + static_cast<size_t>(owner) * G::rows_per_wave, n0);
         __syncthreads();
     }
 #else
 #pragma unroll
-    for (int half = 0; half < kRowHalves; ++half) {
+    for (int half = 0; half < G::row_halves; ++half) {
 #pragma unroll
-        for (int group = 0; group < kGroups; ++group) {
-            const int index = half * kGroups + group;
-            dumma::store_matrix(
-                stage_c_buffer +
-                    (wave * kRowsPerWave + half * 16) * kNT + group * 16,
-                current[index], static_cast<unsigned>(kNT),
-                dumma::native::mem_row_major);
+        for (int group = 0; group < G::groups; ++group) {
+            const int index = half * G::groups + group;
+            dumma::store_matrix(stage_c_buffer +
+                                    (wave * G::rows_per_wave + half * 16) * G::nt +
+                                    group * 16,
+                                current[index], static_cast<unsigned>(G::nt),
+                                dumma::native::mem_row_major);
         }
     }
     __syncthreads();
-    write_chunk(g, stage_c_buffer, m0, n0);
+    write_chunk<G>(g, stage_c_buffer, m0, n0);
 #endif
 }
+
+//: The two tiles this build carries.
+using TileWide = Tile<128, 64>;
+using TileSquare = Tile<64, 64>;
 
 }  // namespace
 
 #ifndef __HIP_DEVICE_COMPILE__
+namespace {
+
+//: The two launch symbols, kept as `const void*` for the attribute queries and as typed
+//: pointers for the launches.
+const void* const kWideSymbol =
+    reinterpret_cast<const void*>(&dense_kernel<TileWide>);
+const void* const kSquareSymbol =
+    reinterpret_cast<const void*>(&dense_kernel<TileSquare>);
+
+//: Which tile to use for this shape.
+//:
+//: The wide tile has the better arithmetic intensity and the square one has the bigger
+//: grid; at 512^3 the wide tile leaves 32 blocks against 120 CUs, so the square one wins
+//: despite doing more traffic per FLOP.
+bool prefer_wide(int64_t m, int64_t n) {
+    const int64_t wide = ((m + TileWide::mt - 1) / TileWide::mt) *
+                         ((n + TileWide::nt - 1) / TileWide::nt);
+    const int64_t square = ((m + TileSquare::mt - 1) / TileSquare::mt) *
+                           ((n + TileSquare::nt - 1) / TileSquare::nt);
+    int cus = 0;
+    int device = 0;
+    if (hipGetDevice(&device) == hipSuccess) {
+        hipDeviceProp_t properties{};
+        if (hipGetDeviceProperties(&properties, device) == hipSuccess)
+            cus = properties.multiProcessorCount;
+    }
+    if (cus > 0 && wide < cus && square > wide) return false;
+    return wide >= square;
+}
+
+bool report(const char* message) {
+    std::fprintf(stderr, "dense gemm: %s\n", message);
+    return false;
+}
+
+}  // namespace
+
 Tensor gemm_dense_hip(Tensor matrix_a, Tensor matrix_b) {
     f32(matrix_a);
     f32(matrix_b);
@@ -380,27 +419,34 @@ Tensor gemm_dense_hip(Tensor matrix_a, Tensor matrix_b) {
     ops::tensor::from_torch(c_handle, g.c);
     TORCH_CHECK(g.valid(), "the dense GEMM operands are not consistent");
 
-    const dim3 grid(static_cast<unsigned>((n + kNT - 1) / kNT),
-                    static_cast<unsigned>((m + kMT - 1) / kMT));
+    const bool wide = prefer_wide(m, n);
+    const int tile_m = wide ? TileWide::mt : TileSquare::mt;
+    const int tile_n = wide ? TileWide::nt : TileSquare::nt;
+    const dim3 grid(static_cast<unsigned>((n + tile_n - 1) / tile_n),
+                    static_cast<unsigned>((m + tile_m - 1) / tile_m));
 
     // `DPA4_DEBUG_GEMM=1` prints what decides occupancy for this kernel -- the facts a
-    // profiler would show first, available without one.  LDS per block is the tile
-    // staging (A, B, C); registers decide how many blocks fit next to it.
+    // profiler would show first, available without one.
     if (std::getenv("DPA4_DEBUG_GEMM") != nullptr) {
+        const void* symbol = wide ? kWideSymbol : kSquareSymbol;
         hipFuncAttributes attributes{};
-        if (hipFuncGetAttributes(&attributes,
-                                 reinterpret_cast<const void*>(dense_gemm_kernel)) ==
-            hipSuccess) {
+        if (hipFuncGetAttributes(&attributes, symbol) == hipSuccess) {
             std::printf(
-                "dense gemm: regs=%d static_lds=%zu B threads=%d grid=(%u,%u) "
-                "kMT=%d kNT=%d kKT=%d\n",
-                attributes.numRegs,
-                static_cast<size_t>(attributes.sharedSizeBytes), kThreads,
-                grid.x, grid.y, kMT, kNT, kKT);
+                "dense gemm: tile=%dx%d regs=%d static_lds=%zu B threads=%d "
+                "grid=(%u,%u) kKT=%d kStageK=%d\n",
+                tile_m, tile_n, attributes.numRegs,
+                static_cast<size_t>(attributes.sharedSizeBytes), kThreads, grid.x,
+                grid.y, kKT, kStageK);
             std::fflush(stdout);
         }
     }
-    dense_gemm_kernel<<<grid, kThreads, 0, at::cuda::getCurrentCUDAStream()>>>(g);
+
+    const hipStream_t stream = at::cuda::getCurrentCUDAStream();
+    if (wide) {
+        dense_kernel<TileWide><<<grid, kThreads, 0, stream>>>(g);
+    } else {
+        dense_kernel<TileSquare><<<grid, kThreads, 0, stream>>>(g);
+    }
     launch_check();
     return matrix_c;
 }

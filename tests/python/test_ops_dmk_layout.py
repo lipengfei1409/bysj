@@ -104,16 +104,13 @@ class LdsStrideTests(unittest.TestCase):
 
     def test_the_stage_strides_are_padded(self) -> None:
         dense = (ROOT / "csrc" / "gemm.cpp").read_text()
-        self.assertIn("constexpr int kStrideA = kStageK + kPad", dense)
-        self.assertIn("constexpr int kMT = 128", dense)
-        self.assertIn("constexpr int kNT = 64", dense)
-        self.assertIn("constexpr int kFragments = kRowHalves * kGroups", dense)
-        self.assertIn("constexpr int kStrideB = kNT + kPad", dense)
+        self.assertIn("static constexpr int stride_a = kStageK + kPad;", dense)
+        self.assertIn("static constexpr int stride_b = NT + kPad;", dense)
         # `kStageK` counts k values; there is no second factor of kKT anywhere
         self.assertNotIn("kStageK * kKT", dense)
         # the fragment loader is told the padded stride, which is the whole point
-        self.assertIn("static_cast<unsigned>(kStrideA)", dense)
-        self.assertIn("static_cast<unsigned>(kStrideB)", dense)
+        self.assertIn("static_cast<unsigned>(G::stride_a)", dense)
+        self.assertIn("static_cast<unsigned>(G::stride_b)", dense)
 
     def test_the_k_loop_pays_one_barrier_per_block(self) -> None:
         # A single stage buffer needs two (wrote-then-read, read-then-overwrite); the
@@ -125,15 +122,15 @@ class LdsStrideTests(unittest.TestCase):
         self.assertIn("stage_a_buffer[2]", dense)
         self.assertIn("stage_b_buffer[2]", dense)
         # the next block's global reads are issued before the mma of the current one
-        self.assertLess(loop.index("load_block(regs_a"), loop.index("ld_matrix"))
-        self.assertLess(loop.index("ld_matrix"), loop.index("store_block("))
+        self.assertLess(loop.index("load_block<G>(regs_a"), loop.index("ld_matrix"))
+        self.assertLess(loop.index("ld_matrix"), loop.index("store_block<G>("))
 
     def test_the_padding_is_explained_as_a_loader_constraint(self) -> None:
         # A swizzled stage would disagree with `ld_matrix`, which only takes a leading
         # dimension -- that must be written down or the next reader will "fix" it.
         dense = (ROOT / "csrc" / "gemm.cpp").read_text()
         self.assertIn("du_load_matrix_sync", dense)
-        self.assertIn("plain row-major", dense)
+        self.assertIn("row-major", dense)
         self.assertIn("ShmemSwizzleLayout", dense)
 
 
@@ -181,23 +178,31 @@ class StageIndexMathTests(unittest.TestCase):
         self.assertIn("slot / kStageK", dense)
         self.assertIn("slot % kStageK", dense)
         self.assertNotIn("kStageK * kKT", dense.split("load_block")[1].split("write_chunk")[0])
-        for bound in ("kStrideA == kStageK + kPad",
-                      "kSlotsA == kMT * kStageK",
-                      "kSlotsB == kStageK * kNT",
-                      "kRegsA * kThreads >= kSlotsA"):
+        for bound in ("stride_a * 4 % 16 == 0",
+                      "slots_a == MT * kStageK",
+                      "slots_b == kStageK * NT",
+                      "regs_a * kThreads >= slots_a"):
             self.assertIn(bound, dense)
 
 
 class TileShapeTests(unittest.TestCase):
-    """The dense tile is 128x64 and every constant agrees with that."""
+    """Two tiles, chosen per shape, and the epilogue default that keeps them at 2 blocks."""
 
-    def test_the_tile_and_its_fragment_count_are_pinned(self) -> None:
+    def test_both_tiles_are_instantiated_and_chosen(self) -> None:
         dense = (ROOT / "csrc" / "gemm.cpp").read_text()
-        for line in ("constexpr int kMT = 128;",
-                     "constexpr int kNT = 64;",
-                     "constexpr int kRowsPerWave = kMT / kWaves;",
-                     "constexpr int kRowHalves = kRowsPerWave / 16;",
-                     "constexpr int kFragments = kRowHalves * kGroups;"):
+        self.assertIn("using TileWide = Tile<128, 64>;", dense)
+        self.assertIn("using TileSquare = Tile<64, 64>;", dense)
+        self.assertIn("bool prefer_wide(int64_t m, int64_t n)", dense)
+        # the wide tile is dropped only when it would leave the part under-filled
+        self.assertIn("if (cus > 0 && wide < cus && square > wide) return false;", dense)
+
+    def test_the_tile_geometry_is_derived_from_the_pair(self) -> None:
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        for line in ("static constexpr int rows_per_wave = MT / kWaves;",
+                     "static constexpr int fragments = row_halves * groups;",
+                     "static constexpr int stride_a = kStageK + kPad;",
+                     "static constexpr int stride_b = NT + kPad;",
+                     "static constexpr int chunk_rows = DPA4_DENSE_CCHUNK ? rows_per_wave : MT;"):
             self.assertIn(line, dense)
 
     def test_all_fragments_are_loaded_before_any_mma(self) -> None:
@@ -215,8 +220,7 @@ class TileShapeTests(unittest.TestCase):
         # A whole-tile C buffer at 128 rows is 32 KiB, which costs a block per CU.
         dense = (ROOT / "csrc" / "gemm.cpp").read_text()
         self.assertIn("#define DPA4_DENSE_CCHUNK 1", dense)
-        self.assertIn("constexpr int kChunk = DPA4_DENSE_CCHUNK ? kRowsPerWave : kMT;",
-                      dense)
+        self.assertIn("chunk_rows = DPA4_DENSE_CCHUNK ? rows_per_wave : MT", dense)
 
 
 class PreprocessorBalanceTests(unittest.TestCase):
