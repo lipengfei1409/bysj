@@ -216,6 +216,14 @@ class BuildLogTests(unittest.TestCase):
         self.assertEqual(module.occupancy(112, 256, 24576), 2)
         self.assertEqual(module.occupancy(168, 256, 24576), 1)
 
+    def test_the_descriptor_printer_builds_from_the_checkpoint(self) -> None:
+        # The descriptor does not store `ntypes`, so the printer has to take it from the
+        # checkpoint's type map; and the constructor rejects keys it does not declare.
+        tool = (ROOT / "tools" / "print_sezm_model.py").read_text()
+        for needle in ("_extra_state", "model_params", "len(type_map)",
+                       "inspect.signature", "get_class_by_type", "print(descriptor)"):
+            self.assertIn(needle, tool)
+
     def test_the_bmm_attribution_tool_exists(self) -> None:
         # Shapes are known from the device profile; this answers *where* they come from,
         # which the shipped trace cannot (it has no Python stacks).
