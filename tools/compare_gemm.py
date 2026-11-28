@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Time every GEMM engine in this tree against rocBLAS on one shape.
+"""Time the dense GEMM against rocBLAS on one shape.
 
     python3 tools/compare_gemm.py --shape 2048x2048x2048 --iterations 20
 
-Engines, all writing a 16x16-tile product of the same shape:
+Two engines, the same operands:
 
-    rocBLAS     torch.matmul -- the vendor library, the number to beat
-    dense       csrc/gemm.cpp: 64x64 block tile, ping-pong staging
-    scheduled   csrc/dmk/megakernel.cpp: instruction stream, controller/loader/storer
-    flat        csrc/dmk/gemm_flat.cpp: instruction stream, one role, double buffered
+    rocBLAS   torch.matmul -- the vendor library, the number to beat
+    dense     csrc/gemm.cpp: 64x64 block tile, ping-pong staging, DUMMA m16n16k8
 
-The script exists because the interesting comparison is a *table*, and because the two
-persistent engines take a different path each time a checkout is out of step with the
-kernel -- so an engine that is missing prints as `n/a` instead of failing the run.
+`--with-persistent` adds the two instruction-stream kernels (`scheduled` from
+`csrc/dmk/megakernel.cpp`, `flat` from `csrc/dmk/gemm_flat.cpp`).  They are off by
+default because the question this answers is "how far is the ordinary kernel from the
+library", and the persistent engines measure a different design (16x16 tiles, so a
+quarter of the arithmetic intensity).
+
+An engine that is not in the build prints as absent instead of failing the run: the
+persistent ones depend on a checkout matching the kernel, and that should not stop a
+two-row comparison.
 """
 
 from __future__ import annotations
@@ -50,11 +54,12 @@ def _time(call, iterations: int) -> float:
     return start.elapsed_time(end) / iterations
 
 
-def _scheduled(m: int, n: int, k: int, cus: int, flat: bool | None):
-    """A callable for one persistent engine, or None when it is not in this build."""
-    if flat is False and not dispatch.available(flat=False):
-        return None
-    if flat is True and not dispatch.flat_available():
+def _persistent(m: int, n: int, k: int, cus: int, flat: bool):
+    """A callable for one instruction-stream engine, or None when it is absent."""
+    if flat:
+        if not getattr(dispatch, "flat_available", lambda: False)():
+            return None
+    elif not dispatch.available(flat=False):
         return None
     globals_ = mk.GemmGlobals.from_shapes(m, n, k, seed=0)
     globals_.attach(emitters.GemmEmitter(m, n, k).queues(cus))
@@ -76,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--shape", type=_parse_shape, default=(2048, 2048, 2048))
     parser.add_argument("--iterations", type=int, default=20)
+    parser.add_argument("--with-persistent", action="store_true",
+                        help="also time the instruction-stream engines")
     parser.add_argument("--cus", type=int, default=4,
                         help="rows for the instruction-stream engines")
     args = parser.parse_args(argv)
@@ -91,12 +98,13 @@ def main(argv: list[str] | None = None) -> int:
     flops = 2 * m * n * k
 
     engines: list[tuple[str, object]] = [("rocBLAS", lambda: a @ b)]
-    if hasattr(dispatch, "launch_dense") and dispatch.dense_available():
+    if getattr(dispatch, "dense_available", lambda: False)():
         engines.append(("dense", lambda: dispatch.launch_dense(a, b)))
-    for name, flat in (("scheduled", False), ("flat", True)):
-        call = _scheduled(m, n, k, args.cus, flat)
-        if call is not None:
-            engines.append((name, call))
+    if args.with_persistent:
+        for name, flat in (("scheduled", False), ("flat", True)):
+            call = _persistent(m, n, k, args.cus, flat)
+            if call is not None:
+                engines.append((name, call))
 
     baseline = None
     print(f"\n{m}x{n}x{k}  ({flops / 1e9:.2f} GFLOP, {args.iterations} iterations)")
@@ -106,10 +114,11 @@ def main(argv: list[str] | None = None) -> int:
         tflops = flops / (milliseconds * 1e9)
         if name == "rocBLAS":
             baseline = milliseconds
-        ratio = f"{baseline / milliseconds:10.3f}x" if baseline else "         —"
+        ratio = f"{baseline / milliseconds:10.3f}x" if baseline else f"{'—':>11s}"
         print(f"  {name:10s} {milliseconds:9.3f} {tflops:9.2f} {ratio:>11s}")
-    missing = [name for name in ("dense", "scheduled", "flat")
-               if name not in {engine for engine, _ in engines}]
+
+    wanted = ["dense"] + (["scheduled", "flat"] if args.with_persistent else [])
+    missing = [name for name in wanted if name not in {e for e, _ in engines}]
     if missing:
         print(f"  (not in this build: {', '.join(missing)})")
     return 0
