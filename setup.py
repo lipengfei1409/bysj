@@ -116,6 +116,19 @@ CSCALAR_ARGS = ["-DDPA4_GEMM_SCALAR"] if BUILD_SCALAR else []
 # Passing the flag here makes the target explicit instead of advisory.
 ARCH_FLAGS = [f"--offload-arch={arch}" for arch in TARGETS] if TARGETS else []
 
+# `csrc/gemm.cpp` exposes three build-time switches so one machine can isolate what the
+# dense kernel spends its time on without a profiler: padding, k-steps per barrier, and
+# a chunked epilogue.  They ride in as -D flags with the file's own defaults.
+DENSE_KNOBS = [
+    f"-DDPA4_DENSE_{name}={value}"
+    for name, value in (
+        ("PAD", os.environ.get("DPA4_DENSE_PAD")),
+        ("KSTAGE", os.environ.get("DPA4_DENSE_KSTAGE")),
+        ("CCHUNK", os.environ.get("DPA4_DENSE_CCHUNK")),
+    )
+    if value
+]
+
 
 def _arch_from_rocminfo(text: str) -> str:
     """The first agent arch in `rocminfo` output, or "" when there is none."""
@@ -159,7 +172,8 @@ if __name__ == "__main__":
              else f" (default {DEFAULT_ARCH})")
           + (f"; this device is {_DEVICE}" if _DEVICE else "")
           + ("; inner loop: scalar" if BUILD_SCALAR else "; inner loop: DUMMA")
-          + (f"; flags: {' '.join(ARCH_FLAGS)}" if ARCH_FLAGS else ""))
+          + (f"; flags: {' '.join(ARCH_FLAGS)}" if ARCH_FLAGS else "")
+          + (f"; dense knobs: {' '.join(DENSE_KNOBS)}" if DENSE_KNOBS else ""))
 if _DEVICE and _DEVICE not in TARGETS:
     print(
         f"note: the target ({ARCH}) is not this machine's agent ({_DEVICE}); the "
@@ -195,7 +209,7 @@ ext_modules = [CUDAExtension(
     # and drowns the log; the two below are what this tree actually needs to see.
     extra_compile_args={
         "cxx": ["-O3", "-std=c++17", "-Wno-return-type", *ARCH_FLAGS,
-                *CSCALAR_ARGS],
+                *CSCALAR_ARGS, *DENSE_KNOBS],
     },
     extra_ldflags=[],
 )]

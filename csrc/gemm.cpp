@@ -65,12 +65,32 @@ constexpr int kGroups = kNT / 16;      // 16x16 column groups per wave
 // stage row is kNT = 64 floats = 256 B, exactly a multiple of the 128 B bank cycle, so
 // *every* row starts at the same bank; a stride of 68 shifts by four banks per row and
 // spreads eight rows across the cycle.
-constexpr int kPad = 4;                // floats per row, keeps every stride 16 B aligned
-constexpr int kStrideA = kKT + kPad;   // 12
-constexpr int kStrideB = kNT + kPad;   // 68
+// Build-time knobs, so the machine can answer "which of these four costs what"
+// without a profiler: each one changes exactly one decision, and the others stay put.
+//
+//   DPA4_DENSE_PAD      row padding in floats (0 disables: the conflict hypothesis)
+//   DPA4_DENSE_KSTAGE   k8 steps staged per buffer (1 = a barrier every 8 of k)
+//   DPA4_DENSE_CCHUNK   1 = per-wave 4 KiB epilogue buffer instead of one 16 KiB
+#ifndef DPA4_DENSE_PAD
+#define DPA4_DENSE_PAD 4
+#endif
+#ifndef DPA4_DENSE_KSTAGE
+#define DPA4_DENSE_KSTAGE 1
+#endif
+#ifndef DPA4_DENSE_CCHUNK
+#define DPA4_DENSE_CCHUNK 0
+#endif
+constexpr int kPad = DPA4_DENSE_PAD;   // floats per row, keeps every stride 16 B aligned
+constexpr int kSteps = DPA4_DENSE_KSTAGE;   // k8 steps staged per buffer
+constexpr int kStageK = kKT * kSteps;       // k values staged per buffer
+constexpr int kStrideA = kStageK + kPad;    // 12 with the defaults
+constexpr int kStrideB = kNT + kPad;        // 68
 constexpr int kStageA = kMT * kStrideA;
-constexpr int kStageB = kKT * kStrideB;
-constexpr int kStageC = kMT * kNT;     // 4096 floats
+constexpr int kStageB = kStageK * kStrideB;
+// The epilogue buffer is the largest single LDS allocation; a quarter of it, written
+// one wave at a time, buys occupancy at the cost of four extra barriers.
+constexpr int kChunk = DPA4_DENSE_CCHUNK ? 16 : kMT;
+constexpr int kStageC = kChunk * kNT;
 
 static_assert(kWaves * 16 == kMT, "each wave owns exactly 16 rows");
 static_assert(kGroups == 4, "four column groups per wave");
@@ -99,16 +119,16 @@ struct DenseGemm {
     }
 };
 
-//: A k-step of A, zero-filled outside the matrix.
+//: `kStageK` values of k for A, zero-filled outside the matrix.
 __device__ __forceinline__ void stage_a(float* dst, const DenseGemm& g, size_t m0,
                                         size_t k0) {
-    const int index = static_cast<int>(threadIdx.x) * 2;
     const size_t stride = g.a.layout.strides[0];
+    constexpr int kSlots = kMT * kStageK;
 #pragma unroll
-    for (int j = 0; j < 2; ++j) {
-        const int slot = index + j;
-        const int row = slot / kKT;
-        const int col = slot % kKT;
+    for (int slot = static_cast<int>(threadIdx.x); slot < kSlots;
+         slot += kThreads) {
+        const int row = slot / kStageK;
+        const int col = slot % kStageK;
         const size_t absolute_row = m0 + static_cast<size_t>(row);
         const size_t absolute_col = k0 + static_cast<size_t>(col);
         dst[static_cast<size_t>(row) * kStrideA + col] =
@@ -119,14 +139,14 @@ __device__ __forceinline__ void stage_a(float* dst, const DenseGemm& g, size_t m
     }
 }
 
-//: A k-step of B, same treatment.
+//: The matching `kStageK` values of k for B.
 __device__ __forceinline__ void stage_b(float* dst, const DenseGemm& g, size_t n0,
                                         size_t k0) {
-    const int index = static_cast<int>(threadIdx.x) * 2;
     const size_t stride = g.b.layout.strides[0];
+    constexpr int kSlots = kStageK * kNT;
 #pragma unroll
-    for (int j = 0; j < 2; ++j) {
-        const int slot = index + j;
+    for (int slot = static_cast<int>(threadIdx.x); slot < kSlots;
+         slot += kThreads) {
         const int row = slot / kNT;
         const int col = slot % kNT;
         const size_t absolute_row = k0 + static_cast<size_t>(row);
@@ -136,6 +156,21 @@ __device__ __forceinline__ void stage_b(float* dst, const DenseGemm& g, size_t n
              absolute_col < g.b.shape.dims[1])
                 ? g.b.data[absolute_row * stride + absolute_col]
                 : 0.0f;
+    }
+}
+
+//: Copy `kChunk` rows of the C stage out to HBM, one thread per element.
+__device__ __forceinline__ void write_chunk(const DenseGemm& g, const float* stage,
+                                            size_t m0, size_t n0) {
+    const size_t stride = g.c.layout.strides[0];
+    for (int slot = static_cast<int>(threadIdx.x); slot < kStageC;
+         slot += kThreads) {
+        const int row = slot / kNT;
+        const int col = slot % kNT;
+        const size_t absolute_row = m0 + static_cast<size_t>(row);
+        const size_t absolute_col = n0 + static_cast<size_t>(col);
+        if (absolute_row < g.c.shape.dims[0] && absolute_col < g.c.shape.dims[1])
+            g.c.data[absolute_row * stride + absolute_col] = stage[slot];
     }
 }
 
@@ -162,29 +197,54 @@ dense_gemm_kernel(const DenseGemm g) {
         dumma::fill_fragment(next[group], 0.0f);
     }
 
-    for (size_t k0 = 0; k0 < k_total; k0 += kKT) {
+    for (size_t k0 = 0; k0 < k_total; k0 += kStageK) {
         stage_a(stage_a_buffer, g, m0, k0);
         stage_b(stage_b_buffer, g, n0, k0);
         __syncthreads();
 
         // This wave owns rows [wave*16, wave*16+16); its A fragment is shared by the
-        // four column groups, which is where the reuse comes from.
-        dumma::ld_matrix(a_fragment, stage_a_buffer + wave * 16 * kStrideA,
-                         static_cast<unsigned>(kStrideA));
+        // four column groups, which is where the reuse comes from.  With more than one
+        // k8 step staged, the barrier count per k drops by that factor.
 #pragma unroll
-        for (int group = 0; group < kGroups; ++group) {
-            dumma::ld_matrix(b_fragment, stage_b_buffer + group * 16,
-                             static_cast<unsigned>(kStrideB));
-            dumma::mma(next[group], a_fragment, b_fragment, current[group]);
-            Accumulator previous = current[group];
-            current[group] = next[group];
-            next[group] = previous;
+        for (int step = 0; step < kSteps; ++step) {
+            dumma::ld_matrix(a_fragment,
+                             stage_a_buffer +
+                                 wave * 16 * kStrideA + step * kKT,
+                             static_cast<unsigned>(kStrideA));
+#pragma unroll
+            for (int group = 0; group < kGroups; ++group) {
+                dumma::ld_matrix(b_fragment,
+                                 stage_b_buffer + step * kKT * kStrideB +
+                                     group * 16,
+                                 static_cast<unsigned>(kStrideB));
+                dumma::mma(next[group], a_fragment, b_fragment, current[group]);
+                Accumulator previous = current[group];
+                current[group] = next[group];
+                next[group] = previous;
+            }
         }
         __syncthreads();
     }
 
     // Epilogue through LDS: the accumulator lives in registers and the copy out is a
     // plain vectorised store, which also lets one wave write rows another block owns.
+#if DPA4_DENSE_CCHUNK
+    // One wave's 16 rows at a time through a quarter-sized buffer: four barriers per
+    // instruction in exchange for 12 KiB of LDS, which is occupancy.
+    for (int owner = 0; owner < kWaves; ++owner) {
+        if (wave == owner) {
+#pragma unroll
+            for (int group = 0; group < kGroups; ++group) {
+                dumma::store_matrix(stage_c_buffer + group * 16, current[group],
+                                    static_cast<unsigned>(kNT),
+                                    dumma::native::mem_row_major);
+            }
+        }
+        __syncthreads();
+        write_chunk(g, stage_c_buffer, m0 + static_cast<size_t>(owner) * 16, n0);
+        __syncthreads();
+    }
+#else
 #pragma unroll
     for (int group = 0; group < kGroups; ++group) {
         dumma::store_matrix(stage_c_buffer + wave * 16 * kNT + group * 16,
@@ -193,18 +253,9 @@ dense_gemm_kernel(const DenseGemm g) {
     }
     __syncthreads();
 
-    const size_t stride = g.c.layout.strides[0];
-    const int tid = static_cast<int>(threadIdx.x);
-#pragma unroll
-    for (int chunk = 0; chunk < kStageC / kThreads; ++chunk) {
-        const int slot = tid + chunk * kThreads;
-        const int row = slot / kNT;
-        const int col = slot % kNT;
-        const size_t absolute_row = m0 + static_cast<size_t>(row);
-        const size_t absolute_col = n0 + static_cast<size_t>(col);
-        if (absolute_row < g.c.shape.dims[0] && absolute_col < g.c.shape.dims[1])
-            g.c.data[absolute_row * stride + absolute_col] = stage_c_buffer[slot];
-    }
+#if !DPA4_DENSE_CCHUNK
+    write_chunk(g, stage_c_buffer, m0, n0);
+#endif
 }
 
 }  // namespace

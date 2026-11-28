@@ -104,7 +104,7 @@ class LdsStrideTests(unittest.TestCase):
 
     def test_the_stage_strides_are_padded(self) -> None:
         dense = (ROOT / "csrc" / "gemm.cpp").read_text()
-        self.assertIn("constexpr int kStrideA = kKT + kPad", dense)
+        self.assertIn("constexpr int kStrideA = kStageK + kPad", dense)
         self.assertIn("constexpr int kStrideB = kNT + kPad", dense)
         # the fragment loader is told the padded stride, which is the whole point
         self.assertIn("static_cast<unsigned>(kStrideA)", dense)

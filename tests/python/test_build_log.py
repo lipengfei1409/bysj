@@ -183,6 +183,20 @@ class BuildLogTests(unittest.TestCase):
         self.assertIn("--dry-run", tool)
         self.assertIn("would remove", tool)
 
+    def test_the_dense_kernel_knobs_are_forwarded(self) -> None:
+        # Without a profiler on the host, the way to find what the kernel spends time
+        # on is to rebuild with one decision changed -- so the switches must reach
+        # hipcc, and their defaults must stay in the source.
+        source = (ROOT / "setup.py").read_text()
+        self.assertIn("DENSE_KNOBS", source)
+        self.assertIn('("PAD", os.environ.get("DPA4_DENSE_PAD"))', source)
+        self.assertIn('("KSTAGE", os.environ.get("DPA4_DENSE_KSTAGE"))', source)
+        self.assertIn('("CCHUNK", os.environ.get("DPA4_DENSE_CCHUNK"))', source)
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        self.assertIn("#ifndef DPA4_DENSE_PAD", dense)
+        self.assertIn("#define DPA4_DENSE_PAD 4", dense)
+        self.assertIn("constexpr int kPad = DPA4_DENSE_PAD", dense)
+
     def test_the_device_tests_detect_engine_support(self) -> None:
         # `csrc/` and `tests/` can be at different revisions on a host that pulls
         # nothing but the kernel: a missing `flat` keyword must downgrade the

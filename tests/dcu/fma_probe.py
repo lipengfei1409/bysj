@@ -138,7 +138,7 @@ def _load_extension():
         raise ProbeError(f"probe source is missing: {source}")
 
     compiler = os.environ.get("HIPCXX") or "hipcc"
-    digest = hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(source.read_bytes()).hexdigest()[:10]
     previous_cxx = os.environ.get("CXX")
     os.environ["CXX"] = compiler
     try:

@@ -18,7 +18,8 @@
 namespace {
 
 template <int NACC>
-__global__ void fma_kernel(float *out, int iters, float w, float c) {
+__global__ void __launch_bounds__(1024) fma_kernel(float *out, int iters,
+                                                   float w, float c) {
   float a[NACC];
 #pragma unroll
   for (int i = 0; i < NACC; ++i) {
