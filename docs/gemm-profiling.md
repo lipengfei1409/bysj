@@ -44,6 +44,25 @@ blocks/CU = min( 65536 / (threads × vgpr) , 65536 / (lds + 页) , wave 上限 )
 
 配合 `DPA4_DEBUG_GEMM=1` 打印的 `static_lds` 与真实 `regs` 互相对照，两个数一致就说明算得对。
 
+## 2.5 已经测到的基线（2026-11-28，gfx928）
+
+```
+hipprof --stats:  dense_gemm_kernel   10 calls   avg 2.691 ms
+bench_gemm dense --shape 2048x2048x2048 --iterations 5:  2.687 ms   6.39 TFLOP/s
+```
+
+反推每 CU 的预算（2048³、120 CU、~1.7 GHz）：
+
+| 量 | 值 |
+| --- | --- |
+| 总 MMA 数（m16n16k8） | 1024 blocks × 256 k-steps × 16 = **4.19 M** |
+| 每 CU 的 MMA 数 | 34.9 k |
+| 每 k-step 的墙钟 | ≈ 2090 cycles |
+| **每 MMA 的墙钟** | **≈ 131 cycles** ← 而 mma 本身只有 ~32 |
+
+131 cycles 里 mma 只占 32：剩下的是 **LDS 取片（20 次 `ld_matrix`/k-step）、两次屏障、以及
+未被重叠的全局装载延迟**。这就是为什么下一步要动 occupancy 与 k-stage，而不是继续调 tile。
+
 ## 3. PMC（计数器）
 
 ```bash
