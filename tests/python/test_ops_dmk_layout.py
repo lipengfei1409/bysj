@@ -132,6 +132,30 @@ class LdsStrideTests(unittest.TestCase):
         self.assertIn("ShmemSwizzleLayout", dense)
 
 
+class PreprocessorBalanceTests(unittest.TestCase):
+    """Every `#if` in a kernel source needs its `#endif`.
+
+    A removed `#endif` is a syntax error the compiler reports at the *end* of the file,
+    three hunks away from where it was lost -- and on this project that is a round trip
+    to another machine.
+    """
+
+    def test_kernel_sources_have_balanced_conditionals(self) -> None:
+        for name in ("csrc/gemm.cpp", "csrc/dmk/gemm_flat.cpp",
+                     "csrc/dmk/megakernel.cpp"):
+            text = (ROOT / name).read_text()
+            opens = len(re.findall(r"^\s*#if", text, re.MULTILINE))
+            closes = len(re.findall(r"^\s*#endif", text, re.MULTILINE))
+            self.assertEqual(opens, closes, f"{name}: {opens} #if, {closes} #endif")
+
+    def test_the_build_does_not_pass_unknown_extension_options(self) -> None:
+        # setuptools warns "Unknown Extension options" for names CUDAExtension does
+        # not take, and the warning arrives in the middle of a build log.
+        setup_py = (ROOT / "setup.py").read_text()
+        for unknown in ("extra_ldflags", "extra_link_args=["):
+            self.assertNotIn(unknown, setup_py, unknown)
+
+
 class BuildIncludePathTests(unittest.TestCase):
     """A cwd-relative include dir breaks every header include from a subdirectory."""
 

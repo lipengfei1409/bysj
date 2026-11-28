@@ -304,8 +304,6 @@ dense_gemm_kernel(const DenseGemm g) {
                             dumma::native::mem_row_major);
     }
     __syncthreads();
-
-#if !DPA4_DENSE_CCHUNK
     write_chunk(g, stage_c_buffer, m0, n0);
 #endif
 }

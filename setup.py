@@ -211,7 +211,6 @@ ext_modules = [CUDAExtension(
         "cxx": ["-O3", "-std=c++17", "-Wno-return-type", *ARCH_FLAGS,
                 *CSCALAR_ARGS, *DENSE_KNOBS],
     },
-    extra_ldflags=[],
 )]
 #: Where the compiler's full output goes.  A hipcc build of this extension emits
 #: hundreds of warnings from torch/pybind headers, and printing them buries the
