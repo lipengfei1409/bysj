@@ -125,6 +125,15 @@ constexpr int kSlotsB = kStageK * kNT;
 constexpr int kRegsA = (kSlotsA + kThreads - 1) / kThreads;
 constexpr int kRegsB = (kSlotsB + kThreads - 1) / kThreads;
 
+// `kStageK` counts k values, which *are* the columns of the A stage and the rows of the
+// B stage -- treating it as anything else silently misaddresses the tile.
+static_assert(kStrideA == kStageK + kPad, "an A row holds its k columns plus padding");
+static_assert(kStageB == kStageK * kStrideB, "B rows are k values");
+static_assert(kSlotsA == kMT * kStageK, "A stage is kMT rows of kStageK columns");
+static_assert(kSlotsB == kStageK * kNT, "B stage is kStageK rows of kNT columns");
+static_assert(kRegsA * kThreads >= kSlotsA, "the register split must cover the stage");
+static_assert(kRegsB * kThreads >= kSlotsB, "the register split must cover the stage");
+
 //: Read the next k-block of A and B into registers.
 //:
 //: Two buffers and this split are what turn two barriers per k-block into one: the
@@ -137,13 +146,12 @@ __device__ __forceinline__ void load_block(float (&regs_a)[kRegsA],
                                            size_t k0) {
     const size_t stride_a = g.a.layout.strides[0];
     const size_t stride_b = g.b.layout.strides[0];
-    constexpr int kColumns = kStageK * kKT;
 #pragma unroll
     for (int chunk = 0; chunk < kRegsA; ++chunk) {
         const int slot = static_cast<int>(threadIdx.x) + chunk * kThreads;
         if (slot >= kSlotsA) break;
-        const int row = slot / kColumns;
-        const int col = slot % kColumns;
+        const int row = slot / kStageK;
+        const int col = slot % kStageK;
         const size_t absolute_row = m0 + static_cast<size_t>(row);
         const size_t absolute_col = k0 + static_cast<size_t>(col);
         regs_a[chunk] =
@@ -172,13 +180,12 @@ __device__ __forceinline__ void load_block(float (&regs_a)[kRegsA],
 __device__ __forceinline__ void store_block(float* dst_a, float* dst_b,
                                             const float (&regs_a)[kRegsA],
                                             const float (&regs_b)[kRegsB]) {
-    constexpr int kColumns = kStageK * kKT;
 #pragma unroll
     for (int chunk = 0; chunk < kRegsA; ++chunk) {
         const int slot = static_cast<int>(threadIdx.x) + chunk * kThreads;
         if (slot >= kSlotsA) break;
-        dst_a[static_cast<size_t>(slot / kColumns) * kStrideA +
-              slot % kColumns] = regs_a[chunk];
+        dst_a[static_cast<size_t>(slot / kStageK) * kStrideA +
+              slot % kStageK] = regs_a[chunk];
     }
 #pragma unroll
     for (int chunk = 0; chunk < kRegsB; ++chunk) {

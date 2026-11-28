@@ -106,6 +106,8 @@ class LdsStrideTests(unittest.TestCase):
         dense = (ROOT / "csrc" / "gemm.cpp").read_text()
         self.assertIn("constexpr int kStrideA = kStageK + kPad", dense)
         self.assertIn("constexpr int kStrideB = kNT + kPad", dense)
+        # `kStageK` counts k values; there is no second factor of kKT anywhere
+        self.assertNotIn("kStageK * kKT", dense)
         # the fragment loader is told the padded stride, which is the whole point
         self.assertIn("static_cast<unsigned>(kStrideA)", dense)
         self.assertIn("static_cast<unsigned>(kStrideB)", dense)
@@ -130,6 +132,57 @@ class LdsStrideTests(unittest.TestCase):
         self.assertIn("du_load_matrix_sync", dense)
         self.assertIn("plain row-major", dense)
         self.assertIn("ShmemSwizzleLayout", dense)
+
+
+class StageIndexMathTests(unittest.TestCase):
+    """The staging index math, as the kernel computes it.
+
+    Two constants mean "count of k values": `kStageK`, and the padded row strides derived
+    from it.  Treating `kStageK` as a *tile* width instead made each thread address a
+    64-wide row inside an 8-wide stage, which wrote past its row and read the wrong
+    element -- 96% of the output wrong, with no compilation error.  This models the same
+    arithmetic and asserts the two properties that failure broke: every stage element is
+    visited exactly once, and no visit leaves its row.
+    """
+
+    #: Mirrors the defaults in csrc/gemm.cpp.
+    MT, NT, KT, PAD, THREADS, STEPS = 64, 64, 8, 4, 256, 1
+
+    def _visit(self, rows: int, columns: int, stride: int) -> set[tuple[int, int]]:
+        slots = rows * columns
+        regs = -(-slots // self.THREADS)
+        visited: set[tuple[int, int]] = set()
+        for tid in range(self.THREADS):
+            for chunk in range(regs):
+                slot = tid + chunk * self.THREADS
+                if slot >= slots:
+                    break
+                row, col = slot // columns, slot % columns
+                self.assertLess(col, columns, "a visit left its row")
+                self.assertLess(row, rows)
+                visited.add((row, col))
+        return visited
+
+    def test_the_a_stage_is_covered_exactly_once(self) -> None:
+        columns = self.KT * self.STEPS          # k values == A columns
+        visited = self._visit(self.MT, columns, columns + self.PAD)
+        self.assertEqual(len(visited), self.MT * columns)
+
+    def test_the_b_stage_is_covered_exactly_once(self) -> None:
+        rows = self.KT * self.STEPS             # k values == B rows
+        visited = self._visit(rows, self.NT, self.NT + self.PAD)
+        self.assertEqual(len(visited), rows * self.NT)
+
+    def test_the_source_names_the_k_value_count_as_the_column_count(self) -> None:
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        self.assertIn("slot / kStageK", dense)
+        self.assertIn("slot % kStageK", dense)
+        self.assertNotIn("kStageK * kKT", dense.split("load_block")[1].split("write_chunk")[0])
+        for bound in ("kStrideA == kStageK + kPad",
+                      "kSlotsA == kMT * kStageK",
+                      "kSlotsB == kStageK * kNT",
+                      "kRegsA * kThreads >= kSlotsA"):
+            self.assertIn(bound, dense)
 
 
 class PreprocessorBalanceTests(unittest.TestCase):
