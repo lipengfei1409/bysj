@@ -22,19 +22,27 @@ ls -l /tmp/dense_stats*
 先确认 `dense_gemm_kernel` 的平均时长与 `bench_gemm` 打印的一致，并**看有没有别的 kernel**
 混进来（有就是白送开销）。
 
-## 2. 寄存器压力与占用（不用跑，直接看 ELF）
+## 2. 寄存器压力与占用
+
+`hipprof --codeobj-analyze <so>` 是**交互式**的：它列出 ELF 文件让你选序号，再选 kernel。想直接要
+一张表就用仓库里的脚本——同一份数字（amdgpu metadata 里的 `NumVgprs` / `NumSgprs` /
+`GroupSegmentFixedSize`）：
 
 ```bash
-ls python/kernels/_C*.so
-hipprof --codeobj-analyze python/kernels/_C*.so
+python3 tools/kernel_resources.py                 # 自动找 python/kernels/*.out
+python3 tools/kernel_resources.py <x.out> --threads 256 --lds 24576
 ```
 
-这一项给的是每个 kernel 的 VGPR/SGPR 用量——**决定 occupancy 的另一半**。
-配合 `DPA4_DEBUG_GEMM=1` 打印的 `static_lds` 就能算出每 CU 能放几个 block：
+输出每行一个 kernel：`vgpr / sgpr / lds / blocks-per-CU`，occupancy 直接算好：
 
 ```
-blocks/CU = min( 65536 / static_lds , 65536 / (threads × vgpr) )
+blocks/CU = min( 65536 / (threads × vgpr) , 65536 / (lds + 页) , wave 上限 )
 ```
+
+如果 `*.out` 还不存在，先让 hipprof 跑一次 `--codeobj-analyze`（它会写出
+`*.so-hipv4-amdgcn-amd-amdhsa--gfx928.out`），或直接 `roc-obj-extract`。
+
+配合 `DPA4_DEBUG_GEMM=1` 打印的 `static_lds` 与真实 `regs` 互相对照，两个数一致就说明算得对。
 
 ## 3. PMC（计数器）
 

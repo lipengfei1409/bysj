@@ -18,11 +18,14 @@
 // Notes:
 //   * HBM tests want several blocks per CU (--blocks 480 = 4/CU) to keep enough
 //     loads in flight; LDS tests want exactly one block per CU (--blocks 120).
-//   * LDS numbers are reported as bytes/cycle/CU, measured with clock64 inside
-//     the kernel, plus GB/s from host events. Theoretical ceiling is 128 B/cycle
-//     (32 banks x 4 B); 16 B/lane x 64 lanes = 1 KiB per wave instruction, so a
-//     perfect wave takes 8 cycles.
-//   * The conflict variant should land near 1/8 of the conflict-free rate.
+//   * LDS numbers are bytes/cycle/CU from clock64, plus GB/s from host events.
+//     Measured on K500SM_AI (2026-11-28): 16 B/lane = 33 B/cycle, conflict =
+//     16 B/cycle.  Nominal ceiling is 128 B/cycle (32 banks x 4 B), so b128 is
+//     paying a ~4x per-phase bank conflict; the 4 B/lane and 8 B/lane rows
+//     exist to test that (expect 128 / 64 / 32 if the four-word-phase model
+//     holds).  See docs/dcu-memory-bandwidth.md.
+//   * The conflict variant lands at ~1/2, not 1/8: the hardware merges same-bank
+//     requests better than the simple phase model predicts.
 
 #include <hip/hip_runtime.h>
 
@@ -151,6 +154,57 @@ __global__ void lds_conflict_kernel(int iters, float* __restrict__ sink,
   if (smem[0].x == 12345.678f) sink[0] = 1.f;
 }
 
+// 4 B per lane: lane l reads word (base + l), so a wave covers 256 B and every
+// 32-bit phase maps 64 lanes onto 32 banks (2 lanes per bank).  If the LDS unit
+// is 128 B/cycle and b128 is split into four word phases, this should be ~4x
+// the float4 number.
+__global__ void lds_read32_kernel(int iters, float* __restrict__ sink,
+                                  unsigned long long* __restrict__ cycles) {
+  __shared__ float smem[4096];
+  for (int i = threadIdx.x; i < 4096; i += blockDim.x)
+    smem[i] = static_cast<float>(i);
+  __syncthreads();
+
+  const int lane = threadIdx.x & (kWave - 1);
+  const int wave = threadIdx.x / kWave;
+
+  const unsigned long long t0 = clock64();
+#pragma unroll 4
+  for (int i = 0; i < iters; ++i) {
+    const int idx = (wave * kWave + i * 256 + lane) & 4095;
+    const float v = smem[idx];
+    asm volatile("" : : "v"(v));
+  }
+  const unsigned long long t1 = clock64();
+
+  if (threadIdx.x == 0) cycles[blockIdx.x] = t1 - t0;
+  if (smem[0] == 12345.678f) sink[0] = 1.f;
+}
+
+// 8 B per lane: wave covers 512 B, banks 2l / 2l+1 -> 16 banks, 4 lanes each.
+__global__ void lds_read64_kernel(int iters, float* __restrict__ sink,
+                                  unsigned long long* __restrict__ cycles) {
+  __shared__ float2 smem[2048];
+  for (int i = threadIdx.x; i < 2048; i += blockDim.x)
+    smem[i] = make_float2(static_cast<float>(i), static_cast<float>(i + 1));
+  __syncthreads();
+
+  const int lane = threadIdx.x & (kWave - 1);
+  const int wave = threadIdx.x / kWave;
+
+  const unsigned long long t0 = clock64();
+#pragma unroll 4
+  for (int i = 0; i < iters; ++i) {
+    const int idx = (wave * kWave + i * 256 + lane) & 2047;
+    const float2 v = smem[idx];
+    asm volatile("" : : "v"(v.x), "v"(v.y));
+  }
+  const unsigned long long t1 = clock64();
+
+  if (threadIdx.x == 0) cycles[blockIdx.x] = t1 - t0;
+  if (smem[0].x == 12345.678f) sink[0] = 1.f;
+}
+
 struct Args {
   int mb = 512;
   int blocks = 480;
@@ -206,12 +260,17 @@ struct LdsCtx {
   float* sink;
   unsigned long long* cycles;
   int conflict;
+  int width;  // bytes per lane: 4, 8 or 16
 };
 
 void launch_lds(void* raw) {
   LdsCtx* c = static_cast<LdsCtx*>(raw);
   if (c->conflict) {
     lds_conflict_kernel<<<c->blocks, c->threads>>>(c->iters, c->sink, c->cycles);
+  } else if (c->width == 4) {
+    lds_read32_kernel<<<c->blocks, c->threads>>>(c->iters, c->sink, c->cycles);
+  } else if (c->width == 8) {
+    lds_read64_kernel<<<c->blocks, c->threads>>>(c->iters, c->sink, c->cycles);
   } else {
     lds_read_kernel<<<c->blocks, c->threads>>>(c->iters, c->stride4, c->sink,
                                                c->cycles);
@@ -282,52 +341,69 @@ int main(int argc, char** argv) {
   const double copy_ms = time_ms(launch_hbm, &copy_ctx, args.reps);
   const double copy_gbs = bytes / (copy_ms * 1e-3) / 1e9;
 
-  // ---- LDS -> registers (conflict-free) ------------------------------------
-  LdsCtx lds_ctx{args.iters, args.lds_blocks, args.threads, kWave, sink, cycles,
-                 0};
-  HIP_CHECK(hipMemset(sink, 0, sizeof(float)));
-  const double lds_ms = time_ms(launch_lds, &lds_ctx, args.reps);
-
+  // ---- LDS -> registers: 4 / 8 / 16 B per lane -----------------------------
+  struct LdsRow {
+    int width;
+    double gbs;
+    double bpc;
+  };
+  std::vector<LdsRow> rows;
   std::vector<unsigned long long> host_cycles(args.lds_blocks, 0);
+
+  for (int width : {4, 8, 16}) {
+    LdsCtx ctx{args.iters, args.lds_blocks, args.threads, kWave, sink, cycles,
+               0, width};
+    HIP_CHECK(hipMemset(sink, 0, sizeof(float)));
+    const double ms = time_ms(launch_lds, &ctx, args.reps);
+    HIP_CHECK(hipMemcpy(host_cycles.data(), cycles,
+                        sizeof(unsigned long long) * args.lds_blocks,
+                        hipMemcpyDeviceToHost));
+    unsigned long long cycle_sum = 0;
+    for (auto c : host_cycles) cycle_sum += c;
+    const double cycle_mean =
+        static_cast<double>(cycle_sum) / std::max(1, args.lds_blocks);
+    const double bytes_per_block =
+        static_cast<double>(args.iters) * args.threads * width;
+    rows.push_back({width,
+                    bytes_per_block * args.lds_blocks / (ms * 1e-3) / 1e9,
+                    bytes_per_block / cycle_mean});
+  }
+
+  // ---- LDS -> registers (conflicting, 16 B per lane) -----------------------
+  LdsCtx conflict_ctx{args.iters, args.lds_blocks, args.threads, kWave, sink,
+                      cycles, 1, 16};
+  const double conflict_ms = time_ms(launch_lds, &conflict_ctx, args.reps);
   HIP_CHECK(hipMemcpy(host_cycles.data(), cycles,
                       sizeof(unsigned long long) * args.lds_blocks,
                       hipMemcpyDeviceToHost));
   unsigned long long cycle_sum = 0;
   for (auto c : host_cycles) cycle_sum += c;
-  const double cycle_mean =
-      static_cast<double>(cycle_sum) / std::max(1, args.lds_blocks);
-
-  const double lds_bytes_per_block =
-      static_cast<double>(args.iters) * args.threads * sizeof(float4);
-  const double lds_bytes = lds_bytes_per_block * args.lds_blocks;
-  const double lds_gbs = lds_bytes / (lds_ms * 1e-3) / 1e9;
-  const double lds_bpc = lds_bytes_per_block / cycle_mean;
-
-  // ---- LDS -> registers (conflicting) --------------------------------------
-  LdsCtx conflict_ctx{args.iters, args.lds_blocks, args.threads, kWave, sink,
-                      cycles, 1};
-  const double conflict_ms = time_ms(launch_lds, &conflict_ctx, args.reps);
-  HIP_CHECK(hipMemcpy(host_cycles.data(), cycles,
-                      sizeof(unsigned long long) * args.lds_blocks,
-                      hipMemcpyDeviceToHost));
-  cycle_sum = 0;
-  for (auto c : host_cycles) cycle_sum += c;
   const double conflict_cycle_mean =
       static_cast<double>(cycle_sum) / std::max(1, args.lds_blocks);
-  const double conflict_gbs = lds_bytes / (conflict_ms * 1e-3) / 1e9;
-  const double conflict_bpc = lds_bytes_per_block / conflict_cycle_mean;
+  const double conflict_bytes_per_block =
+      static_cast<double>(args.iters) * args.threads * 16;
+  const double conflict_gbs = conflict_bytes_per_block * args.lds_blocks /
+                              (conflict_ms * 1e-3) / 1e9;
+  const double conflict_bpc = conflict_bytes_per_block / conflict_cycle_mean;
 
-  std::printf("\n%-22s %12s %14s %12s\n", "test", "GB/s", "bytes/cycle/CU",
+  std::printf("\n%-24s %12s %14s %10s\n", "test", "GB/s", "bytes/cycle/CU",
               "note");
-  std::printf("%-22s %12.1f %14s %12s\n", "HBM read", read_gbs, "-",
+  std::printf("%-24s %12.1f %14s %10s\n", "HBM read", read_gbs, "-",
               "grid-stride");
-  std::printf("%-22s %12.1f %14s %12s\n", "HBM -> LDS", copy_gbs, "-",
+  std::printf("%-24s %12.1f %14s %10s\n", "HBM -> LDS", copy_gbs, "-",
               "16 KiB chunks");
-  std::printf("%-22s %12.1f %14.2f %12s\n", "LDS -> reg", lds_gbs, lds_bpc,
-              "16 B/lane, 8 cyc");
-  std::printf("%-22s %12.1f %14.2f %12s\n", "LDS -> reg (conflict)",
-              conflict_gbs, conflict_bpc, "all lanes same bank");
-  std::printf("\nHBM per CU: %.1f GB/s   LDS aggregate: %.1f TB/s\n",
+  const char* notes[3] = {"4 B/lane", "8 B/lane", "16 B/lane"};
+  for (int i = 0; i < 3; ++i) {
+    const auto& row = rows[i];
+    std::printf("%-24s %12.1f %14.2f %10s\n",
+                i == 2 ? "LDS -> reg (float4)" : "LDS -> reg", row.gbs,
+                row.bpc, notes[i]);
+  }
+  std::printf("%-24s %12.1f %14.2f %10s\n", "LDS -> reg (conflict)",
+              conflict_gbs, conflict_bpc, "same bank");
+  const double lds_gbs = rows[2].gbs;
+  const double lds_bpc = rows[2].bpc;
+  std::printf("\nHBM per CU: %.1f GB/s   LDS aggregate (float4): %.1f TB/s\n",
               read_gbs / cus, lds_gbs / 1000.0);
   std::printf("LDS ceiling 128 B/cycle/CU = %.1f GB/s/CU at %.2f GHz\n",
               128.0 * prop.clockRate * 1e3 / 1e9, prop.clockRate * 1e-6);

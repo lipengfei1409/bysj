@@ -183,6 +183,27 @@ class BuildLogTests(unittest.TestCase):
         self.assertIn("--dry-run", tool)
         self.assertIn("would remove", tool)
 
+    def test_kernel_resources_tool_reads_the_metadata(self) -> None:
+        # `hipprof --codeobj-analyze` is interactive; the same numbers are in the
+        # amdgpu metadata, and occupancy is arithmetic from them.
+        import importlib.util
+
+        path = ROOT / "tools" / "kernel_resources.py"
+        spec = importlib.util.spec_from_file_location("_dpa4_kernel_resources", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        kernel = module.parse(
+            "  - Name:            kern\n"
+            "    NumVgprs:        112\n"
+            "    NumSgprs:        40\n"
+        )
+        self.assertEqual(kernel[0]["Name"], "kern")
+        self.assertEqual(kernel[0]["NumVgprs"], 112)
+        # 65536 / (256 * 112) = 2 blocks by registers; 64 KiB / 24 KiB = 2 by LDS
+        self.assertEqual(module.occupancy(112, 256, 24576), 2)
+        self.assertEqual(module.occupancy(168, 256, 24576), 1)
+
     def test_the_dense_kernel_knobs_are_forwarded(self) -> None:
         # Without a profiler on the host, the way to find what the kernel spends time
         # on is to rebuild with one decision changed -- so the switches must reach
