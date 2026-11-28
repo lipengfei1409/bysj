@@ -225,12 +225,13 @@ class BuildLogTests(unittest.TestCase):
                        "--descriptor"):
             self.assertIn(needle, tool)
 
-    def test_the_descriptor_printer_builds_from_the_checkpoint(self) -> None:
-        # The descriptor does not store `ntypes`, so the printer has to take it from the
-        # checkpoint's type map; and the constructor rejects keys it does not declare.
-        tool = (ROOT / "tools" / "print_sezm_model.py").read_text()
-        for needle in ("_extra_state", "model_params", "len(type_map)",
-                       "inspect.signature", "get_class_by_type", "print(descriptor)"):
+    def test_the_whole_model_printer_follows_the_inference_path(self) -> None:
+        # The reconstruction must match deep_eval.py, or the printed tree is not the model
+        # that actually runs: params from `_extra_state`, then ModelWrapper(get_model(..)).
+        tool = (ROOT / "tools" / "print_dpa4_model.py").read_text()
+        for needle in ("_extra_state", "get_model(params)", "ModelWrapper",
+                       "load_state_dict(state, strict=False)", "named_parameters",
+                       "--descriptor"):
             self.assertIn(needle, tool)
 
     def test_the_bmm_attribution_tool_exists(self) -> None:
