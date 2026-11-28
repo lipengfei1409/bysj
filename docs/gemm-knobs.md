@@ -7,6 +7,9 @@
 `--stats`、`--print-trace`、`--kernel-stack`、`--output-type {0=json,1=html,2=pftrace}`，
 **没有 `--pmc`**——所以硬件计数器（bank conflict、MFMA 数）拿不到。
 
+> `hipprof` 有 PMC 选项，但**不接受 `--`**：`hipprof ... -- cmd` 会报 `Invalid arg: --`。
+> 命令直接跟在选项后面。完整用法见 [`gemm-profiling.md`](gemm-profiling.md)。
+
 能拿到的：
 
 ```bash
