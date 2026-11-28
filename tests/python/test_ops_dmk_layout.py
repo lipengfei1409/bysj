@@ -280,6 +280,20 @@ class KernelLinkageTests(unittest.TestCase):
                 )
 
 
+class InPlaceMmaTests(unittest.TestCase):
+    """The accumulator question: may `du_mma_sync` read and write the same fragment?"""
+
+    def test_the_experiment_exists_and_defaults_to_the_spare_set(self) -> None:
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        self.assertIn("#define DPA4_DENSE_INPLACE 0", dense)
+        self.assertIn("#if DPA4_DENSE_INPLACE", dense)
+        self.assertIn("#if !DPA4_DENSE_INPLACE", dense)
+
+    def test_the_build_can_switch_it(self) -> None:
+        setup_py = (ROOT / "setup.py").read_text()
+        self.assertIn('("INPLACE", os.environ.get("DPA4_DENSE_INPLACE"))', setup_py)
+
+
 class PreprocessorBalanceTests(unittest.TestCase):
     """Every `#if` in a kernel source needs its `#endif`.
 

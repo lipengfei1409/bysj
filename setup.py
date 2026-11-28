@@ -125,6 +125,7 @@ DENSE_KNOBS = [
         ("PAD", os.environ.get("DPA4_DENSE_PAD")),
         ("KSTAGE", os.environ.get("DPA4_DENSE_KSTAGE")),
         ("CCHUNK", os.environ.get("DPA4_DENSE_CCHUNK")),
+        ("INPLACE", os.environ.get("DPA4_DENSE_INPLACE")),
     )
     if value
 ]

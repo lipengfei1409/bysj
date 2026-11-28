@@ -66,6 +66,14 @@ namespace dumma = ops::dumma;
 #ifndef DPA4_DENSE_CCHUNK
 #define DPA4_DENSE_CCHUNK 1
 #endif
+//: `du_mma_sync` may or may not accept the accumulator it reads as its destination.
+//: If it does, the spare accumulator set -- one whole register set per fragment -- becomes
+//: unnecessary, which is what would make a 128x128 tile fit in registers.  Build with
+//: DPA4_DENSE_INPLACE=1 to try it: the accuracy tests answer the question, since a
+//: rejected in-place update produces wrong numbers rather than an error.
+#ifndef DPA4_DENSE_INPLACE
+#define DPA4_DENSE_INPLACE 0
+#endif
 
 constexpr int kPad = DPA4_DENSE_PAD;
 constexpr int kSteps = DPA4_DENSE_KSTAGE;
@@ -250,7 +258,9 @@ __device__ __forceinline__ void dense_body(const DenseGemm& g) {
     // Two accumulator sets, alternating: `du_mma_sync` writes a destination other than
     // the one it reads, and a pair per fragment is what that costs.
     Accumulator current[G::fragments];
+#if !DPA4_DENSE_INPLACE
     Accumulator spare[G::fragments];
+#endif
     // Every fragment a k-step needs, materialised up front: the B loads and the A loads
     // are independent, so the scheduler issues them together and the first mma starts
     // while the rest are still in flight.  Loading one group at a time inside the mma
@@ -260,7 +270,9 @@ __device__ __forceinline__ void dense_body(const DenseGemm& g) {
 #pragma unroll
     for (int index = 0; index < G::fragments; ++index) {
         dumma::fill_fragment(current[index], 0.0f);
+#if !DPA4_DENSE_INPLACE
         dumma::fill_fragment(spare[index], 0.0f);
+#endif
     }
 
     // Prologue: fill buffer 0, then the loop's single barrier is all that is needed.
@@ -301,11 +313,16 @@ __device__ __forceinline__ void dense_body(const DenseGemm& g) {
 #pragma unroll
                 for (int group = 0; group < G::groups; ++group) {
                     const int index = half * G::groups + group;
+#if DPA4_DENSE_INPLACE
+                    dumma::mma(current[index], a_fragment[half], b_fragment[group],
+                               current[index]);
+#else
                     dumma::mma(spare[index], a_fragment[half], b_fragment[group],
                                current[index]);
                     Accumulator previous = current[index];
                     current[index] = spare[index];
                     spare[index] = previous;
+#endif
                 }
             }
         }
