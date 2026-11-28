@@ -1,6 +1,21 @@
 # 没有 profiler 时怎么定位 dense GEMM
 
-这台 DCU 上 **`rocprofv3` 不存在**（`command not found`），所以用**对照实验**代替计数器：
+这台 DCU 上 **`rocprofv3` 不存在**（`command not found`）；DTK 自带的 profiler 是
+`/opt/dtk/bin/hipprof`（配套 `hipprof_ctrl`、`/opt/dtk/rocprofiler`、`/opt/dtk/hipprof_utils`）。
+
+```bash
+export PATH=/opt/dtk/bin:$PATH
+hipprof --help | head -40                     # 确认本版支持哪些开关（--hip-trace / --stats / --pmc）
+hipprof --hip-trace -o /tmp/dense_trace -- \
+  env PYTHONPATH=python python3 -m dmk.scripts.bench_gemm dense \
+      --shape 512x512x512 --iterations 3      # 先用小形状，输出小、跑得快
+```
+
+`--hip-trace` 的产物里有每个 kernel 的时长、grid、workgroup size、VGPR 与 LDS 用量——正是判断
+occupancy 需要的三个数。若本版 `hipprof` 支持 `--pmc`，再补
+`SQ_LDS_BANK_CONFLICT,SQ_INSTS_LDS,SQ_WAVES,GRBM_GUI_ACTIVE`。
+
+在 profiler 的语法确认之前，**对照实验**同样能定位，而且不需要任何工具：
 每次只改一个决策，重编（只有一个 TU），量同一个形状。三个开关都在 `csrc/gemm.cpp`，
 由 `setup.py` 从环境变量转成 `-D`。
 
