@@ -216,6 +216,14 @@ class BuildLogTests(unittest.TestCase):
         self.assertEqual(module.occupancy(112, 256, 24576), 2)
         self.assertEqual(module.occupancy(168, 256, 24576), 1)
 
+    def test_the_bmm_attribution_tool_exists(self) -> None:
+        # Shapes are known from the device profile; this answers *where* they come from,
+        # which the shipped trace cannot (it has no Python stacks).
+        tool = (ROOT / "tools" / "bmm_attribution.py").read_text()
+        for needle in ("with_stack=True", "record_shapes=True", "deepmd/pt/",
+                       "aten::bmm"):
+            self.assertIn(needle, tool)
+
     def test_the_dense_kernel_knobs_are_forwarded(self) -> None:
         # Without a profiler on the host, the way to find what the kernel spends time
         # on is to rebuild with one decision changed -- so the switches must reach
