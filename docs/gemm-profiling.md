@@ -51,6 +51,12 @@ hipprof --stats:  dense_gemm_kernel   10 calls   avg 2.691 ms
 bench_gemm dense --shape 2048x2048x2048 --iterations 5:  2.687 ms   6.39 TFLOP/s
 ```
 
+双缓冲（寄存器预取 + 乒乓 stage，每 k-block 一个屏障）之后：
+
+```
+bench_gemm dense --shape 2048x2048x2048 --iterations 20:  1.445 ms  11.89 TFLOP/s   (1.86x)
+```
+
 反推每 CU 的预算（2048³、120 CU、~1.7 GHz）：
 
 | 量 | 值 |
