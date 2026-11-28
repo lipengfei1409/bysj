@@ -105,6 +105,9 @@ class LdsStrideTests(unittest.TestCase):
     def test_the_stage_strides_are_padded(self) -> None:
         dense = (ROOT / "csrc" / "gemm.cpp").read_text()
         self.assertIn("constexpr int kStrideA = kStageK + kPad", dense)
+        self.assertIn("constexpr int kMT = 128", dense)
+        self.assertIn("constexpr int kNT = 64", dense)
+        self.assertIn("constexpr int kFragments = kRowHalves * kGroups", dense)
         self.assertIn("constexpr int kStrideB = kNT + kPad", dense)
         # `kStageK` counts k values; there is no second factor of kKT anywhere
         self.assertNotIn("kStageK * kKT", dense)
@@ -146,7 +149,7 @@ class StageIndexMathTests(unittest.TestCase):
     """
 
     #: Mirrors the defaults in csrc/gemm.cpp.
-    MT, NT, KT, PAD, THREADS, STEPS = 64, 64, 8, 4, 256, 1
+    MT, NT, KT, PAD, THREADS, STEPS = 128, 64, 8, 4, 256, 1
 
     def _visit(self, rows: int, columns: int, stride: int) -> set[tuple[int, int]]:
         slots = rows * columns
@@ -183,6 +186,37 @@ class StageIndexMathTests(unittest.TestCase):
                       "kSlotsB == kStageK * kNT",
                       "kRegsA * kThreads >= kSlotsA"):
             self.assertIn(bound, dense)
+
+
+class TileShapeTests(unittest.TestCase):
+    """The dense tile is 128x64 and every constant agrees with that."""
+
+    def test_the_tile_and_its_fragment_count_are_pinned(self) -> None:
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        for line in ("constexpr int kMT = 128;",
+                     "constexpr int kNT = 64;",
+                     "constexpr int kRowsPerWave = kMT / kWaves;",
+                     "constexpr int kRowHalves = kRowsPerWave / 16;",
+                     "constexpr int kFragments = kRowHalves * kGroups;"):
+            self.assertIn(line, dense)
+
+    def test_all_fragments_are_loaded_before_any_mma(self) -> None:
+        # Eight independent accumulator chains are the point of the wider tile; they only
+        # help if the loads are issued together instead of one per mma.
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        loop = dense[dense.index("for (int step = 0; step < kSteps; ++step)"):
+                     dense.index("// One barrier:")]
+        first_mma = loop.index("dumma::mma(")
+        self.assertLess(loop.index("a_fragment[half]"), first_mma)
+        self.assertLess(loop.index("b_fragment[group]"), first_mma)
+        self.assertNotIn("dumma::ld_matrix", loop[first_mma:])
+
+    def test_the_epilogue_defaults_to_one_wave_of_rows(self) -> None:
+        # A whole-tile C buffer at 128 rows is 32 KiB, which costs a block per CU.
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        self.assertIn("#define DPA4_DENSE_CCHUNK 1", dense)
+        self.assertIn("constexpr int kChunk = DPA4_DENSE_CCHUNK ? kRowsPerWave : kMT;",
+                      dense)
 
 
 class PreprocessorBalanceTests(unittest.TestCase):

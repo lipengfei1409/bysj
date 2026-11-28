@@ -44,12 +44,19 @@ namespace {
 namespace config = ops::config;
 namespace dumma = ops::dumma;
 
-constexpr int kMT = 64;   // block tile rows
+// Block tile 128x64: arithmetic intensity 128*64 / (4*(128+64)) = 10.7 MAC/byte
+// (21 FLOP/byte) against the 8 MAC/byte of a 64x64 tile, and eight 16x16 fragments per
+// wave instead of four -- eight independent accumulator chains is what gives the
+// scheduler something to hide the two fragment loads behind.
+constexpr int kMT = 128;  // block tile rows
 constexpr int kNT = 64;   // block tile cols
 constexpr int kKT = 8;    // k step: m16n16k8 for float32
-constexpr int kWaves = 4; // 16 rows each
+constexpr int kWaves = 4;
+constexpr int kRowsPerWave = kMT / kWaves;      // 32 rows per wave
+constexpr int kRowHalves = kRowsPerWave / 16;   // two 16-row fragments
 constexpr int kThreads = kWaves * config::kWaveSize;
-constexpr int kGroups = kNT / 16;      // 16x16 column groups per wave
+constexpr int kGroups = kNT / 16;               // four 16-wide column groups
+constexpr int kFragments = kRowHalves * kGroups; // eight 16x16 accumulators per wave
 
 // Row padding, and the reason it is padding rather than swizzling:
 // `du_load_matrix_sync(fragment&, const T* p, unsigned ldm)` carries no layout except
@@ -70,7 +77,7 @@ constexpr int kGroups = kNT / 16;      // 16x16 column groups per wave
 //
 //   DPA4_DENSE_PAD      row padding in floats (0 disables: the conflict hypothesis)
 //   DPA4_DENSE_KSTAGE   k8 steps staged per buffer (1 = a barrier every 8 of k)
-//   DPA4_DENSE_CCHUNK   1 = per-wave 4 KiB epilogue buffer instead of one 16 KiB
+//   DPA4_DENSE_CCHUNK   0 = whole-tile epilogue buffer (32 KiB) instead of per-wave
 #ifndef DPA4_DENSE_PAD
 #define DPA4_DENSE_PAD 4
 #endif
@@ -78,7 +85,7 @@ constexpr int kGroups = kNT / 16;      // 16x16 column groups per wave
 #define DPA4_DENSE_KSTAGE 1
 #endif
 #ifndef DPA4_DENSE_CCHUNK
-#define DPA4_DENSE_CCHUNK 0
+#define DPA4_DENSE_CCHUNK 1
 #endif
 constexpr int kPad = DPA4_DENSE_PAD;   // floats per row, keeps every stride 16 B aligned
 constexpr int kSteps = DPA4_DENSE_KSTAGE;   // k8 steps staged per buffer
@@ -87,13 +94,17 @@ constexpr int kStrideA = kStageK + kPad;    // 12 with the defaults
 constexpr int kStrideB = kNT + kPad;        // 68
 constexpr int kStageA = kMT * kStrideA;
 constexpr int kStageB = kStageK * kStrideB;
-// The epilogue buffer is the largest single LDS allocation; a quarter of it, written
-// one wave at a time, buys occupancy at the cost of four extra barriers.
-constexpr int kChunk = DPA4_DENSE_CCHUNK ? 16 : kMT;
+// The epilogue buffer is the largest single LDS allocation at a 128-row tile (32 KiB
+// whole), so by default it holds exactly one wave's 32 rows and is written four times.
+// That keeps the kernel at 2 blocks per CU; `DPA4_DENSE_CCHUNK=0` allocates the whole
+// tile and takes the occupancy hit.
+constexpr int kChunk = DPA4_DENSE_CCHUNK ? kRowsPerWave : kMT;
 constexpr int kStageC = kChunk * kNT;
 
-static_assert(kWaves * 16 == kMT, "each wave owns exactly 16 rows");
+static_assert(kWaves * kRowsPerWave == kMT, "the waves must cover the tile rows");
+static_assert(kRowsPerWave % 16 == 0, "a wave owns whole 16-row fragments");
 static_assert(kGroups == 4, "four column groups per wave");
+static_assert(kFragments == 8, "eight accumulators per wave is the point of this tile");
 static_assert(kThreads == 256, "the staging scheme assumes one element per thread");
 
 using AFragment = ::du::dumma::DUFragment<::du::dumma::matrix_a, 16, 16, kKT, float,
@@ -228,14 +239,18 @@ dense_gemm_kernel(const DenseGemm g) {
 
     // Two accumulator sets, alternating: `du_mma_sync` writes a destination other than
     // the one it reads, and a pair per column group is 32 registers -- affordable.
-    Accumulator current[kGroups];
-    Accumulator spare[kGroups];
-    AFragment a_fragment;
-    BFragment b_fragment;
+    Accumulator current[kFragments];
+    Accumulator spare[kFragments];
+    // Every fragment a k-step needs, materialised up front: the four B loads and the two
+    // A loads are independent, so the scheduler issues them together and the first mma
+    // starts while the rest are still in flight.  Loading one group at a time inside the
+    // mma loop makes each load wait for the one before it.
+    AFragment a_fragment[kRowHalves];
+    BFragment b_fragment[kGroups];
 #pragma unroll
-    for (int group = 0; group < kGroups; ++group) {
-        dumma::fill_fragment(current[group], 0.0f);
-        dumma::fill_fragment(spare[group], 0.0f);
+    for (int index = 0; index < kFragments; ++index) {
+        dumma::fill_fragment(current[index], 0.0f);
+        dumma::fill_fragment(spare[index], 0.0f);
     }
 
     // Prologue: fill buffer 0, then the loop's single barrier is all that is needed.
@@ -259,20 +274,32 @@ dense_gemm_kernel(const DenseGemm g) {
         const float* b_stage = stage_b_buffer[buffer];
 #pragma unroll
         for (int step = 0; step < kSteps; ++step) {
-            dumma::ld_matrix(a_fragment,
-                             const_cast<float*>(a_stage) +
-                                 wave * 16 * kStrideA + step * kKT,
-                             static_cast<unsigned>(kStrideA));
+#pragma unroll
+            for (int half = 0; half < kRowHalves; ++half) {
+                dumma::ld_matrix(a_fragment[half],
+                                 const_cast<float*>(a_stage) +
+                                     (wave * kRowsPerWave + half * 16) * kStrideA +
+                                     step * kKT,
+                                 static_cast<unsigned>(kStrideA));
+            }
 #pragma unroll
             for (int group = 0; group < kGroups; ++group) {
-                dumma::ld_matrix(b_fragment,
+                dumma::ld_matrix(b_fragment[group],
                                  const_cast<float*>(b_stage) +
                                      step * kKT * kStrideB + group * 16,
                                  static_cast<unsigned>(kStrideB));
-                dumma::mma(spare[group], a_fragment, b_fragment, current[group]);
-                Accumulator previous = current[group];
-                current[group] = spare[group];
-                spare[group] = previous;
+            }
+#pragma unroll
+            for (int half = 0; half < kRowHalves; ++half) {
+#pragma unroll
+                for (int group = 0; group < kGroups; ++group) {
+                    const int index = half * kGroups + group;
+                    dumma::mma(spare[index], a_fragment[half], b_fragment[group],
+                               current[index]);
+                    Accumulator previous = current[index];
+                    current[index] = spare[index];
+                    spare[index] = previous;
+                }
             }
         }
 
@@ -288,27 +315,39 @@ dense_gemm_kernel(const DenseGemm g) {
     // Epilogue through LDS: the accumulator lives in registers and the copy out is a
     // plain vectorised store, which also lets one wave write rows another block owns.
 #if DPA4_DENSE_CCHUNK
-    // One wave's 16 rows at a time through a quarter-sized buffer: four barriers per
-    // instruction in exchange for 12 KiB of LDS, which is occupancy.
+    // One wave's rows at a time through an eighth-of-the-tile buffer: four barriers per
+    // instruction in exchange for 24 KiB of LDS, which is the occupancy the tile needs.
     for (int owner = 0; owner < kWaves; ++owner) {
         if (wave == owner) {
 #pragma unroll
-            for (int group = 0; group < kGroups; ++group) {
-                dumma::store_matrix(stage_c_buffer + group * 16, current[group],
-                                    static_cast<unsigned>(kNT),
-                                    dumma::native::mem_row_major);
+            for (int half = 0; half < kRowHalves; ++half) {
+#pragma unroll
+                for (int group = 0; group < kGroups; ++group) {
+                    const int index = half * kGroups + group;
+                    dumma::store_matrix(
+                        stage_c_buffer + (half * 16) * kNT + group * 16,
+                        current[index], static_cast<unsigned>(kNT),
+                        dumma::native::mem_row_major);
+                }
             }
         }
         __syncthreads();
-        write_chunk(g, stage_c_buffer, m0 + static_cast<size_t>(owner) * 16, n0);
+        write_chunk(g, stage_c_buffer,
+                    m0 + static_cast<size_t>(owner) * kRowsPerWave, n0);
         __syncthreads();
     }
 #else
 #pragma unroll
-    for (int group = 0; group < kGroups; ++group) {
-        dumma::store_matrix(stage_c_buffer + wave * 16 * kNT + group * 16,
-                            current[group], static_cast<unsigned>(kNT),
-                            dumma::native::mem_row_major);
+    for (int half = 0; half < kRowHalves; ++half) {
+#pragma unroll
+        for (int group = 0; group < kGroups; ++group) {
+            const int index = half * kGroups + group;
+            dumma::store_matrix(
+                stage_c_buffer +
+                    (wave * kRowsPerWave + half * 16) * kNT + group * 16,
+                current[index], static_cast<unsigned>(kNT),
+                dumma::native::mem_row_major);
+        }
     }
     __syncthreads();
     write_chunk(g, stage_c_buffer, m0, n0);
