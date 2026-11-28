@@ -226,9 +226,14 @@ __device__ __forceinline__ void write_chunk(const DenseGemm& g, const float* sta
     }
 }
 
+//: The whole kernel body, parameterised by the tile.
+//:
+//: `__device__`, not `__global__`: a templated *kernel* is registered under a mangled name
+//: this runtime failed to resolve at launch ("Cannot find Symbol with name:
+//: ...dense_kernel...TileILi128ELi64E..."), while a plain kernel is registered the way the
+//: non-template version always was.  The two instantiations are the wrappers below.
 template <class G>
-__global__ void __launch_bounds__(kThreads)
-dense_kernel(const DenseGemm g) {
+__device__ __forceinline__ void dense_body(const DenseGemm& g) {
     // Two of each: the k-block being computed and the one being filled.  With one buffer
     // an iteration needs two barriers (wrote-then-read, read-then-overwrite); with two, a
     // single barrier orders both, and the global reads for k+1 sit in registers while the
@@ -356,9 +361,19 @@ dense_kernel(const DenseGemm g) {
 #endif
 }
 
-//: The two tiles this build carries.
+//: The two tiles this build carries, each behind a plain kernel.
 using TileWide = Tile<128, 64>;
 using TileSquare = Tile<64, 64>;
+
+__global__ void __launch_bounds__(kThreads)
+dense_kernel_wide(const DenseGemm g) {
+    dense_body<TileWide>(g);
+}
+
+__global__ void __launch_bounds__(kThreads)
+dense_kernel_square(const DenseGemm g) {
+    dense_body<TileSquare>(g);
+}
 
 }  // namespace dense_gemm
 
@@ -368,9 +383,9 @@ namespace {
 //: The two launch symbols, kept as `const void*` for the attribute queries and as typed
 //: pointers for the launches.
 const void* const kWideSymbol =
-    reinterpret_cast<const void*>(&dense_gemm::dense_kernel<dense_gemm::TileWide>);
+    reinterpret_cast<const void*>(&dense_gemm::dense_kernel_wide);
 const void* const kSquareSymbol =
-    reinterpret_cast<const void*>(&dense_gemm::dense_kernel<dense_gemm::TileSquare>);
+    reinterpret_cast<const void*>(&dense_gemm::dense_kernel_square);
 
 //: Which tile to use for this shape.
 //:
@@ -448,9 +463,9 @@ Tensor gemm_dense_hip(Tensor matrix_a, Tensor matrix_b) {
     const hipStream_t stream = at::cuda::getCurrentCUDAStream();
     const unsigned threads = dense_gemm::kThreads;
     if (wide) {
-        dense_gemm::dense_kernel<dense_gemm::TileWide><<<grid, threads, 0, stream>>>(g);
+        dense_gemm::dense_kernel_wide<<<grid, threads, 0, stream>>>(g);
     } else {
-        dense_gemm::dense_kernel<dense_gemm::TileSquare><<<grid, threads, 0, stream>>>(g);
+        dense_gemm::dense_kernel_square<<<grid, threads, 0, stream>>>(g);
     }
     launch_check();
     return matrix_c;

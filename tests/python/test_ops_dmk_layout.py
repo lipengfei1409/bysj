@@ -261,10 +261,23 @@ class KernelLinkageTests(unittest.TestCase):
             self.assertEqual(definitions[-1], namespace,
                              f"{name}: the innermost namespace is not the named one")
 
-    def test_the_dense_kernel_is_launched_through_its_namespace(self) -> None:
+    def test_the_dense_kernels_are_not_templates(self) -> None:
+        # A templated `__global__` is registered under a mangled name this runtime failed
+        # to resolve at launch, so the kernels are plain functions over a templated body.
         text = (ROOT / "csrc" / "gemm.cpp").read_text()
         self.assertIn("}  // namespace dense_gemm", text)
-        self.assertIn("dense_gemm::dense_kernel<dense_gemm::TileWide>", text)
+        self.assertIn("__device__ __forceinline__ void dense_body(const DenseGemm& g)",
+                      text)
+        for kernel in ("dense_kernel_wide", "dense_kernel_square"):
+            self.assertIn(f"dense_body<", text, kernel)
+        self.assertIn("dense_gemm::dense_kernel_wide<<<", text)
+        # no `__global__` may be templated
+        for line in text.splitlines():
+            if line.strip().startswith("template") or line.strip().startswith("__global__"):
+                self.assertFalse(
+                    line.strip().startswith("__global__") and "<" in line.split("(")[0],
+                    line,
+                )
 
 
 class PreprocessorBalanceTests(unittest.TestCase):
