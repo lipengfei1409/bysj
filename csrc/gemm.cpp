@@ -40,7 +40,11 @@
 #include <cstdio>
 #include <cstdlib>
 
-namespace {
+// The kernel lives in a *named* namespace on purpose.  Inside an anonymous one it has
+// internal linkage, and the HIP runtime resolves a launch by symbol name -- it then fails
+// with "Cannot find Symbol with name: _ZN12_GLOBAL__N_1...dense_kernel...", which aborts
+// the process rather than reporting an error.
+namespace dense_gemm {
 
 // `csrc/gemm.cpp` sits outside the operator headers' namespace (that is the point:
 // it is not an op), so the two names this file borrows are aliased here.
@@ -356,7 +360,7 @@ dense_kernel(const DenseGemm g) {
 using TileWide = Tile<128, 64>;
 using TileSquare = Tile<64, 64>;
 
-}  // namespace
+}  // namespace dense_gemm
 
 #ifndef __HIP_DEVICE_COMPILE__
 namespace {
@@ -364,9 +368,9 @@ namespace {
 //: The two launch symbols, kept as `const void*` for the attribute queries and as typed
 //: pointers for the launches.
 const void* const kWideSymbol =
-    reinterpret_cast<const void*>(&dense_kernel<TileWide>);
+    reinterpret_cast<const void*>(&dense_gemm::dense_kernel<dense_gemm::TileWide>);
 const void* const kSquareSymbol =
-    reinterpret_cast<const void*>(&dense_kernel<TileSquare>);
+    reinterpret_cast<const void*>(&dense_gemm::dense_kernel<dense_gemm::TileSquare>);
 
 //: Which tile to use for this shape.
 //:
@@ -374,10 +378,10 @@ const void* const kSquareSymbol =
 //: grid; at 512^3 the wide tile leaves 32 blocks against 120 CUs, so the square one wins
 //: despite doing more traffic per FLOP.
 bool prefer_wide(int64_t m, int64_t n) {
-    const int64_t wide = ((m + TileWide::mt - 1) / TileWide::mt) *
-                         ((n + TileWide::nt - 1) / TileWide::nt);
-    const int64_t square = ((m + TileSquare::mt - 1) / TileSquare::mt) *
-                           ((n + TileSquare::nt - 1) / TileSquare::nt);
+    const int64_t wide = ((m + dense_gemm::TileWide::mt - 1) / dense_gemm::TileWide::mt) *
+                         ((n + dense_gemm::TileWide::nt - 1) / dense_gemm::TileWide::nt);
+    const int64_t square = ((m + dense_gemm::TileSquare::mt - 1) / dense_gemm::TileSquare::mt) *
+                           ((n + dense_gemm::TileSquare::nt - 1) / dense_gemm::TileSquare::nt);
     int cus = 0;
     int device = 0;
     if (hipGetDevice(&device) == hipSuccess) {
@@ -410,7 +414,7 @@ Tensor gemm_dense_hip(Tensor matrix_a, Tensor matrix_b) {
     const at::cuda::OptionalCUDAGuard guard(matrix_a.device());
     Tensor matrix_c = torch::empty({m, n}, matrix_a.options());
 
-    DenseGemm g{};
+    dense_gemm::DenseGemm g{};
     at::Tensor a_handle = matrix_a;
     at::Tensor b_handle = matrix_b;
     at::Tensor c_handle = matrix_c;
@@ -420,8 +424,8 @@ Tensor gemm_dense_hip(Tensor matrix_a, Tensor matrix_b) {
     TORCH_CHECK(g.valid(), "the dense GEMM operands are not consistent");
 
     const bool wide = prefer_wide(m, n);
-    const int tile_m = wide ? TileWide::mt : TileSquare::mt;
-    const int tile_n = wide ? TileWide::nt : TileSquare::nt;
+    const int tile_m = wide ? dense_gemm::TileWide::mt : dense_gemm::TileSquare::mt;
+    const int tile_n = wide ? dense_gemm::TileWide::nt : dense_gemm::TileSquare::nt;
     const dim3 grid(static_cast<unsigned>((n + tile_n - 1) / tile_n),
                     static_cast<unsigned>((m + tile_m - 1) / tile_m));
 
@@ -435,17 +439,18 @@ Tensor gemm_dense_hip(Tensor matrix_a, Tensor matrix_b) {
                 "dense gemm: tile=%dx%d regs=%d static_lds=%zu B threads=%d "
                 "grid=(%u,%u) kKT=%d kStageK=%d\n",
                 tile_m, tile_n, attributes.numRegs,
-                static_cast<size_t>(attributes.sharedSizeBytes), kThreads, grid.x,
-                grid.y, kKT, kStageK);
+                static_cast<size_t>(attributes.sharedSizeBytes), dense_gemm::kThreads, grid.x,
+                grid.y, dense_gemm::kKT, dense_gemm::kStageK);
             std::fflush(stdout);
         }
     }
 
     const hipStream_t stream = at::cuda::getCurrentCUDAStream();
+    const unsigned threads = dense_gemm::kThreads;
     if (wide) {
-        dense_kernel<TileWide><<<grid, kThreads, 0, stream>>>(g);
+        dense_gemm::dense_kernel<dense_gemm::TileWide><<<grid, threads, 0, stream>>>(g);
     } else {
-        dense_kernel<TileSquare><<<grid, kThreads, 0, stream>>>(g);
+        dense_gemm::dense_kernel<dense_gemm::TileSquare><<<grid, threads, 0, stream>>>(g);
     }
     launch_check();
     return matrix_c;

@@ -223,6 +223,50 @@ class TileShapeTests(unittest.TestCase):
         self.assertIn("chunk_rows = DPA4_DENSE_CCHUNK ? rows_per_wave : MT", dense)
 
 
+class KernelLinkageTests(unittest.TestCase):
+    """A `__global__` in an anonymous namespace cannot be launched by name.
+
+    The runtime resolves a launch through the symbol table, and an internal-linkage kernel
+    mangles as `_ZN12_GLOBAL__N_1...`: the lookup fails and the process aborts with
+    "Cannot find Symbol with name", which reads like a device driver problem.  Every kernel
+    here therefore sits in a named namespace.
+    """
+
+    #: file -> the named namespace its kernel is declared in
+    KERNELS = {
+        "csrc/gemm.cpp": "namespace dense_gemm {",
+        "csrc/dmk/gemm_flat.cpp": "namespace dmk::mk {",
+        "csrc/dmk/megakernel.cpp": "namespace dmk::mk {",
+    }
+
+    def test_every_device_kernel_has_external_linkage(self) -> None:
+        for name, namespace in self.KERNELS.items():
+            lines = (ROOT / name).read_text().splitlines()
+            # the first *declaration* of a kernel, not a mention in a comment
+            kernel_line = next(
+                (index for index, line in enumerate(lines)
+                 if re.match(r"^\s*__global__", line)),
+                None,
+            )
+            self.assertIsNotNone(kernel_line, name)
+            before = "\n".join(lines[:kernel_line])
+            self.assertIn(namespace, before, f"{name}: kernel needs a named namespace")
+            # the innermost namespace *definition* before the kernel must be the named
+            # one (namespace aliases like `namespace config = ops::config;` are not it)
+            definitions = [
+                line.strip() for line in before.splitlines()
+                if re.match(r"^namespace [\w:]+ \{$", line.strip())
+            ]
+            self.assertTrue(definitions, f"{name}: no namespace definition")
+            self.assertEqual(definitions[-1], namespace,
+                             f"{name}: the innermost namespace is not the named one")
+
+    def test_the_dense_kernel_is_launched_through_its_namespace(self) -> None:
+        text = (ROOT / "csrc" / "gemm.cpp").read_text()
+        self.assertIn("}  // namespace dense_gemm", text)
+        self.assertIn("dense_gemm::dense_kernel<dense_gemm::TileWide>", text)
+
+
 class PreprocessorBalanceTests(unittest.TestCase):
     """Every `#if` in a kernel source needs its `#endif`.
 
