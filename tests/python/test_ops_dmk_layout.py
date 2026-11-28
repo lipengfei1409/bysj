@@ -110,6 +110,19 @@ class LdsStrideTests(unittest.TestCase):
         self.assertIn("static_cast<unsigned>(kStrideA)", dense)
         self.assertIn("static_cast<unsigned>(kStrideB)", dense)
 
+    def test_the_k_loop_pays_one_barrier_per_block(self) -> None:
+        # A single stage buffer needs two (wrote-then-read, read-then-overwrite); the
+        # ping-pong pair needs one, and that is where the second barrier went.
+        dense = (ROOT / "csrc" / "gemm.cpp").read_text()
+        loop = dense[dense.index("for (size_t k0 = 0, buffer = 0;"):
+                     dense.index("    // Epilogue")]
+        self.assertEqual(loop.count("__syncthreads()"), 1)
+        self.assertIn("stage_a_buffer[2]", dense)
+        self.assertIn("stage_b_buffer[2]", dense)
+        # the next block's global reads are issued before the mma of the current one
+        self.assertLess(loop.index("load_block(regs_a"), loop.index("ld_matrix"))
+        self.assertLess(loop.index("ld_matrix"), loop.index("store_block("))
+
     def test_the_padding_is_explained_as_a_loader_constraint(self) -> None:
         # A swizzled stage would disagree with `ld_matrix`, which only takes a leading
         # dimension -- that must be written down or the next reader will "fix" it.

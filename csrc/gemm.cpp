@@ -119,43 +119,73 @@ struct DenseGemm {
     }
 };
 
-//: `kStageK` values of k for A, zero-filled outside the matrix.
-__device__ __forceinline__ void stage_a(float* dst, const DenseGemm& g, size_t m0,
-                                        size_t k0) {
-    const size_t stride = g.a.layout.strides[0];
-    constexpr int kSlots = kMT * kStageK;
+//: Elements of the A and B stages, and how many each thread carries in registers.
+constexpr int kSlotsA = kMT * kStageK;
+constexpr int kSlotsB = kStageK * kNT;
+constexpr int kRegsA = (kSlotsA + kThreads - 1) / kThreads;
+constexpr int kRegsB = (kSlotsB + kThreads - 1) / kThreads;
+
+//: Read the next k-block of A and B into registers.
+//:
+//: Two buffers and this split are what turn two barriers per k-block into one: the
+//: global reads are issued *before* the mma of the current block, the LDS writes land
+//: in the other buffer, and a single `__syncthreads()` then covers both "the buffer I
+//: am about to read is complete" and "the buffer I just read may be reused".
+__device__ __forceinline__ void load_block(float (&regs_a)[kRegsA],
+                                           float (&regs_b)[kRegsB],
+                                           const DenseGemm& g, size_t m0, size_t n0,
+                                           size_t k0) {
+    const size_t stride_a = g.a.layout.strides[0];
+    const size_t stride_b = g.b.layout.strides[0];
+    constexpr int kColumns = kStageK * kKT;
 #pragma unroll
-    for (int slot = static_cast<int>(threadIdx.x); slot < kSlots;
-         slot += kThreads) {
-        const int row = slot / kStageK;
-        const int col = slot % kStageK;
+    for (int chunk = 0; chunk < kRegsA; ++chunk) {
+        const int slot = static_cast<int>(threadIdx.x) + chunk * kThreads;
+        if (slot >= kSlotsA) break;
+        const int row = slot / kColumns;
+        const int col = slot % kColumns;
         const size_t absolute_row = m0 + static_cast<size_t>(row);
         const size_t absolute_col = k0 + static_cast<size_t>(col);
-        dst[static_cast<size_t>(row) * kStrideA + col] =
+        regs_a[chunk] =
             (absolute_row < g.a.shape.dims[0] &&
              absolute_col < g.a.shape.dims[1])
-                ? g.a.data[absolute_row * stride + absolute_col]
+                ? g.a.data[absolute_row * stride_a + absolute_col]
                 : 0.0f;
     }
-}
-
-//: The matching `kStageK` values of k for B.
-__device__ __forceinline__ void stage_b(float* dst, const DenseGemm& g, size_t n0,
-                                        size_t k0) {
-    const size_t stride = g.b.layout.strides[0];
-    constexpr int kSlots = kStageK * kNT;
 #pragma unroll
-    for (int slot = static_cast<int>(threadIdx.x); slot < kSlots;
-         slot += kThreads) {
+    for (int chunk = 0; chunk < kRegsB; ++chunk) {
+        const int slot = static_cast<int>(threadIdx.x) + chunk * kThreads;
+        if (slot >= kSlotsB) break;
         const int row = slot / kNT;
         const int col = slot % kNT;
         const size_t absolute_row = k0 + static_cast<size_t>(row);
         const size_t absolute_col = n0 + static_cast<size_t>(col);
-        dst[static_cast<size_t>(row) * kStrideB + col] =
+        regs_b[chunk] =
             (absolute_row < g.b.shape.dims[0] &&
              absolute_col < g.b.shape.dims[1])
-                ? g.b.data[absolute_row * stride + absolute_col]
+                ? g.b.data[absolute_row * stride_b + absolute_col]
                 : 0.0f;
+    }
+}
+
+//: Write those registers into a stage buffer (padded rows).
+__device__ __forceinline__ void store_block(float* dst_a, float* dst_b,
+                                            const float (&regs_a)[kRegsA],
+                                            const float (&regs_b)[kRegsB]) {
+    constexpr int kColumns = kStageK * kKT;
+#pragma unroll
+    for (int chunk = 0; chunk < kRegsA; ++chunk) {
+        const int slot = static_cast<int>(threadIdx.x) + chunk * kThreads;
+        if (slot >= kSlotsA) break;
+        dst_a[static_cast<size_t>(slot / kColumns) * kStrideA +
+              slot % kColumns] = regs_a[chunk];
+    }
+#pragma unroll
+    for (int chunk = 0; chunk < kRegsB; ++chunk) {
+        const int slot = static_cast<int>(threadIdx.x) + chunk * kThreads;
+        if (slot >= kSlotsB) break;
+        dst_b[static_cast<size_t>(slot / kNT) * kStrideB + slot % kNT] =
+            regs_b[chunk];
     }
 }
 
@@ -176,8 +206,12 @@ __device__ __forceinline__ void write_chunk(const DenseGemm& g, const float* sta
 
 __global__ void __launch_bounds__(kThreads)
 dense_gemm_kernel(const DenseGemm g) {
-    __shared__ float stage_a_buffer[kStageA];
-    __shared__ float stage_b_buffer[kStageB];
+    // Two of each: the k-block being computed and the one being filled.  With one
+    // buffer an iteration needs two barriers (wrote-then-read, read-then-overwrite);
+    // with two, a single barrier orders both, and the global reads for k+1 sit in
+    // registers while the mma of k runs.
+    __shared__ float stage_a_buffer[2][kStageA];
+    __shared__ float stage_b_buffer[2][kStageB];
     __shared__ float stage_c_buffer[kStageC];
 
     const int wave = static_cast<int>(threadIdx.x / config::kWaveSize);
@@ -188,40 +222,58 @@ dense_gemm_kernel(const DenseGemm g) {
     // Two accumulator sets, alternating: `du_mma_sync` writes a destination other than
     // the one it reads, and a pair per column group is 32 registers -- affordable.
     Accumulator current[kGroups];
-    Accumulator next[kGroups];
+    Accumulator spare[kGroups];
     AFragment a_fragment;
     BFragment b_fragment;
 #pragma unroll
     for (int group = 0; group < kGroups; ++group) {
         dumma::fill_fragment(current[group], 0.0f);
-        dumma::fill_fragment(next[group], 0.0f);
+        dumma::fill_fragment(spare[group], 0.0f);
     }
 
-    for (size_t k0 = 0; k0 < k_total; k0 += kStageK) {
-        stage_a(stage_a_buffer, g, m0, k0);
-        stage_b(stage_b_buffer, g, n0, k0);
-        __syncthreads();
+    // Prologue: fill buffer 0, then the loop's single barrier is all that is needed.
+    float regs_a[kRegsA];
+    float regs_b[kRegsB];
+    load_block(regs_a, regs_b, g, m0, n0, 0);
+    store_block(stage_a_buffer[0], stage_b_buffer[0], regs_a, regs_b);
+    __syncthreads();
+
+    for (size_t k0 = 0, buffer = 0; k0 < k_total;
+         k0 += kStageK, buffer ^= 1) {
+        const size_t next = k0 + kStageK;
+        // Issue the next block's global reads now: their latency overlaps the mma
+        // below instead of being paid at the top of the next iteration.
+        if (next < k_total) load_block(regs_a, regs_b, g, m0, n0, next);
 
         // This wave owns rows [wave*16, wave*16+16); its A fragment is shared by the
         // four column groups, which is where the reuse comes from.  With more than one
         // k8 step staged, the barrier count per k drops by that factor.
+        const float* a_stage = stage_a_buffer[buffer];
+        const float* b_stage = stage_b_buffer[buffer];
 #pragma unroll
         for (int step = 0; step < kSteps; ++step) {
             dumma::ld_matrix(a_fragment,
-                             stage_a_buffer +
+                             const_cast<float*>(a_stage) +
                                  wave * 16 * kStrideA + step * kKT,
                              static_cast<unsigned>(kStrideA));
 #pragma unroll
             for (int group = 0; group < kGroups; ++group) {
                 dumma::ld_matrix(b_fragment,
-                                 stage_b_buffer + step * kKT * kStrideB +
-                                     group * 16,
+                                 const_cast<float*>(b_stage) +
+                                     step * kKT * kStrideB + group * 16,
                                  static_cast<unsigned>(kStrideB));
-                dumma::mma(next[group], a_fragment, b_fragment, current[group]);
+                dumma::mma(spare[group], a_fragment, b_fragment, current[group]);
                 Accumulator previous = current[group];
-                current[group] = next[group];
-                next[group] = previous;
+                current[group] = spare[group];
+                spare[group] = previous;
             }
+        }
+
+        // One barrier: every thread has finished reading this buffer *and* finished
+        // writing the other one, which is what the next iteration reads.
+        if (next < k_total) {
+            store_block(stage_a_buffer[buffer ^ 1], stage_b_buffer[buffer ^ 1],
+                        regs_a, regs_b);
         }
         __syncthreads();
     }
