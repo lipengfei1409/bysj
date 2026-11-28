@@ -183,6 +183,16 @@ class BuildLogTests(unittest.TestCase):
         self.assertIn("--dry-run", tool)
         self.assertIn("would remove", tool)
 
+    def test_the_engine_comparison_covers_all_four(self) -> None:
+        # The interesting result is a table: rocBLAS next to the three kernels we wrote.
+        # A missing engine must print as n/a rather than abort the run, because the
+        # persistent ones depend on a checkout matching the kernel.
+        tool = (ROOT / "tools" / "compare_gemm.py").read_text()
+        for engine in ("rocBLAS", "dense", "scheduled", "flat"):
+            self.assertIn(f'"{engine}"', tool)
+        self.assertIn("not in this build", tool)
+        self.assertIn("sys.path.insert(0, str(ROOT / \"python\"))", tool)
+
     def test_kernel_resources_tool_reads_the_metadata(self) -> None:
         # `hipprof --codeobj-analyze` is interactive; the same numbers are in the
         # amdgpu metadata, and occupancy is arithmetic from them.
